@@ -148,6 +148,8 @@ windows\
 - **游戏版本**（1.0.3 → 1.0.4）：前端 JS 结构变化会让注入锚点失效。`check-update.ps1` 查版本，`update-watch.ps1` 取新版基底并试注入到 staging（不碰 `app\`、不执行安装器），注入失败会报出是哪一处锚点断了。
 - **FullAtlas 前端**（上游仓库 v1.2 → v1.3）：改动在 `src\src\` 那 3 个 JS 里，合并后要重跑一次构建验证。
 
+发行版设置面板发现官方新版本时，会提供本项目 Releases 和官方原包下载入口。原包下载只保存到用户 `Downloads`，不会覆盖现有全图鉴程序；只有检测到完整源码与 `tools\update-watch.ps1` / `tools\apply-update.ps1` 的维护环境，才显示本地适配按钮。普通安装包无法安全地自行推断新版注入锚点。
+
 注入锚点是压缩后的变量名，1.0.3 相对 1.0.2 断了 6 处（主锚点 `applyCatalog(e,t,n)` 三次都没变，辅助模块会漂移）。锚点不对时脚本直接报错并保持 `app\` 不动，不做「能启动但 UI 错位」的静默失败。
 
 ## 已知限制
@@ -169,6 +171,6 @@ windows\
 | --- | --- | --- |
 | `local_atlas_controller.js` | 直接 `rawFetch` 到本机 HTTP | 有 `d.request` 钩子时走原生 IPC；`assetsHost` 用 `offlineData.assets_host` |
 | `assistant_dashboard.js` | 「官方基底监控」卡片，查 Kuro 版本 | 「Mac 版本更新」卡片，查 `/official/update-check` |
-| `desktop_assistant.js` | `VERSION = '1.2'` | `VERSION = '1.2.5'` |
+| `desktop_assistant.js` | `VERSION = '1.2'` | `VERSION = '1.2.6'` |
 
 收敛方案：以 macOS 版已有的 `d.request` 作为传输层抽象，Windows 侧实现一个走本机 HTTP 的版本，两边共用一个文件。这一步还没做。

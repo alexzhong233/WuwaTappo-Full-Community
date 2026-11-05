@@ -17,6 +17,8 @@ use tauri_plugin_opener::OpenerExt;
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_MESSAGE_CHARS: usize = 32 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
+const COMMUNITY_RELEASES_URL: &str =
+    "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 static LOG_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 // These describe the recovered production frontends, not Rust's compilation profile.
@@ -522,6 +524,12 @@ pub fn open_log_dir(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+pub fn open_community_releases(app: &AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(COMMUNITY_RELEASES_URL, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 fn validate_manifest_endpoint(region: Region, endpoint: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(endpoint).map_err(|_| "invalid update manifest URL")?;
     let host = url.host_str().ok_or("update manifest URL has no host")?;
@@ -643,6 +651,7 @@ pub fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Option<Result<V
             None => Err("set_elevated_autostart requires boolean enabled".into()),
         },
         "open_app_log_dir" => open_log_dir(app).map(|_| Value::Null),
+        "open_community_releases" => open_community_releases(app).map(|_| Value::Null),
         _ => return None,
     };
     Some(result)

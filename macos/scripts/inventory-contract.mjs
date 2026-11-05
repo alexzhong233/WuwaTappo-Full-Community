@@ -47,6 +47,7 @@ function commandContractsFor(clickCacheEnvironment) {
     load_cumulative_click_count: { request: object({ environment }), response: object({ count: clickCount, cuid: string, environment }), notes: 'Frontend discards records whose environment differs. It compares cuid before reconciling a different account.' },
     load_key_press_count: { request: object({ environment }), response: clickCount },
     open_login_window: { request: object({ intent: { type: 'string', default: 'login' }, compact: boolean }) },
+    open_community_releases: { response: { type: 'null' } },
     open_maintenance_notice: { request: object({ payload: { anyOf: [{ type: 'null' }, { type: 'object' }] } }) },
     open_panel_window: { request: object({ payload: object({ tab: { anyOf: [{ type: 'null' }, string] } }) }) },
     open_update_window: { request: object({ detail: { type: 'object' } }) },

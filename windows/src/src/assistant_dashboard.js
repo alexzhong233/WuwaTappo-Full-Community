@@ -53,7 +53,7 @@ function createAssistantUpdateGate({window,result,retry,install,quit}){
 
 function createAssistantDashboard(d){
   const {window}=d,{el,button}=assistantUi(window),doc=window.document;
-  let closed=false,timer=null,refreshing=false,tab='overview',value=null,renderView=()=>{},pending=0,saveQueue=Promise.resolve();
+  let closed=false,timer=null,officialTimer=null,refreshing=false,tab='overview',value=null,renderView=()=>{},pending=0,saveQueue=Promise.resolve();
   const root=el('section',undefined,doc.body,'wt-console');root.tabIndex=-1;root.setAttribute('role','dialog');root.setAttribute('aria-label','桌宠控制台');
   const header=el('header',undefined,root);
   const eyebrow=el('div',undefined,header,'wt-row wt-between');el('div','WUWA TAPPO / 后台助手',eyebrow,'wt-eyebrow');
@@ -65,7 +65,8 @@ function createAssistantDashboard(d){
   const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['settings','设置与更新']],navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
   const fmt=n=>Number(n||0).toLocaleString('zh-CN');
-  function close(){if(closed)return;closed=true;window.clearInterval(timer);root.remove();d.onClose?.();}
+  function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);root.remove();d.onClose?.();}
+  function checkOfficialNotice(){d.atlas.request('/official/update-check',{}).then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「设置与更新」选择 Releases 或下载官方原包。';}).catch(()=>{});}
   async function change(changes){
     pending++;
     saveQueue=saveQueue.catch(()=>{}).then(async()=>{try{value=await d.configure(changes);notice.textContent='设置已保存';}catch(e){notice.textContent='保存失败：'+e.message;}finally{pending--;if(!closed)paint();}});
@@ -118,7 +119,7 @@ function createAssistantDashboard(d){
         const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
       }
       const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
-      const u=card();el('h3','官方基底监控',u);el('p','监控 Kuro 官方桌宠的最新版本，每 8 小时检查一次。修改版的自动升级已停用（它会整包覆盖本地适配补丁）；官方发新版后需要重新跑一次全图鉴适配。',u,'wt-muted');const updates=el('p','当前基底 检测中…',u),tip=el('p','',u,'wt-muted');const mgr=button('打开更新管理器',u,async()=>{try{const r=await d.atlas.request('/official/manager',{});if(!r.ok)throw new Error(r.error||'启动失败');tip.textContent='已启动更新管理器。更新前请先完全退出游戏。';}catch(e){tip.textContent=e.message;}});mgr.style.display='none';const check=button('检查官方版本',u,async()=>{check.disabled=true;updates.textContent='正在查询官方版本…';try{const r=await d.atlas.request('/official/check',{});updates.textContent=r.remote?('本地基底 '+r.local+' · 官方最新 '+r.remote):('本地基底 '+r.local);tip.textContent=r.message;mgr.style.display=r.newer?'':'none';}catch(e){updates.textContent='检查失败';tip.textContent=e.message;}finally{check.disabled=false;}});updates.style.margin='12px 0';tip.style.margin='0 0 10px';d.atlas.request('/official/check',{}).then(r=>{updates.textContent=r.remote?('本地基底 '+r.local+' · 官方最新 '+r.remote):('本地基底 '+r.local);tip.textContent=r.message;mgr.style.display=r.newer?'':'none';}).catch(()=>{updates.textContent='当前基底 未检测';});
+      const u=card();el('h3','官方基底监控',u);el('p','每 8 小时检查一次 Kuro 官方版本。发现新版本后可以打开本项目 Releases，或把经过官方 HTTPS、区域和文件名校验的原始 Windows 安装包下载到 Downloads。全图鉴适配只在检测到完整维护环境时提供。',u,'wt-muted');const updates=el('p','当前基底 检测中…',u),tip=el('p','',u,'wt-muted'),actions=el('div',undefined,u,'wt-controls'),releases=button('打开 GitHub Releases',actions,async()=>{try{const r=await d.atlas.request('/official/releases',{});if(!r.ok)throw new Error(r.error||'打开失败');}catch(e){tip.textContent=e.message;}}),download=button('下载官方原包',actions,async()=>{download.disabled=true;tip.textContent='正在下载官方原包…';try{const r=await d.atlas.request('/official/download',{});if(!r.ok)throw new Error(r.error||'下载失败');tip.textContent=r.message;}catch(e){tip.textContent=e.message;}finally{download.disabled=false;}},'wt-primary'),mgr=button('本地适配并打补丁（维护环境）',actions,async()=>{try{const r=await d.atlas.request('/official/manager',{});if(!r.ok)throw new Error(r.error||'启动失败');tip.textContent='已启动更新管理器。更新前请先完全退出游戏。';}catch(e){tip.textContent=e.message;}}),check=button('检查官方版本',actions,async()=>{check.disabled=true;updates.textContent='正在查询官方版本…';try{const r=await d.atlas.request('/official/check',{});paintOfficial(r);}catch(e){updates.textContent='检查失败';tip.textContent=e.message;}finally{check.disabled=false;}});download.disabled=true;mgr.style.display='none';function paintOfficial(r){updates.textContent=r.remote?('本地基底 '+r.local+' · 官方最新 '+r.remote):('本地基底 '+r.local);tip.textContent=r.message;download.disabled=!r.newer||!r.download_available;mgr.style.display=r.newer&&r.local_adaptation_supported?'':'none';}updates.style.margin='12px 0';tip.style.margin='0 0 10px';d.atlas.request('/official/check',{}).then(paintOfficial).catch(()=>{updates.textContent='当前基底 未检测';});
       const sync=card();el('h3','本地图鉴资源',sync);el('p','本地开关只影响物品展示与本机装扮，登录、点数、开箱、图片下载和版本检查继续使用网络。',sync,'wt-muted');button('检查并同步图鉴',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'图鉴资源正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});
       renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox')input.checked=!!value.settings[k];else input.value=value.settings[k];}};
     }
@@ -126,6 +127,6 @@ function createAssistantDashboard(d){
   }
   function paint(){if(!value||closed||pending)return;setBadge();renderView();}
   async function refresh(){if(closed||refreshing||pending)return;refreshing=true;try{const next=await d.getState();if(!pending){value=next;paint();}}catch(e){notice.textContent='连接失败：'+e.message;}finally{refreshing=false;}}
-  showTab(tabs.some(([key])=>key===d.initialTab)?d.initialTab:'overview');refresh();timer=window.setInterval(refresh,2000);root.focus();
+  showTab(tabs.some(([key])=>key===d.initialTab)?d.initialTab:'overview');refresh();checkOfficialNotice();officialTimer=window.setInterval(checkOfficialNotice,8*3600*1000);timer=window.setInterval(refresh,2000);root.focus();
   return {close,focus:()=>root.focus(),showTab:key=>{if(tabs.some(([name])=>name===key))showTab(key);}};
 }

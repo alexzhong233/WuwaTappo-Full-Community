@@ -53,7 +53,7 @@ function createAssistantUpdateGate({window,result,retry,install,quit}){
 
 function createAssistantDashboard(d){
   const {window}=d,{el,button}=assistantUi(window),doc=window.document;
-  let closed=false,timer=null,refreshing=false,tab='overview',value=null,renderView=()=>{},pending=0,saveQueue=Promise.resolve();
+  let closed=false,timer=null,officialTimer=null,refreshing=false,tab='overview',value=null,renderView=()=>{},pending=0,saveQueue=Promise.resolve();
   const root=el('section',undefined,doc.body,'wt-console');root.tabIndex=-1;root.setAttribute('role','dialog');root.setAttribute('aria-label','桌宠控制台');
   const header=el('header',undefined,root);
   const eyebrow=el('div',undefined,header,'wt-row wt-between');el('div','WUWA TAPPO FULLATLAS / MAC',eyebrow,'wt-eyebrow');
@@ -65,7 +65,8 @@ function createAssistantDashboard(d){
   const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['settings','设置与更新']],navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
   const fmt=n=>Number(n||0).toLocaleString('zh-CN');
-  function close(){if(closed)return;closed=true;window.clearInterval(timer);root.remove();d.onClose?.();}
+  function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);root.remove();d.onClose?.();}
+  function checkOfficialNotice(){d.atlas.request('/official/update-check',{}).then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「设置与更新」选择 Releases 或下载官方原包。';}).catch(()=>{});}
   async function change(changes){
     pending++;
     saveQueue=saveQueue.catch(()=>{}).then(async()=>{try{value=await d.configure(changes);notice.textContent='设置已保存';}catch(e){notice.textContent='保存失败：'+e.message;}finally{pending--;if(!closed)paint();}});
@@ -118,7 +119,7 @@ function createAssistantDashboard(d){
         const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
       }
       const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
-      const u=card();el('h3','Mac 版本更新',u);el('p','这是 macOS 原生整合版。桌宠只能检查官方基底；检测到更新后由维护者或 GitHub Actions 下载 Windows 原包、转换 Mac、注入全图鉴并发布 Mac 包。Windows 全图鉴升级包不适用于 Mac。',u,'wt-muted');const updates=el('p','当前整合版 '+d.version+' · 官方基底 1.0.3 · 实验适配',u),check=button('检查官方更新',u,async()=>{check.disabled=true;try{const r=await d.atlas.request('/official/update-check',{});updates.textContent=r.message+' 当前整合版 '+d.version+'。';}catch(e){updates.textContent='检查失败：'+e.message;}finally{check.disabled=false;}});updates.style.margin='12px 0';
+      const u=card();el('h3','官方基底与 Mac 版本更新',u);el('p','检测到 Kuro 官方新版本后，可以打开本项目 Releases，或把经过官方 HTTPS、区域和文件名校验的 Windows 原包下载到 Downloads。Windows 原包不能直接安装到 Mac；Mac 全图鉴包需要由维护环境或 GitHub Actions 重新构建后发布。',u,'wt-muted');const updates=el('p','正在查询官方基底…',u),actions=el('div',undefined,u,'wt-controls'),releases=button('打开 GitHub Releases',actions,async()=>{try{await window.__TAURI_INTERNALS__.invoke('open_community_releases');}catch(e){updates.textContent='打开 Releases 失败：'+e.message;}}),download=button('下载官方 Windows 原包',actions,async()=>{if(download.disabled)return;download.disabled=true;updates.textContent='正在下载官方原包…';try{const r=await d.atlas.request('/official/download',{});updates.textContent=r.message;}catch(e){updates.textContent='下载失败：'+e.message;}finally{download.disabled=false;}},'wt-primary'),check=button('检查官方版本',actions,async()=>{check.disabled=true;updates.textContent='正在查询官方版本…';try{const r=await d.atlas.request('/official/update-check',{});updates.textContent=r.message+' 当前整合版 '+d.version+'。';download.disabled=!r.updateAvailable||!r.canDownloadOfficial;}catch(e){updates.textContent='检查失败：'+e.message;}finally{check.disabled=false;}});download.disabled=true;updates.style.margin='12px 0';d.atlas.request('/official/update-check',{}).then(r=>{updates.textContent=r.message+' 当前整合版 '+d.version+'。';download.disabled=!r.updateAvailable||!r.canDownloadOfficial;}).catch(()=>{updates.textContent='当前无法检测官方基底；可打开 Releases 查看已发布的 Mac 包。';});
       const sync=card();el('h3','本地图鉴资源',sync);el('p','本地开关只影响物品展示与本机装扮，登录、点数、开箱、图片下载和版本检查继续使用网络。',sync,'wt-muted');button('检查并同步图鉴',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'图鉴资源正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});
       renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox')input.checked=!!value.settings[k];else input.value=value.settings[k];}};
     }
@@ -126,6 +127,6 @@ function createAssistantDashboard(d){
   }
   function paint(){if(!value||closed||pending)return;setBadge();renderView();}
   async function refresh(){if(closed||refreshing||pending)return;refreshing=true;try{const next=await d.getState();if(!pending){value=next;paint();}}catch(e){notice.textContent='连接失败：'+e.message;}finally{refreshing=false;}}
-  showTab(tabs.some(([key])=>key===d.initialTab)?d.initialTab:'overview');refresh();timer=window.setInterval(refresh,2000);root.focus();
+  showTab(tabs.some(([key])=>key===d.initialTab)?d.initialTab:'overview');refresh();checkOfficialNotice();officialTimer=window.setInterval(checkOfficialNotice,8*3600*1000);timer=window.setInterval(refresh,2000);root.focus();
   return {close,focus:()=>root.focus(),showTab:key=>{if(tabs.some(([name])=>name===key))showTab(key);}};
 }

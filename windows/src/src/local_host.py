@@ -3,7 +3,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 import sys
-import argparse, base64, ctypes, hashlib, json, mimetypes, subprocess, threading, time, re
+import argparse, base64, ctypes, hashlib, json, mimetypes, os, subprocess, threading, time, re
 import urllib.request
 from sync_cache import sync as sync_public_cache
 from desktop_assistant import Assistant, PhysicalInput
@@ -42,7 +42,6 @@ def monitor_releases():
         time.sleep(8 * 3600)
 
 ASSISTANT.update_required = False
-threading.Thread(target=monitor_releases, daemon=True).start()
 STATE = ROOT / 'offline_state.json'
 # 素材与更新清单的官方源由构建区域决定（build.ps1 写进 local_config.json）。
 # 老配置没有这两个字段时退回国服，既有部署照常工作。
@@ -50,6 +49,8 @@ CDN_HOST = (CONFIG.get('cdn_host') or 'https://mc-wuwatappo.kurogames-global.com
 API_BASE = (CONFIG.get('api_base') or 'https://api-mc-wuwatappo.kurogames-global.com').rstrip('/')
 UPDATER_HOST_FILE = 'latest-global_host.json' if CONFIG.get('region') == 'global' else 'latest_host.json'
 OFFICIAL_STATE = ROOT / 'official_update.json'
+COMMUNITY_RELEASES_URL = 'https://github.com/alexzhong233/WuwaTappo-Full-Community/releases'
+MAX_OFFICIAL_INSTALLER = 512 * 1024 * 1024
 _NAME_INDEX = None
 
 
@@ -59,6 +60,7 @@ def _http_json(url, timeout=12):
     request = urllib.request.Request(
         url, headers={'User-Agent': 'WuwaTappo-FullAtlas/1.0'})
     with opener.open(request, timeout=timeout) as response:
+        _official_url(response.geturl())
         return json.loads(response.read().decode('utf-8'))
 
 
@@ -67,26 +69,76 @@ def _vtup(value):
     return tuple(int(x) for x in nums[:3]) or (0,)
 
 
+def _official_url(value, expected_name=None):
+    """只接受当前区域官方 HTTPS 资源，拒绝清单跳转到任意下载站。"""
+    parsed = urlparse(str(value or ''))
+    expected_host = urlparse(CDN_HOST).hostname
+    if (parsed.scheme != 'https' or parsed.hostname != expected_host
+            or parsed.port not in (None, 443) or parsed.username or parsed.password
+            or parsed.fragment):
+        raise ValueError('官方资源地址不是当前区域的 HTTPS 官方地址')
+    name = Path(parsed.path).name
+    if expected_name and name != expected_name:
+        raise ValueError('官方原包文件名与版本或服务器区域不匹配')
+    return parsed.geturl()
+
+
+def _official_filename(version):
+    region = 'global' if CONFIG.get('region') == 'global' else 'cn'
+    return 'WuwaTappo-%s_%s_x64-setup.exe' % (region, version)
+
+
+def _local_adaptation_capability():
+    for project in (ROOT.parent, ROOT.parent.parent, ROOT.parent.parent.parent):
+        required = [project / 'tools' / 'update-watch.ps1', project / 'tools' / 'apply-update.ps1']
+        if all(path.exists() for path in required):
+            return True, ''
+    return False, '发行包没有完整源码和适配脚本；请由维护环境或 GitHub Actions 构建新的全图鉴包。'
+
+
 def check_official():
     """查询 Kuro 官方桌宠最新版本。失败时回退上次成功结果，不抛异常。"""
     local = str(CONFIG.get('client_version') or '')
+    can_adapt, adapt_reason = _local_adaptation_capability()
     result = {'local': local, 'remote': '', 'newer': False, 'url': '', 'pub': '',
-              'checked_at': int(time.time()), 'error': '', 'message': ''}
+              'currentVersion': local, 'latestVersion': '', 'updateAvailable': False,
+              'checked_at': int(time.time()), 'error': '', 'message': '',
+              'community_releases_url': COMMUNITY_RELEASES_URL,
+              'communityReleasesUrl': COMMUNITY_RELEASES_URL,
+              'officialInstallerUrl': '', 'officialInstallerFileName': '',
+              'officialInstallerPlatform': 'windows-x86_64',
+              'download_available': False,
+              'canDownloadOfficial': False,
+              'local_adaptation_supported': can_adapt,
+              'supportsLocalAdaptation': can_adapt,
+              'local_adaptation_reason': adapt_reason}
+    result['localAdaptationReason'] = adapt_reason
     try:
         entry = _http_json(CDN_HOST + '/app/json-host/' + UPDATER_HOST_FILE)
         # 必须用清单里带 ?t= 的地址，否则命中 CDN 旧缓存
-        manifest = _http_json(str(entry.get('url') or ''))
+        manifest_url = _official_url(entry.get('url'))
+        manifest = _http_json(manifest_url)
         remote = str(manifest.get('version') or '')
         if not remote:
             raise ValueError('官方清单缺少 version')
         platforms = manifest.get('platforms')
         platform = platforms.get('windows-x86_64') if isinstance(platforms, dict) else None
+        expected_name = _official_filename(remote)
+        installer_url = _official_url((platform or {}).get('url'), expected_name)
         result['remote'] = remote
-        result['url'] = str((platform or {}).get('url') or '')
+        result['latestVersion'] = remote
+        result['url'] = installer_url
+        result['file_name'] = expected_name
+        result['officialInstallerUrl'] = installer_url
+        result['officialInstallerFileName'] = expected_name
+        result['officialInstallerPlatform'] = 'windows-x86_64'
         result['pub'] = str(manifest.get('pub_date') or '')
         result['newer'] = _vtup(remote) > _vtup(local)
-        result['message'] = ('官方已发布 %s，当前基底 %s —— 需要重新跑一次本地适配（全图鉴补丁）。'
-                             % (remote, local)) if result['newer'] else \
+        result['updateAvailable'] = result['newer']
+        result['download_available'] = bool(result['newer'])
+        result['canDownloadOfficial'] = result['download_available']
+        result['message'] = ('官方已发布 %s，当前基底 %s —— %s'
+                             % (remote, local, '可尝试本地全图鉴适配。' if can_adapt else '可下载官方原包；全图鉴包需由维护环境重新构建。')) if result['newer'] else \
                             ('官方最新 %s，当前基底 %s —— 已是最新。' % (remote, local))
         try:
             OFFICIAL_STATE.write_text(json.dumps(result, ensure_ascii=False, indent=2),
@@ -103,19 +155,94 @@ def check_official():
         for key in ('remote', 'newer', 'url', 'pub'):
             if key in cached:
                 result[key] = cached[key]
+        if result.get('remote'):
+            result['file_name'] = _official_filename(result['remote'])
+            result['latestVersion'] = result['remote']
+            result['updateAvailable'] = result['newer']
+            result['download_available'] = bool(result['newer'])
+            result['officialInstallerFileName'] = result['file_name']
+            result['officialInstallerUrl'] = result['url']
+            result['officialInstallerPlatform'] = 'windows-x86_64'
+            result['canDownloadOfficial'] = result['download_available']
         result['message'] = ('检查失败（%s）。%s'
                              % (error, ('显示上次结果：官方 %s。' % cached['remote'])
                                 if cached.get('remote') else '当前无法联网。'))
     return result
 
 
+def open_community_releases():
+    """打开固定的本项目 Releases 页面，不接受前端传入地址。"""
+    try:
+        import webbrowser
+        return {'ok': bool(webbrowser.open(COMMUNITY_RELEASES_URL, new=2)),
+                'url': COMMUNITY_RELEASES_URL}
+    except Exception as error:
+        return {'ok': False, 'error': str(error), 'url': COMMUNITY_RELEASES_URL}
+
+
+def download_official():
+    """把当前官方新 Windows 原包下载到用户 Downloads，不执行安装或覆盖。"""
+    info = check_official()
+    if not info.get('newer') or not info.get('url'):
+        return {'ok': False, 'error': info.get('message') or '没有可下载的官方新版本'}
+    url = _official_url(info['url'], info.get('file_name'))
+    downloads = Path(os.environ.get('USERPROFILE') or Path.home()) / 'Downloads'
+    downloads.mkdir(parents=True, exist_ok=True)
+    target = downloads / info['file_name']
+    temporary = downloads / ('.' + info['file_name'] + '.download')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        request = urllib.request.Request(url, headers={'User-Agent': 'WuwaTappo-Full-Community/1.0'})
+        with opener.open(request, timeout=300) as response:
+            _official_url(response.geturl(), info.get('file_name'))
+            length = int(response.headers.get('Content-Length') or 0)
+            if length > MAX_OFFICIAL_INSTALLER:
+                raise ValueError('官方原包超过 512 MiB，已停止下载')
+            total = 0
+            digest = hashlib.sha256()
+            with temporary.open('wb') as stream:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_OFFICIAL_INSTALLER:
+                        raise ValueError('官方原包超过 512 MiB，已停止下载')
+                    stream.write(chunk)
+                    digest.update(chunk)
+        os.replace(temporary, target)
+    except Exception as error:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        return {'ok': False, 'error': '下载官方原包失败：%s' % error}
+    return {'ok': True, 'version': info['remote'], 'path': str(target),
+            'sha256': digest.hexdigest(), 'message':
+            '官方 %s 原包已下载到 %s。它只保存在本机，不会覆盖当前全图鉴版本。' %
+            (info['remote'], target)}
+
+
+# Start only after the update helpers and trusted URL checks have been defined.
+threading.Thread(target=monitor_releases, daemon=True).start()
+
+
 def open_manager():
     """从面板唤起更新管理器（真正的下载/构建/替换在那边做）。"""
+    supported, reason = _local_adaptation_capability()
+    if not supported:
+        return {'ok': False, 'error': reason}
     exe = ROOT / 'WuwaTappoManager.exe'
-    if not exe.exists():
-        return {'ok': False, 'error': '找不到 WuwaTappoManager.exe'}
     try:
-        subprocess.Popen([str(exe)], cwd=str(ROOT),
+        if exe.exists():
+            command = [str(exe)]
+        else:
+            project = next((candidate for candidate in (ROOT.parent, ROOT.parent.parent, ROOT.parent.parent.parent)
+                            if (candidate / 'tools' / 'manager.py').exists()), None)
+            if not project or getattr(sys, 'frozen', False):
+                return {'ok': False, 'error': '找不到 WuwaTappoManager.exe'}
+            command = [sys.executable, str(project / 'tools' / 'manager.py')]
+        subprocess.Popen(command, cwd=str(ROOT),
                          creationflags=0x00000008 | 0x00000200)
         return {'ok': True}
     except Exception as error:
@@ -319,8 +446,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('X-Local-Token') != TOKEN:
             return self.respond(403, {'error': 'Invalid local control token'})
         path = urlparse(self.path).path
-        if path == '/official/check':
+        if path in ('/official/check', '/official/update-check'):
             return self.respond(200, check_official())
+        if path == '/official/releases':
+            return self.respond(200, open_community_releases())
+        if path == '/official/download':
+            return self.respond(200, download_official())
         if path == '/official/manager':
             return self.respond(200, open_manager())
         if path.startswith('/update/'):

@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 
 HOST_EXE = 'LocalGalleryHost.exe'
 APP_EXE = 'WuwaTappo.Local.exe'
@@ -89,6 +90,12 @@ def _json_url(url, timeout=HTTP_TIMEOUT):
     req = urllib.request.Request(
         url, headers={'User-Agent': 'WuwaTappo-FullAtlas-Launcher/1.0'})
     with opener.open(req, timeout=timeout) as resp:
+        final = urlparse(resp.geturl())
+        expected = urlparse(MANIFEST_HOST)
+        if (final.scheme != 'https' or final.hostname != expected.hostname
+                or final.port not in (None, 443) or final.username or final.password
+                or final.fragment):
+            raise ValueError('official update response left the trusted HTTPS host')
         data = json.loads(resp.read().decode('utf-8'))
     return data if isinstance(data, dict) else {}
 
@@ -142,9 +149,17 @@ def probe_update(root, out):
             return
         platforms = manifest.get('platforms')
         plat = platforms.get('windows-x86_64') if isinstance(platforms, dict) else None
+        expected_name = 'WuwaTappo-cn_%s_x64-setup.exe' % remote
+        installer = str((plat or {}).get('url') or '')
+        parsed = urlparse(installer)
+        trusted = urlparse(MANIFEST_HOST)
+        if (parsed.scheme != 'https' or parsed.hostname != trusted.hostname
+                or parsed.port not in (None, 443) or parsed.username or parsed.password
+                or parsed.fragment or os.path.basename(parsed.path) != expected_name):
+            return
         out['remote'] = remote
         out['local'] = local
-        out['page'] = str((plat or {}).get('url') or '')
+        out['page'] = installer
         out['pub'] = str(manifest.get('pub_date') or '')
     except Exception:
         pass

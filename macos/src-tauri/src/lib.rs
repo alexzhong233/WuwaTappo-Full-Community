@@ -156,6 +156,7 @@ const SYSTEM_COMMANDS: &[&str] = &[
     "is_internal_testing_build",
     "is_elevated_autostart_enabled",
     "set_elevated_autostart",
+    "open_community_releases",
 ];
 
 fn handle(invoke: Invoke) -> bool {

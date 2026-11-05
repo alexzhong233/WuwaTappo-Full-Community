@@ -45,11 +45,22 @@ function Get-Json([string]$url) {
   try { return ($wc.DownloadString($url) | ConvertFrom-Json) } finally { $wc.Dispose() }
 }
 
+function Assert-OfficialUrl([string]$url, [string]$expectedLeaf = '') {
+  try { $u = [Uri]$url } catch { throw '官方资源地址不是有效 URL' }
+  $expectedHost = ([Uri]$R.AssetsHost).Host
+  if ($u.Scheme -ne 'https' -or $u.Host -ne $expectedHost -or $u.Port -ne 443 -or $u.UserInfo -or $u.Fragment) {
+    throw "官方资源地址不是当前区域的 HTTPS 官方地址: $url"
+  }
+  $leaf = [IO.Path]::GetFileName($u.AbsolutePath)
+  if ($expectedLeaf -and $leaf -ne $expectedLeaf) { throw "官方原包文件名与版本或区域不匹配: $leaf" }
+  return $u.AbsoluteUri
+}
+
 function Get-RemoteManifest {
   $hostJson = Get-Json "$($R.AssetsHost)/app/json-host/$($R.UpdaterHostFile)"
   if (-not $hostJson.url) { throw 'latest_host.json 未返回 url 字段' }
   # 必须用清单返回的带 ?t= 的地址，直连 version-json 会命中 CDN 缓存拿到旧版本
-  return Get-Json ([string]$hostJson.url)
+  return Get-Json (Assert-OfficialUrl ([string]$hostJson.url))
 }
 
 function Find-SevenZip {
@@ -191,11 +202,12 @@ if ($OfficialExe) {
 
     $url = $null
     if ($manifest -and [string]$manifest.version -eq $target) {
-      $url = [string]$manifest.platforms.'windows-x86_64'.url
+      $expectedLeaf = "WuwaTappo-$($R.Id)_$target`_x64-setup.exe"
+      $url = Assert-OfficialUrl ([string]$manifest.platforms.'windows-x86_64'.url) $expectedLeaf
       '来源    : 官方清单（最新版）'
     }
     if (-not $url -and $lock -and [string]$lock.client_version -eq $target -and $lock.installer_url) {
-      $url = [string]$lock.installer_url
+      $url = Assert-OfficialUrl ([string]$lock.installer_url) "WuwaTappo-$($R.Id)_$target`_x64-setup.exe"
       '来源    : upstream-win.json 锁定直链'
     }
     if (-not $url) {

@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -90,10 +91,23 @@ def _json_url(url, timeout=HTTP_TIMEOUT):
     return data if isinstance(data, dict) else {}
 
 
+def _official_url(value, expected_name=None):
+    parsed = urlparse(str(value or ''))
+    host = urlparse(MANIFEST_HOST).hostname
+    if (parsed.scheme != 'https' or parsed.hostname != host
+            or parsed.port not in (None, 443) or parsed.username or parsed.password
+            or parsed.fragment):
+        raise RuntimeError('官方资源地址不是当前区域的 HTTPS 官方地址')
+    name = os.path.basename(parsed.path)
+    if expected_name and name != expected_name:
+        raise RuntimeError('官方原包文件名与版本不匹配')
+    return parsed.geturl()
+
+
 def fetch_remote():
     """返回 dict：version / url / pub；失败抛异常。"""
     entry = _json_url(MANIFEST_HOST + '/app/json-host/latest_host.json')
-    url = str(entry.get('url') or '')
+    url = _official_url(entry.get('url'))
     if not url:
         raise RuntimeError('latest_host.json 未返回 url')
     # 必须用带 ?t= 的地址，否则命中 CDN 旧清单
@@ -103,9 +117,11 @@ def fetch_remote():
         raise RuntimeError('latest.json 未返回 version')
     platforms = manifest.get('platforms')
     plat = platforms.get('windows-x86_64') if isinstance(platforms, dict) else None
+    expected = 'WuwaTappo-cn_%s_x64-setup.exe' % version
     return {
         'version': version,
-        'url': str((plat or {}).get('url') or ''),
+        'url': _official_url((plat or {}).get('url'), expected),
+        'file_name': expected,
         'pub': str(manifest.get('pub_date') or ''),
     }
 

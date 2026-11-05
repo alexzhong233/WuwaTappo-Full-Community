@@ -1,6 +1,6 @@
 # WuwaTappo Full Community
 
-> `main` 已合入官方国服 **1.0.3** 适配，整合版为 **1.2.5**。`dev` 从 `main` 派生，CI 成功后会自动更新滚动开发版；正式版本仍通过 `v*` 标签发布。详见 [1.0.3 适配记录](macos/docs/OFFICIAL_1.0.3.md)。
+> `main` 已合入官方国服 **1.0.3** 适配，整合版为 **1.2.6**。`dev` 从 `main` 派生，CI 成功后会自动更新滚动开发版；正式版本仍通过 `v*` 标签发布。详见 [1.0.3 适配记录](macos/docs/OFFICIAL_1.0.3.md)。
 
 让《鸣潮》桌宠在 macOS 和 Windows 上运行，并在原有面板中加入本地全图鉴和桌面助手。
 
@@ -64,7 +64,7 @@ Windows 侧版本由 `windows/upstream-win.json` 锁定，不会因为官方发�
 | --- | --- |
 | 服务区域 | 国服与国际服都构建：两侧各自锁定官方 1.0.3 基底，产物名带 `Full-CN-Community` / `Full-Global-Community` |
 | 系统 | macOS：Apple Silicon（M 系列），macOS 13 及以上；Windows：10/11 x64 |
-| 整合版本 | 1.2.5 实验版，基于官方国服 1.0.3 与 FullAtlas 1.3.6 兼容子集（Windows 仍保留 v1.2 基线） |
+| 整合版本 | 1.2.6 实验版，基于官方国服 1.0.3 与 FullAtlas 1.3.6 兼容子集（Windows 仍保留 v1.2 基线） |
 | 分支 | `main` 为 1.0.3 基底，两个平台同仓共用；`dev` 用于开发版；`official-1.0.3` 保留为历史适配分支 |
 | 验证 | 自动测试、原生构建、签名与 DMG / EXE 校验通过；角色和设置面板可显示，完整业务仍需实机验收 |
 | 应用标识 | 沿用 `dev.w33d.wuwatappo.fullatlas.mac`，改名只动显示名与产物名，既有数据目录和钥匙串不受影响 |
@@ -96,7 +96,9 @@ Windows 侧版本由 `windows/upstream-win.json` 锁定，不会因为官方发�
 
 本项目的 1.2.1 与 1.2.2-alpha.1 使用相同应用标识和数据目录，试用前请退出另一个副本，并备份 `~/Library/Application Support/dev.w33d.wuwatappo.fullatlas.mac/`。实验版目前仅提供 Apple Silicon 构建。
 
-目前未实现 Mac 自动安装更新。请使用本项目的 Mac 包；官方 Windows EXE 和 FullAtlas Windows 更新 ZIP 不能用于此应用。
+应用内的官方更新检测会在发现官方基底高于当前适配版本时显示两个操作：打开本项目的 [GitHub Releases](https://github.com/alexzhong233/WuwaTappo-Full-Community/releases)，或把经过官方 HTTPS、区域和版本文件名校验的官方 Windows 原包下载到用户的 `Downloads`。原包只会保存，不会覆盖当前全图鉴版本；它也不能直接安装到 macOS。
+
+Windows 发行包还会根据是否带有完整 `tools/` 适配脚本决定是否显示“本地适配并打补丁”。普通安装包没有源码、PowerShell 适配脚本和构建环境时，只提供原包下载与 Releases 入口。macOS 应用不会在用户机器上假装重编 Mac 包：从 Windows EXE 到 Mac 全图鉴 DMG 需要完整源码、Node、7-Zip、Rust、Xcode 和测试，交给维护者或 GitHub Actions 执行更安全。
 
 ## 从源码构建
 
