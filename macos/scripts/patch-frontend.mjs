@@ -58,6 +58,12 @@ export function patchMacUpdateFeedback(source) {
   return source.replace(pattern, (_, error, before, target, translate) => `if(${error}.kind==="error"){${before}${target}.value=${error}.message||${translate}("setting_version_check_failed");return}`);
 }
 
+export function patchMacShortcutLabels(source) {
+  const original = 'function formatModifiers(e){return[[2,"Ctrl"],[1,"Alt"],[4,"Shift"],[8,"Win"]].filter(([t])=>e&Number(t)).map(([,t])=>String(t))}';
+  if (source.split(original).length !== 2) throw new Error('Original shortcut modifier labels changed; reconcile macOS shortcut display before building.');
+  return source.replace(original, original.replace('[1,"Alt"]', '[1,"Option"]').replace('[8,"Win"]', '[8,"Cmd"]'));
+}
+
 export function patchMacUpdater(source) {
   const resolver = 'async function resolveUpdaterLatestJsonUrl(){const e=resolveUpdaterLatestHostJsonUrl();if(!e)return null;';
   const recovery = 'async function resolveUpdaterLatestJsonUrl(){let e=resolveUpdaterLatestHostJsonUrl();if(!e){const config=unwrapApiData(await activityInfo());const host=typeof config?.assets_host==="string"?config.assets_host.trim():"";if(!host||host===LOCAL_ROLE_ASSETS_HOST)throw new Error("官方配置缺少更新资源地址");setUpdaterAssetsHost(host,{triggerSilentCheck:!1});e=resolveUpdaterLatestHostJsonUrl()}';

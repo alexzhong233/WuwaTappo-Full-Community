@@ -897,6 +897,9 @@
           },
           "foregroundFullscreen": {
             "type": "boolean"
+          },
+          "foregroundApplicationFullscreen": {
+            "type": "boolean"
           }
         }
       }

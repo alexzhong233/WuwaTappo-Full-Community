@@ -73,6 +73,12 @@ WUWA_REGION=global node macos/scripts/inventory-contract.mjs   # 覆盖 tests/co
 - **共用**：`fullatlas-source/*.js` 三个前端模块与 `windows/src/src` 下的同名文件同源，各只差 4 行（品牌文案、更新监控卡、`VERSION`、`assetsHost`/`request` 取值）。不并成一份，是因为 `windows/src` 是上游完整快照，抽公共件会让上游 diff 失去基线；差异规模由 `tests/platform-parity.test.mjs` 锁住。
 - **不共用**：运行时、构建层、注入器范式完全不同（Rust/Tauri vs Python/PE 重打包），硬并只会造出一个到处 `if (platform === ...)` 的缝合怪。
 
+## 应用内官方版本检测
+
+设置面板会查询对应区域的官方版本指针。发现版本高于当前 Mac 适配基底时，用户可以打开本项目 Releases，或下载官方 Windows 原包到 `Downloads` 供维护者取用。下载链路只接受当前区域的 HTTPS 官方资源、匹配版本的安装包文件名，并限制最大体积；不会执行安装器或覆盖 Mac 应用。
+
+Mac 应用不在本地做“Windows EXE → Mac + FullAtlas DMG”重编。这个过程需要仓库源码、Node、7-Zip、Rust、Xcode 和完整测试，应该由维护者或 GitHub Actions 运行 `npm run official:update -- --apply` 后发布新的 Mac Release。
+
 ## 三条刻意不动的约定
 
 1. **Bundle identifier 保持 `dev.w33d.wuwatappo.fullatlas.mac`**。改了等于换一个应用：已有用户的 `~/Library/Application Support/` 与钥匙串全部作废。改名只动显示名与产物名。

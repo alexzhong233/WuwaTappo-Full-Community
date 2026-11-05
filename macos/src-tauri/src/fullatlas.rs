@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
+    io::{Read, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -18,6 +18,9 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 const UPDATE_MESSAGE: &str =
     "这是 Mac 整合版；Windows FullAtlas 更新包不能安装到 Mac。请使用本项目的 Mac 安装包更新。";
 const MAX_JSON: u64 = 16 * 1024 * 1024;
+const MAX_OFFICIAL_INSTALLER: u64 = 512 * 1024 * 1024;
+const COMMUNITY_RELEASES_URL: &str =
+    "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -50,6 +53,7 @@ struct Saved {
     session_chests: u64,
     rewards: Vec<Value>,
     rooms: Vec<Value>,
+    deleted_rooms: Vec<String>,
     monitor: Option<Value>,
     baselines: BTreeMap<String, u64>,
     days: BTreeMap<String, u64>,
@@ -129,6 +133,57 @@ fn get_json(client: &reqwest::blocking::Client, url: Url) -> Result<Value, Strin
     serde_json::from_slice(&bytes).map_err(|e| format!("图鉴 JSON 无效：{e}"))
 }
 
+fn version_numbers(value: &str) -> Vec<u64> {
+    value
+        .split(['.', '-', '+'])
+        .take(3)
+        .map(|part| {
+            part.chars()
+                .take_while(|character| character.is_ascii_digit())
+                .collect::<String>()
+        })
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect()
+}
+
+fn official_is_newer(latest: &str, current: &str) -> bool {
+    let mut left = version_numbers(latest);
+    let mut right = version_numbers(current);
+    left.resize(3, 0);
+    right.resize(3, 0);
+    left > right
+}
+
+fn official_installer(
+    region: crate::profile::Region,
+    manifest: &Value,
+    version: &str,
+) -> Result<(Url, String), String> {
+    let platform = manifest
+        .pointer("/platforms/windows-x86_64")
+        .ok_or("官方版本清单缺少 Windows 原包")?;
+    let value = platform
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("官方版本清单缺少 Windows 原包地址")?;
+    let url = trusted_asset_url(region, value)?;
+    let filename = url
+        .path_segments()
+        .and_then(|segments| segments.last())
+        .filter(|name| !name.is_empty())
+        .ok_or("官方原包文件名无效")?
+        .to_string();
+    let region_id = match region {
+        crate::profile::Region::Cn => "cn",
+        crate::profile::Region::Global => "global",
+    };
+    let expected = format!("WuwaTappo-{region_id}_{version}_x64-setup.exe");
+    if filename != expected {
+        return Err("官方原包文件名与版本或服务器区域不匹配".into());
+    }
+    Ok((url, filename))
+}
+
 fn official_update_status(region: crate::profile::Region) -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -165,12 +220,107 @@ fn official_update_status(region: crate::profile::Region) -> Result<Value, Strin
         .and_then(Value::as_str)
         .ok_or("官方版本清单无效")?;
     let current = env!("WUWA_OFFICIAL_VERSION");
-    let changed = latest != current;
+    let changed = official_is_newer(latest, current);
+    let (installer_url, installer_name) = official_installer(region, &manifest, latest)?;
     Ok(json!({
         "currentVersion": current,
         "latestVersion": latest,
         "updateAvailable": changed,
-        "message": if changed { format!("检测到官方 {latest}，需要维护者重新适配并发布 Mac 包。") } else { format!("官方基底已是 {current}。") },
+        "officialInstallerUrl": installer_url.as_str(),
+        "officialInstallerFileName": installer_name,
+        "officialInstallerPlatform": "windows-x86_64",
+        "communityReleasesUrl": COMMUNITY_RELEASES_URL,
+        "canDownloadOfficial": true,
+        "supportsLocalAdaptation": false,
+        "localAdaptationReason": "已安装的 Mac 应用没有源码、Node、Rust、Xcode 和 7-Zip，不能在应用内安全重打包。",
+        "message": if changed { format!("检测到官方 {latest}，可下载官方 Windows 原包；Mac 全图鉴包需由本项目构建后从 Releases 更新。") } else { format!("官方基底已是 {current}。") },
+    }))
+}
+
+fn download_official_installer(
+    app: &AppHandle,
+    region: crate::profile::Region,
+) -> Result<Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("WuwaTappo-Full-Community-Mac")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let api = format!("https://{}", region.api_host());
+    let activity = get_json(
+        &client,
+        Url::parse(&format!("{api}/api/common/activity-config")).map_err(|e| e.to_string())?,
+    )?;
+    let host = activity
+        .pointer("/data/assets_host")
+        .and_then(Value::as_str)
+        .ok_or("官方版本下载缺少资源源")?
+        .trim_end_matches('/');
+    let host = trusted_asset_url(region, host)?;
+    let pointer = get_json(
+        &client,
+        trusted_asset_url(
+            region,
+            &format!("{}/app/json-host/{}", host, region.updater_host_file()),
+        )?,
+    )?;
+    let manifest_url = pointer
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("官方版本下载缺少版本清单")?;
+    let manifest = get_json(&client, trusted_asset_url(region, manifest_url)?)?;
+    let latest = manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or("官方版本清单无效")?;
+    let (url, filename) = official_installer(region, &manifest, latest)?;
+    let current = env!("WUWA_OFFICIAL_VERSION");
+    if !official_is_newer(latest, current) {
+        return Err(format!("官方仍是 {current}，没有可下载的新版本"));
+    }
+    let response = client
+        .get(url.clone())
+        .send()
+        .map_err(|e| format!("下载官方原包失败：{e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "下载官方原包失败（HTTP {}）",
+            response.status().as_u16()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_OFFICIAL_INSTALLER)
+    {
+        return Err("官方原包超过 512 MiB，已停止下载".into());
+    }
+    let directory = app.path().download_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let target = directory.join(&filename);
+    let temporary = directory.join(format!(".{filename}.download"));
+    let mut file = fs::File::create(&temporary).map_err(|e| e.to_string())?;
+    let mut limited = response.take(MAX_OFFICIAL_INSTALLER + 1);
+    let copied = match std::io::copy(&mut limited, &mut file) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("保存官方原包失败：{error}"));
+        }
+    };
+    if copied > MAX_OFFICIAL_INSTALLER {
+        let _ = fs::remove_file(&temporary);
+        return Err("官方原包超过 512 MiB，已停止下载".into());
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    fs::rename(&temporary, &target).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "ok": true,
+        "version": latest,
+        "fileName": filename,
+        "path": target,
+        "platform": "windows-x86_64",
+        "message": format!("官方 {latest} Windows 原包已下载到 {}。它不能直接安装到 Mac；请使用本项目 Releases 中的 Mac 包。", target.display()),
     }))
 }
 fn validate_catalog(value: &Value) -> Result<(), String> {
@@ -492,16 +642,56 @@ impl FullAtlasState {
                             && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
                     })
                     .ok_or("房间号无效")?;
+                let new_visit = body.get("new_visit") == Some(&Value::Bool(true));
+                if inner.saved.deleted_rooms.iter().any(|item| item == code) && !new_visit {
+                    return Ok(Self::snapshot(&inner));
+                }
+                if new_visit {
+                    inner.saved.deleted_rooms.retain(|item| item != code);
+                }
                 let favorite = inner
                     .saved
                     .rooms
                     .iter()
                     .find(|r| r["code"] == code)
                     .is_some_and(|r| r["favorite"] == true);
+                let old_visited = inner
+                    .saved
+                    .rooms
+                    .iter()
+                    .find(|r| r["code"] == code)
+                    .and_then(|r| r["visited"].as_u64());
                 inner.saved.rooms.retain(|r| r["code"] != code);
-                inner.saved.rooms.insert(0,json!({"code":code,"host":body.get("host").and_then(Value::as_str).unwrap_or("").chars().take(100).collect::<String>(),"favorite":favorite,"visited":unix_time()}));
-                inner.saved.rooms.sort_by_key(|r| r["favorite"] != true);
+                inner.saved.rooms.insert(0,json!({"code":code,"host":body.get("host").and_then(Value::as_str).unwrap_or("").chars().take(100).collect::<String>(),"favorite":favorite,"visited":if new_visit || old_visited.is_none(){unix_time()}else{old_visited.unwrap()}}));
+                inner.saved.rooms.sort_by(|a, b| {
+                    (
+                        a["favorite"] != true,
+                        std::cmp::Reverse(a["visited"].as_u64().unwrap_or(0)),
+                    )
+                        .cmp(&(
+                            b["favorite"] != true,
+                            std::cmp::Reverse(b["visited"].as_u64().unwrap_or(0)),
+                        ))
+                });
                 inner.saved.rooms.truncate(100);
+            }
+            "delete-room" => {
+                let code = body
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .filter(|s| {
+                        !s.is_empty()
+                            && s.len() <= 32
+                            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    })
+                    .ok_or("房间号无效")?;
+                inner.saved.rooms.retain(|r| r["code"] != code);
+                inner.saved.deleted_rooms.retain(|item| item != code);
+                inner.saved.deleted_rooms.push(code.to_owned());
+                if inner.saved.deleted_rooms.len() > 100 {
+                    let start = inner.saved.deleted_rooms.len() - 100;
+                    inner.saved.deleted_rooms.drain(..start);
+                }
             }
             "favorite" => {
                 for room in &mut inner.saved.rooms {
@@ -509,7 +699,16 @@ impl FullAtlasState {
                         room["favorite"] = json!(body.get("favorite") == Some(&Value::Bool(true)));
                     }
                 }
-                inner.saved.rooms.sort_by_key(|r| r["favorite"] != true);
+                inner.saved.rooms.sort_by(|a, b| {
+                    (
+                        a["favorite"] != true,
+                        std::cmp::Reverse(a["visited"].as_u64().unwrap_or(0)),
+                    )
+                        .cmp(&(
+                            b["favorite"] != true,
+                            std::cmp::Reverse(b["visited"].as_u64().unwrap_or(0)),
+                        ))
+                });
             }
             "monitor" => {
                 let value = body.get("monitor").cloned().unwrap_or(Value::Null);
@@ -565,6 +764,7 @@ impl FullAtlasState {
         }
         match action {
             "official/update-check" => official_update_status(crate::profile::Region::from_app(app)),
+            "official/download" => download_official_installer(app, crate::profile::Region::from_app(app)),
             "status"=>Ok(json!({"ready":true,"enabled":self.enabled(),"mode_verified":true,"network_policy":"rooms-only","sync":{"status":"idle"}})),
             "offline-data"=>self.catalog(app,false),
             "sync"=>self.catalog(app,true).map(|v|json!({"status":"complete","checked_at":unix_time(),"result":{"changed":true,"assets_json_ts":v["assets_json_ts"],"atlas_count":v["atlas"].as_array().map(Vec::len).unwrap_or(0)}})),
@@ -614,6 +814,36 @@ mod tests {
                     .as_nanos()
             )))
         .unwrap()
+    }
+
+    #[test]
+    fn official_version_check_only_reports_a_higher_release() {
+        assert!(official_is_newer("1.0.4", "1.0.3"));
+        assert!(official_is_newer("1.0.10", "1.0.3"));
+        assert!(!official_is_newer("1.0.3", "1.0.3"));
+        assert!(!official_is_newer("1.0.2", "1.0.3"));
+    }
+
+    #[test]
+    fn official_installer_requires_the_current_region_and_versioned_filename() {
+        let manifest = json!({
+            "platforms": {
+                "windows-x86_64": {
+                    "url": "https://mc-wuwatappo.kurogames-global.com/app/WuwaTappo-cn_1.0.4_x64-setup.exe"
+                }
+            }
+        });
+        let (url, filename) =
+            official_installer(crate::profile::Region::Cn, &manifest, "1.0.4").unwrap();
+        assert_eq!(url.host_str(), Some("mc-wuwatappo.kurogames-global.com"));
+        assert_eq!(filename, "WuwaTappo-cn_1.0.4_x64-setup.exe");
+        for value in [
+            "https://example.com/WuwaTappo-cn_1.0.4_x64-setup.exe",
+            "https://mc-wuwatappo.kurogames-global.com/app/WuwaTappo-global_1.0.4_x64-setup.exe",
+        ] {
+            let invalid = json!({"platforms": {"windows-x86_64": {"url": value}}});
+            assert!(official_installer(crate::profile::Region::Cn, &invalid, "1.0.4").is_err());
+        }
     }
     #[test]
     fn assistant_uses_baselines_and_limits_rate() {
@@ -686,6 +916,38 @@ mod tests {
         assert_eq!(
             loaded.assistant("state", &json!({}), false).unwrap()["settings"]["enabled"],
             true
+        );
+    }
+
+    #[test]
+    fn deleted_rooms_stay_hidden_until_a_new_visit() {
+        let s = state();
+        s.assistant(
+            "room",
+            &json!({"code":"123456","host":"Alice","new_visit":true}),
+            false,
+        )
+        .unwrap();
+        s.assistant("delete-room", &json!({"code":"123456"}), false)
+            .unwrap();
+        assert!(s
+            .assistant(
+                "room",
+                &json!({"code":"123456","host":"Alice","new_visit":false}),
+                false
+            )
+            .unwrap()["rooms"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            s.assistant(
+                "room",
+                &json!({"code":"123456","host":"Alice 2","new_visit":true}),
+                false
+            )
+            .unwrap()["rooms"][0]["host"],
+            "Alice 2"
         );
     }
     #[test]

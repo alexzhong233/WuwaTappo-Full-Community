@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,17 +126,13 @@ export async function extractAssets(bytes, output) {
   return entries.map(({ data, ...entry }) => ({ ...entry, size: data.length }));
 }
 
-export async function findInstallationPayload(directory) {
-  const candidates = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    // NSIS may use variable names (for example $_21_) for the main payload.
-    // The setup stub and uninstaller also embed resources and are ineligible.
-    if (!entry.isFile() || /^(?:setup|uninstall)\.exe$/i.test(entry.name) || /\.dll$/i.test(entry.name)) continue;
-    const candidate = await readFile(path.join(directory, entry.name));
-    if (candidate.length < 2 || candidate.toString('ascii', 0, 2) !== 'MZ') continue;
-    try { findAssetEntries(candidate); candidates.push(candidate); } catch {}
+export function selectApplicationPayload(listing) {
+  const candidates = [...listing.matchAll(/^Path = ([^\r\n]+)\r?$/gm)]
+    .map(match => match[1])
+    .filter(name => name === 'WuwaTappo.exe' || /^\$_\d+_$/.test(name));
+  if (candidates.length !== 1) {
+    throw new Error(`Expected exactly one Wuwa Tappo NSIS application payload, found ${JSON.stringify(candidates)}.`);
   }
-  if (candidates.length !== 1) throw new Error(`Expected one embedded Tauri application, found ${candidates.length}`);
   return candidates[0];
 }
 
@@ -193,12 +189,19 @@ async function main() {
     try {
       const filename = path.join(temporary, 'setup.exe');
       await writeFile(filename, installer.subarray(bounds.start, bounds.end));
-      const result = spawnSync(options.sevenzip, ['e', '-y', '-bd', `-o${temporary}`, filename], {
+      const listing = spawnSync(options.sevenzip, ['l', '-slt', '-ba', filename], {
+        encoding: 'utf8', maxBuffer: 1024 * 1024,
+      });
+      if (listing.error) throw listing.error;
+      if (listing.status !== 0) throw new Error(`7-Zip listing failed: ${listing.stderr || listing.stdout}`);
+      // NSIS 1.0.3 uses a variable-backed filename, shown by 7-Zip as $_21_.
+      const payload = selectApplicationPayload(listing.stdout);
+      const result = spawnSync(options.sevenzip, ['e', '-y', '-bd', `-o${temporary}`, filename, payload], {
         encoding: 'utf8', maxBuffer: 1024 * 1024,
       });
       if (result.error) throw result.error;
       if (result.status !== 0) throw new Error(`7-Zip extraction failed: ${result.stderr || result.stdout}`);
-      bytes = await findInstallationPayload(temporary);
+      bytes = await readFile(path.join(temporary, payload));
     } finally { await rm(temporary, { recursive: true, force: true }); }
   }
   const entries = findAssetEntries(bytes);

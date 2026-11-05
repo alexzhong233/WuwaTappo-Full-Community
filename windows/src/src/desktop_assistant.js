@@ -112,11 +112,13 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     }
     await rememberMonitor();window.setInterval(rememberMonitor,30000);
     await atlas.request('/update/healthy',{version:VERSION});
-    d.listenRoom(async(code,host)=>{if(!atlas.enabled.value&&code)await request('room',{code,host});});
+    let observedRoom=null;
+    d.listenRoom(async(code,host)=>{const new_visit=String(code||'')!==observedRoom;observedRoom=String(code||'');if(!atlas.enabled.value&&code)await request('room',{code,host,new_visit});});
     await d.listenJoin(async code=>{if(atlas.enabled.value){d.toast('本地全图鉴开启时无法进入联机');return;}if(!updateRequired.value)await d.join(code);});
     window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);});
   }
   function closePanel(){dashboard?.close();dashboard=null;}
+  async function deleteRoom(code){await ready;return (await request('delete-room',{code})).rooms||[];}
   async function openPanel(initialTab='overview'){
     if(dashboard){dashboard.showTab(initialTab);dashboard.focus();return;}
     await ready;
@@ -124,7 +126,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       getState:async()=>{const v=await request('state');state.value=v;return v;},
       configure:async changes=>{state.value=await request('configure',{settings:changes});return state.value;},
       reset:()=>request('reset'),join:code=>window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'local-assistant-join',payload:code}),
-      favorite:(code,favorite)=>request('favorite',{code,favorite}),onClose:()=>{dashboard=null;}});
+      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,onClose:()=>{dashboard=null;}});
   }
   async function pollPolicy(){
     if(disposed)return;
