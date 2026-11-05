@@ -2,8 +2,8 @@
 
 ## 社区项目来源
 
-- macOS 壳层与构建工具来自 [Last-emo-boy/wuwa-tappo-mac](https://github.com/Last-emo-boy/wuwa-tappo-mac)，固定提交 `2c167aeac03c66effb75244ba7f414385a15aab1`，MIT 许可；原始版权声明保留在 `LICENSE`。
-- FullAtlas 控制器、助手 UI 和集成工具来自 [Averionx/WuwaTappo-FullAtlas](https://github.com/Averionx/WuwaTappo-FullAtlas)，固定提交 `c6f6318a9585baeca5ccf13cec9f9173b8eacf98`，v1.2，MIT 许可；原始版权与许可全文保留在 `licenses/FULLATLAS_LICENSE`。本项目将其本机服务传输适配为 Tauri/Rust，并移除 Windows 安装更新路径。
+- macOS 壳层与构建工具来自 [Last-emo-boy/wuwa-tappo-mac](https://github.com/Last-emo-boy/wuwa-tappo-mac)，同步至提交 `c4dd4bd9c5e1936ec920c09d9b00d902395eeccd`，MIT 许可；原始版权声明保留在 `LICENSE`。
+- FullAtlas 控制器、助手 UI 和集成工具来自 [Averionx/WuwaTappo-FullAtlas](https://github.com/Averionx/WuwaTappo-FullAtlas)，同步至提交 `2debed109b63824027b04d19fcedf74cca1d3a23`（1.3.6 系列），MIT 许可；原始版权与许可全文保留在 `licenses/FULLATLAS_LICENSE`。本项目将其本机服务传输适配为 Tauri/Rust，并移除 Windows 安装更新路径。
 - Windows 侧（`windows/`）同样基于 Averionx/WuwaTappo-FullAtlas 的 v1.2 源码，保留其 Python 本机服务与注入工具，仅做官方 1.0.3 适配与 PE 重打包，MIT 许可；该目录内的 `src/LICENSE` 与 `src/THIRD_PARTY_NOTICES.md` 为上游原文。
 
 ## Wuwa Tappo 国服与国际服

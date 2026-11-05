@@ -24,6 +24,7 @@ struct Labels {
     dock_settings: String,
     window_size: String,
     window_passthrough: String,
+    game_mode: String,
     window_opacity: String,
     restart: String,
     quit: String,
@@ -43,6 +44,7 @@ impl Default for Labels {
             dock_settings: "设置".into(),
             window_size: "桌宠大小".into(),
             window_passthrough: "鼠标穿透".into(),
+            game_mode: "游戏模式".into(),
             window_opacity: "不透明度".into(),
             restart: "重新启动".into(),
             quit: "退出 Wuwa Tappo".into(),
@@ -59,6 +61,7 @@ struct MenuOptions {
     pet_scale: u32,
     window_opacity: u32,
     window_passthrough: bool,
+    game_mode: bool,
 }
 
 impl Default for MenuOptions {
@@ -69,6 +72,7 @@ impl Default for MenuOptions {
             pet_scale: 100,
             window_opacity: 100,
             window_passthrough: false,
+            game_mode: false,
         }
     }
 }
@@ -192,6 +196,12 @@ fn context_items(
             &labels.window_passthrough,
             options.window_passthrough,
         )?,
+        checked(
+            app,
+            "toggle-game-mode",
+            &labels.game_mode,
+            options.game_mode,
+        )?,
         MenuItemKind::Predefined(PredefinedMenuItem::separator(app)?),
         normal(app, "input-access", "启用键鼠监听…")?,
         normal(app, "open-logs", "查看日志")?,
@@ -292,6 +302,7 @@ fn event_for_id(id: &str) -> Option<(&'static str, Value)> {
         "open-setting" => ("dock-open-panel", Value::from("setting")),
         "toggle-pet" => ("tray-toggle-pet-visibility", Value::Null),
         "toggle-passthrough" => ("tray-toggle-window-passthrough", Value::Null),
+        "toggle-game-mode" => ("tray-toggle-game-mode", Value::Null),
         "restart" => ("tray-restart", Value::Null),
         "quit" => ("tray-quit", Value::Null),
         "input-access" => ("mac-request-input-access", Value::Null),

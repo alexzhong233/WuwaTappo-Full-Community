@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { patchSessionBarriers, patchLoginReady, patchDomesticSdkUrls, patchMacUpdateFeedback, patchMacAbout } from '../scripts/patch-frontend.mjs';
+import { patchSessionBarriers, patchLoginReady, patchDomesticSdkUrls, patchMacUpdateFeedback, patchMacAbout, patchMacShortcutLabels } from '../scripts/patch-frontend.mjs';
 
 const root = new URL('../', import.meta.url);
 import { contract } from './frontend-context.mjs';
@@ -50,6 +50,14 @@ test('CN SDK script and stylesheet use HTTPS from the local Tauri origin', () =>
 test('Mac update feedback preserves the native platform explanation', () => {
   assert.equal(patchMacUpdateFeedback('if(h.kind==="error"){ht("check_failed"),ge.value=n("setting_version_check_failed");return}'), 'if(h.kind==="error"){ht("check_failed"),ge.value=h.message||n("setting_version_check_failed");return}');
   assert.throws(() => patchMacUpdateFeedback(''), /update feedback changed/);
+});
+
+test('Mac shortcut labels use the platform names users see in settings', () => {
+  const source = 'function formatModifiers(e){return[[2,"Ctrl"],[1,"Alt"],[4,"Shift"],[8,"Win"]].filter(([t])=>e&Number(t)).map(([,t])=>String(t))}';
+  const result = patchMacShortcutLabels(source);
+  assert.ok(result.includes('[1,"Option"]'));
+  assert.ok(result.includes('[8,"Cmd"]'));
+  assert.throws(() => patchMacShortcutLabels(''), /modifier labels changed/);
 });
 
 test('About separates the Mac build target from official Windows requirements', () => {

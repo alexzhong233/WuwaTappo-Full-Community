@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { profile } from './frontend-context.mjs';
 import { brotliCompressSync } from 'node:zlib';
-import { extractAssets, findAssetEntries, findEmbeddedNsis, findInstallationPayload, inspectStaticReferences, readPe, safeAssetPath } from '../scripts/extract-assets.mjs';
+import { extractAssets, findAssetEntries, findEmbeddedNsis, inspectStaticReferences, readPe, safeAssetPath, selectApplicationPayload } from '../scripts/extract-assets.mjs';
 
 function fixture(assets) {
   const bytes = Buffer.alloc(8192);
@@ -45,20 +45,16 @@ test('extracts arbitrary nested extensions using exact PHF bounds', () => {
   assert.ok(entries[0].dataOffset + entries[0].compressedSize < entries[1].dataOffset);
 });
 
-test('NSIS payload selection supports variable names and excludes embedded setup/uninstaller assets', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'wuwa-payload-test-'));
-  const bytes = fixture([['/index.html', '<html/>']]);
-  try {
-    for (const name of ['setup.exe', 'Uninstall.exe', 'library.DLL', '$_21_']) {
-      await writeFile(path.join(directory, name), bytes);
-    }
-    assert.deepEqual(await findInstallationPayload(directory), bytes);
-    await writeFile(path.join(directory, 'unknown.exe'), bytes);
-    await assert.rejects(findInstallationPayload(directory), /found 2/);
-    await rm(path.join(directory, 'unknown.exe'));
-    await rm(path.join(directory, '$_21_'));
-    await assert.rejects(findInstallationPayload(directory), /found 0/);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+test('NSIS payload selection accepts the official fixed or variable application name', () => {
+  const listing = [
+    'Path = setup.exe',
+    'Path = uninstall.exe',
+    'Path = $_21_',
+  ].join('\n');
+  assert.equal(selectApplicationPayload(listing), '$_21_');
+  assert.equal(selectApplicationPayload('Path = WuwaTappo.exe\n'), 'WuwaTappo.exe');
+  assert.throws(() => selectApplicationPayload('Path = $_21_\nPath = $_22_\n'), /exactly one/);
+  assert.throws(() => selectApplicationPayload('Path = setup.exe\n'), /exactly one/);
 });
 
 test('rejects malformed and truncated PE input', () => {

@@ -687,10 +687,7 @@ fn dispatch_events(
 ) {
     let mut routing = MouseRouting::default();
     for event in receiver {
-        if let NativeInput::Shortcut { ref key, flags } = event {
-            if let Some(shortcuts) = app.try_state::<crate::shortcuts::Shortcuts>() {
-                shortcuts.trigger(&app, key, flags);
-            }
+        if matches!(event, NativeInput::Shortcut { .. }) {
             continue;
         }
         let event = match route_event(event, &mut routing, &state) {

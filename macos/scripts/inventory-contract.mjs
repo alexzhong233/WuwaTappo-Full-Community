@@ -29,7 +29,7 @@ function commandContractsFor(clickCacheEnvironment) {
     get_boot_diagnostics: { response: object({ system: optional({ type: 'object' }), runtime: optional({ type: 'object' }), cpu: optional({ type: 'object' }), memory: optional({ type: 'object' }), gpus: optional({ type: 'array' }), display_names: optional({ type: 'array' }) }) },
     get_installed_app_locale: { request: object({ domestic: boolean }), response: string },
     get_installer_launch_mode: { response: object({ otaUpdate: boolean }) },
-    get_main_desktop_safe_area: { response: object({ insets, autoHideEdge: { anyOf: [{ type: 'null' }, { type: 'string', enum: ['left', 'top', 'right', 'bottom'] }] }, foregroundFullscreen: boolean }) },
+    get_main_desktop_safe_area: { response: object({ insets, autoHideEdge: { anyOf: [{ type: 'null' }, { type: 'string', enum: ['left', 'top', 'right', 'bottom'] }] }, foregroundFullscreen: boolean, foregroundApplicationFullscreen: boolean }) },
     get_main_taskbar_insets: { response: insets },
     get_maintenance_notice_payload: { response: { anyOf: [{ type: 'null' }, { type: 'object' }] } },
     get_preferred_system_ui_languages: { response: { type: 'array', items: string } },

@@ -65,6 +65,21 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(value['rooms'][0]['host'],'Alice 2')
         self.assertTrue(value['rooms'][0]['favorite'])
         with self.assertRaises(ValueError):self.call('room',{'code':'123'},True)
+
+    def test_deleted_room_stays_hidden_until_a_new_visit(self):
+        self.call('room',{'code':'123456','host':'Alice'})
+        self.call('delete-room',{'code':'123456'})
+        hidden=self.call('room',{'code':'123456','host':'Alice','new_visit':False})
+        self.assertEqual(hidden['rooms'],[])
+        visible=self.call('room',{'code':'123456','host':'Alice 2','new_visit':True})
+        self.assertEqual(visible['rooms'][0]['host'],'Alice 2')
+
+    def test_room_history_sort_keeps_recent_visits_after_favorites(self):
+        self.call('room',{'code':'old','host':'Old'})
+        self.now += 10
+        self.call('room',{'code':'new','host':'New'})
+        self.call('favorite',{'code':'old','favorite':True})
+        self.assertEqual([room['code'] for room in self.call('state')['rooms']],['old','new'])
     def test_persistence_preserves_settings(self):
         self.call('configure',{'settings':{'enabled':True}})
         self.call('monitor',{'monitor':{'name':'DISPLAY2','position':{'x':1920,'y':0}}})

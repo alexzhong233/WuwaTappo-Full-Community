@@ -50,6 +50,7 @@ struct Saved {
     session_chests: u64,
     rewards: Vec<Value>,
     rooms: Vec<Value>,
+    deleted_rooms: Vec<String>,
     monitor: Option<Value>,
     baselines: BTreeMap<String, u64>,
     days: BTreeMap<String, u64>,
@@ -492,16 +493,56 @@ impl FullAtlasState {
                             && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
                     })
                     .ok_or("房间号无效")?;
+                let new_visit = body.get("new_visit") == Some(&Value::Bool(true));
+                if inner.saved.deleted_rooms.iter().any(|item| item == code) && !new_visit {
+                    return Ok(Self::snapshot(&inner));
+                }
+                if new_visit {
+                    inner.saved.deleted_rooms.retain(|item| item != code);
+                }
                 let favorite = inner
                     .saved
                     .rooms
                     .iter()
                     .find(|r| r["code"] == code)
                     .is_some_and(|r| r["favorite"] == true);
+                let old_visited = inner
+                    .saved
+                    .rooms
+                    .iter()
+                    .find(|r| r["code"] == code)
+                    .and_then(|r| r["visited"].as_u64());
                 inner.saved.rooms.retain(|r| r["code"] != code);
-                inner.saved.rooms.insert(0,json!({"code":code,"host":body.get("host").and_then(Value::as_str).unwrap_or("").chars().take(100).collect::<String>(),"favorite":favorite,"visited":unix_time()}));
-                inner.saved.rooms.sort_by_key(|r| r["favorite"] != true);
+                inner.saved.rooms.insert(0,json!({"code":code,"host":body.get("host").and_then(Value::as_str).unwrap_or("").chars().take(100).collect::<String>(),"favorite":favorite,"visited":if new_visit || old_visited.is_none(){unix_time()}else{old_visited.unwrap()}}));
+                inner.saved.rooms.sort_by(|a, b| {
+                    (
+                        a["favorite"] != true,
+                        std::cmp::Reverse(a["visited"].as_u64().unwrap_or(0)),
+                    )
+                        .cmp(&(
+                            b["favorite"] != true,
+                            std::cmp::Reverse(b["visited"].as_u64().unwrap_or(0)),
+                        ))
+                });
                 inner.saved.rooms.truncate(100);
+            }
+            "delete-room" => {
+                let code = body
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .filter(|s| {
+                        !s.is_empty()
+                            && s.len() <= 32
+                            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    })
+                    .ok_or("房间号无效")?;
+                inner.saved.rooms.retain(|r| r["code"] != code);
+                inner.saved.deleted_rooms.retain(|item| item != code);
+                inner.saved.deleted_rooms.push(code.to_owned());
+                if inner.saved.deleted_rooms.len() > 100 {
+                    let start = inner.saved.deleted_rooms.len() - 100;
+                    inner.saved.deleted_rooms.drain(..start);
+                }
             }
             "favorite" => {
                 for room in &mut inner.saved.rooms {
@@ -509,7 +550,16 @@ impl FullAtlasState {
                         room["favorite"] = json!(body.get("favorite") == Some(&Value::Bool(true)));
                     }
                 }
-                inner.saved.rooms.sort_by_key(|r| r["favorite"] != true);
+                inner.saved.rooms.sort_by(|a, b| {
+                    (
+                        a["favorite"] != true,
+                        std::cmp::Reverse(a["visited"].as_u64().unwrap_or(0)),
+                    )
+                        .cmp(&(
+                            b["favorite"] != true,
+                            std::cmp::Reverse(b["visited"].as_u64().unwrap_or(0)),
+                        ))
+                });
             }
             "monitor" => {
                 let value = body.get("monitor").cloned().unwrap_or(Value::Null);
@@ -686,6 +736,38 @@ mod tests {
         assert_eq!(
             loaded.assistant("state", &json!({}), false).unwrap()["settings"]["enabled"],
             true
+        );
+    }
+
+    #[test]
+    fn deleted_rooms_stay_hidden_until_a_new_visit() {
+        let s = state();
+        s.assistant(
+            "room",
+            &json!({"code":"123456","host":"Alice","new_visit":true}),
+            false,
+        )
+        .unwrap();
+        s.assistant("delete-room", &json!({"code":"123456"}), false)
+            .unwrap();
+        assert!(s
+            .assistant(
+                "room",
+                &json!({"code":"123456","host":"Alice","new_visit":false}),
+                false
+            )
+            .unwrap()["rooms"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            s.assistant(
+                "room",
+                &json!({"code":"123456","host":"Alice 2","new_visit":true}),
+                false
+            )
+            .unwrap()["rooms"][0]["host"],
+            "Alice 2"
         );
     }
     #[test]

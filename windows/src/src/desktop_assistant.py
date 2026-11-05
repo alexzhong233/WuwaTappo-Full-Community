@@ -60,6 +60,7 @@ class Assistant:
                       'local': {'total': 0, 'balance': 0, 'chests': {}, 'opened': 0},
                       'baselines': {}, 'days': {}, 'rooms': [], 'monitor': None,
                       'rewards': [], 'session_chests': 0}
+        self.state['deleted_rooms'] = []
         if self.path.exists():
             saved = json.loads(self.path.read_text(encoding='utf-8'))
             self.state.update(saved)
@@ -103,6 +104,7 @@ class Assistant:
     def snapshot(self):
         value = json.loads(json.dumps(self.state))
         value.pop('baselines', None)
+        value.pop('deleted_rooms', None)
         value['weekly'] = {}
         for scope in ('local', 'normal'):
             days = value['days'].get(scope, {})
@@ -204,20 +206,35 @@ class Assistant:
                 code = str(body.get('code', '')).strip()
                 if not re_room(code):
                     raise ValueError('Invalid room code')
+                new_visit = body.get('new_visit', True) is True
+                deleted = self.state.setdefault('deleted_rooms', [])
+                if code in deleted and not new_visit:
+                    return self.snapshot()
+                if new_visit:
+                    self.state['deleted_rooms'] = [item for item in deleted if item != code]
                 rooms = self.state['rooms']
                 old = next((r for r in rooms if r['code'] == code), None)
                 if old:
                     rooms.remove(old)
-                rooms.insert(0, {'code': code, 'host': str(body.get('host', ''))[:100],
-                                 'favorite': old.get('favorite', False) if old else False, 'visited': int(self.clock())})
-                rooms.sort(key=lambda r: not r['favorite'])
+                rooms.insert(0, {'code': code, 'host': str(body.get('host', '') or (old or {}).get('host', ''))[:100],
+                                 'favorite': old.get('favorite', False) if old else False,
+                                 'visited': int(self.clock()) if new_visit or not old else old['visited']})
+                rooms.sort(key=lambda r: (not r['favorite'], -r['visited']))
                 del rooms[100:]
+                self.save(True)
+            elif action == 'delete-room':
+                code = str(body.get('code', '')).strip()
+                if not re_room(code):
+                    raise ValueError('Invalid room code')
+                self.state['rooms'] = [room for room in self.state['rooms'] if room['code'] != code]
+                deleted = [item for item in self.state.setdefault('deleted_rooms', []) if item != code]
+                self.state['deleted_rooms'] = (deleted + [code])[-100:]
                 self.save(True)
             elif action == 'favorite':
                 for room in self.state['rooms']:
                     if room['code'] == body.get('code'):
                         room['favorite'] = body.get('favorite') is True
-                self.state['rooms'].sort(key=lambda r: not r['favorite'])
+                self.state['rooms'].sort(key=lambda r: (not r['favorite'], -r['visited']))
                 self.save(True)
             elif action == 'monitor':
                 monitor = body.get('monitor')
