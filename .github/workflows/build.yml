@@ -31,11 +31,11 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: '13.0'
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
           cache: npm
@@ -44,7 +44,7 @@ jobs:
         run: node macos/scripts/installer-cache.mjs
       - name: Restore pinned official installer
         id: installer-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ steps.installer.outputs.path }}
           key: ${{ steps.installer.outputs.key }}
@@ -53,8 +53,8 @@ jobs:
           test "$(uname -m)" = arm64
           rustup toolchain install 1.97.1 --profile minimal
           rustup default 1.97.1
-          brew install sevenzip
-      - uses: actions/cache/restore@v4
+          brew install sevenzip osslsigncode
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: cargo-cache
         with:
           path: |
@@ -68,7 +68,7 @@ jobs:
         run: npm run setup
       - name: Save verified official installer
         if: steps.prepare.outcome == 'success' && steps.installer-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ steps.installer.outputs.path }}
           key: ${{ steps.installer.outputs.key }}
@@ -86,13 +86,13 @@ jobs:
           npm run package 2>&1 | tee macos/.work/package-macos.log
       - name: Keep packaging diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-package-diagnostics-${{ matrix.region }}
           path: macos/.work/package-macos.log
           if-no-files-found: ignore
           retention-days: 14
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}-macOS-arm64
           path: |
@@ -101,7 +101,7 @@ jobs:
           retention-days: 14
       - name: Save compiled Cargo dependencies
         if: always() && steps.native-tests.outcome == 'success' && steps.cargo-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry

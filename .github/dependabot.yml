@@ -1,0 +1,15 @@
+version: 2
+# 工作流里的 action 全部固定在提交 SHA 上，浮动标签被移动时不会静默换成别的代码。
+# 代价是升级要手动改 SHA，所以用 Dependabot 每周提一次 PR，保持可维护。
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

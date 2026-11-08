@@ -365,15 +365,32 @@ $size = (Get-Item -LiteralPath $official).Length
 
 $expected = if ($lock -and [string]$lock.client_version -eq $target) { [string]$lock.official_exe_sha256 } else { '' }
 if ($expected -and $expected -ne $sha) {
-  Write-Warning "基底哈希与 upstream-win.json 不符（期望 $expected）。注入锚点可能已漂移，构建大概率失败。"
-  $match = $false
-} elseif ($expected) {
-  '哈希  : 与锁定值一致，锚点适配版本正确'
+  # 锁是构建输入：字节对不上就说明拿到的不是锁里那一份，不能继续编译。
+  throw "基底哈希与 upstream-win.json 不符（期望 $expected，实际 $sha）。请先更新基线锁，不要用未核对的原包构建。"
+}
+if ($expected) {
+  '哈希  : 与锁定值一致'
   $match = $true
 } else {
   '哈希  : 无锁定值可比对（非适配版本）'
   $match = $null
 }
+
+# 哈希只证明「和锁里记的是同一份」，而锁本身也可能被改。
+# 签名由库洛私钥产生，是唯一独立于本仓库的凭据，所以两条都要过。
+$authSignature = Get-AuthenticodeSignature -LiteralPath $official
+if ($authSignature.Status -ne 'Valid') {
+  throw "官方基底签名无效（$($authSignature.Status)）：$($authSignature.StatusMessage)"
+}
+$signerSubject = [string]$authSignature.SignerCertificate.Subject
+$signerIssuer = [string]$authSignature.SignerCertificate.Issuer
+if ($signerSubject -notmatch 'CN=广州库洛数界科技有限公司') {
+  throw "官方基底签名主体不是库洛：$signerSubject"
+}
+if ($signerIssuer -notmatch 'DigiCert Trusted G4 Code Signing') {
+  throw "官方基底签发 CA 不是官方 EV 证书：$signerIssuer"
+}
+'签名  : 官方发行方有效'
 
 $info = [ordered]@{
   version      = $target

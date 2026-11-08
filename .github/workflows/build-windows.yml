@@ -31,16 +31,16 @@ jobs:
       # 镜像（与 macOS 侧同名变量同语义），镜像内容由锁文件里的 sha256 兜底。
       WUWA_INSTALLER_MIRROR_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/upstream-resources
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         id: python
         with:
           python-version: '3.13'
@@ -68,7 +68,7 @@ jobs:
 
       - name: Restore pinned official installer
         id: installer-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           # 只缓存安装包与解出的主程序；解包产物 app\ 不进缓存，避免几百 MB 冗余
           # 两个区域各有一套基底目录：build（国服）/ build-global（国际服）
@@ -129,7 +129,7 @@ jobs:
 
       - name: Save pinned official installer
         if: steps.installer-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: windows/build${{ matrix.region == 'global' && '-global' || '' }}/official
           key: windows-official-${{ matrix.region }}-${{ steps.pinned.outputs.version }}-${{ steps.pinned.outputs.urlhash }}
@@ -140,7 +140,7 @@ jobs:
           Get-ChildItem dist -Filter '${{ matrix.artifact }}-*' -ErrorAction SilentlyContinue |
             Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table -AutoSize
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: |

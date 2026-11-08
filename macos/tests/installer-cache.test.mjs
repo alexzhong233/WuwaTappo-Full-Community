@@ -11,6 +11,9 @@ import { pinnedInstallerCache, syncUpstream } from '../scripts/sync-upstream.mjs
 const root = path.resolve(import.meta.dirname, '..');
 const repoRoot = path.resolve(root, '..');
 const bytes = Buffer.from('pinned official installer fixture');
+// 这些用例验证的是缓存与镜像路径，安装包是假的，签名必然无效。
+// 验签本身的行为由 verifyPublisher / assertOfficialSigner 的单元测试覆盖。
+const signatureCheck = () => ({ subject: 'fixture', issuer: 'fixture' });
 function fixtureLock(region = 'cn') {
   const profile = getRegionProfile(region);
   return {
@@ -73,13 +76,13 @@ test('restored installers avoid network but remain size and digest verified befo
     `);
     globalThis.fetch = async () => assert.fail('a restored pinned installer must not need network');
     await writeFile(cache.path, bytes);
-    const result = await syncUpstream({ sevenzip }, directory);
+    const result = await syncUpstream({ sevenzip, signatureCheck }, directory);
     assert.equal(result.version, '1.0.2');
     assert.equal(await readFile(path.join(directory, 'frontend/index.html'), 'utf8'), '<html></html>');
     for (const corrupt of [bytes.subarray(1), Buffer.alloc(bytes.length)]) {
       await rm(path.join(directory, 'frontend'), { recursive: true, force: true });
       await writeFile(cache.path, corrupt);
-      await assert.rejects(syncUpstream({ sevenzip }, directory), /大小不匹配|SHA-256 不匹配/);
+      await assert.rejects(syncUpstream({ sevenzip, signatureCheck }, directory), /大小不匹配|SHA-256 不匹配/);
       await assert.rejects(access(path.join(directory, 'frontend')), { code: 'ENOENT' });
     }
     await rm(cache.path);
@@ -89,13 +92,13 @@ test('restored installers avoid network but remain size and digest verified befo
       assert.equal(options.redirect, 'error');
       return { ok: true, arrayBuffer: async () => bytes };
     };
-    await syncUpstream({ sevenzip }, directory);
+    await syncUpstream({ sevenzip, signatureCheck }, directory);
     assert.deepEqual(requests, [lock.installer.url]);
     assert.deepEqual(await readFile(cache.path), bytes);
     await rm(cache.path);
     await rm(path.join(directory, 'frontend'), { recursive: true });
     globalThis.fetch = async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('official connect timeout'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) }); };
-    await assert.rejects(syncUpstream({ sevenzip }, directory), error => error.message.includes(lock.installer.url) && error.message.includes('CN 安装包下载') && error.message.includes('第 3 次请求') && error.message.includes('UND_ERR_CONNECT_TIMEOUT'));
+    await assert.rejects(syncUpstream({ sevenzip, signatureCheck }, directory), error => error.message.includes(lock.installer.url) && error.message.includes('CN 安装包下载') && error.message.includes('第 3 次请求') && error.message.includes('UND_ERR_CONNECT_TIMEOUT'));
     await assert.rejects(access(cache.path), { code: 'ENOENT' });
     await assert.rejects(access(path.join(directory, 'frontend')), { code: 'ENOENT' });
   } finally {

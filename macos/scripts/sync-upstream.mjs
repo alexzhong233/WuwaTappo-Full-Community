@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -49,6 +51,67 @@ export function verifyInstaller(bytes, lock, profile = cn) {
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (sha256 !== lock.installer.sha256) throw new Error(`${profile.region} 安装包 SHA-256 不匹配，已停止构建。`);
   return { sha256, size: bytes.length };
+}
+
+// 官方安装包的代码签名身份：CN 是发行主体，CA 是 DigiCert 的 EV 代码签名中间证书。
+// 只认「谁签的」，不绑指纹——证书到期续期不该让构建挂掉，指纹变化只记日志。
+export const OFFICIAL_SIGNER = {
+  subject: 'CN=广州库洛数界科技有限公司',
+  issuer: 'DigiCert Trusted G4 Code Signing',
+};
+
+/// 从 osslsigncode 的输出里取出所有 Subject / Issuer。
+///
+/// 输出里这两项会出现多次（签名证书、时间戳证书），所以全部收集再判定，
+/// 不能只取第一行——时间戳证书的主体是时间戳服务，只取第一行会误杀。
+export function readSigner(text) {
+  const all = pattern => [...String(text).matchAll(pattern)].map(match => match[1].trim());
+  return {
+    subjects: all(/Subject\s*:\s*(.+)/g),
+    issuers: all(/Issuer\s*:\s*(.+)/g),
+  };
+}
+
+/// 断言签名来自官方发行方。调用前必须先过 osslsigncode 的链验证（退出码 0），
+/// 否则「主体名对得上但链不可信」的自签证书能混进来。
+export function assertOfficialSigner(text, expected = OFFICIAL_SIGNER) {
+  const { subjects, issuers } = readSigner(text);
+  if (!subjects.length) throw new Error('安装包里读不到签名主体，可能是未签名的包。');
+  const subject = subjects.find(value => value.includes(expected.subject));
+  if (!subject) throw new Error(`安装包签名主体不是官方发行方：${subjects.join(' | ')}`);
+  const issuer = issuers.find(value => value.includes(expected.issuer));
+  if (!issuer) throw new Error(`安装包签名证书不是官方 EV 签发：${issuers.join(' | ')}`);
+  return { subject, issuer };
+}
+
+/// 校验安装包的 Authenticode 签名。
+///
+/// 这是唯一独立于本仓库的可信依据：哈希由流水线自己算、自己写回锁，锁被改就一起通过；
+/// 签名由库洛私钥产生，镜像被换、锁被改都绕不过去。
+export function verifyPublisher(bytes, { execute = runOsslsigncode } = {}) {
+  const result = execute(bytes);
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  if (result.status !== 0) {
+    throw new Error(`官方安装包签名校验失败：${output.trim() || `退出码 ${result.status}`}`);
+  }
+  return assertOfficialSigner(output);
+}
+
+function runOsslsigncode(bytes) {
+  const work = mkdtempSync(path.join(tmpdir(), 'wuwatappo-sign-'));
+  try {
+    const file = path.join(work, 'setup.exe');
+    writeFileSync(file, bytes);
+    // 只读校验，绝不执行安装包。
+    const result = spawnSync('osslsigncode', ['verify', '-in', file], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    if (result.error?.code === 'ENOENT') {
+      throw new Error('缺少 osslsigncode，无法校验官方安装包签名（macOS: brew install osslsigncode）。');
+    }
+    if (result.error) throw result.error;
+    return result;
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
 }
 
 export function compareUpstream(current, latest) {
@@ -227,6 +290,9 @@ export async function syncUpstream(options = {}, projectRoot = root) {
     if (!comparison.changed) verifyInstaller(bytes, current, profile);
   }
   verifyInstaller(bytes, target, profile);
+  // 哈希只证明「和锁里记的是同一份字节」，不证明它来自官方——锁本身也会被流水线改写。
+  // 签名是唯一独立于本仓库的凭据，放在这个统一收口上，缓存、直连、镜像回退三条路都要过。
+  (options.signatureCheck || verifyPublisher)(bytes);
   const staging = await mkdtemp(path.join(work, `upstream-${profile.id}-`));
   const output = path.join(staging, 'frontend');
   const frontend = path.join(projectRoot, profile.frontendDir);
