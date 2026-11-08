@@ -62,7 +62,10 @@ def main():
     config = json.loads((payload/'package_config.json').read_text(encoding='utf-8-sig'))
     config.setdefault('region', region)
     version = installed_version(config)
-    target = project/'dist'/release_asset_name(config, version)
+    # 目标目录是仓库根的 dist：package-installer.ps1 的 $OutDir 就指这里，安装包 exe
+    # 和升级 zip 必须同目录（CI 也只收 dist/*），否则打包脚本第 315 行的 Test-Path 会红。
+    target = project.parent/'dist'/release_asset_name(config, version)
+    target.parent.mkdir(parents=True, exist_ok=True)
     manifest = make(payload, target)
     print(json.dumps({'archive': target.name, 'version': manifest['version'],
                       'files': len(manifest['files']),
