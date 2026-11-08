@@ -610,8 +610,20 @@ class Handler(BaseHTTPRequestHandler):
                 stream.write(json.dumps({'kind': 'asset_not_found', 'path': path}) + '\n')
         return self.respond(404, {'error': 'Not found'})
 
+    def read_body(self):
+        # 未读完请求体就 respond 并关连接，Windows 会给客户端回 RST（WinError 10053）。
+        # 分发前统一读一次并缓存，既保证连接干净，也避免各分支重复消费 socket。
+        if not hasattr(self, '_request_body'):
+            try:
+                length = int(self.headers.get('Content-Length', '0') or 0)
+            except ValueError:
+                length = 0
+            self._request_body = self.rfile.read(length) if 0 < length <= 65536 else b''
+        return self._request_body
+
     def do_POST(self):
         global ACTUAL_OFFLINE
+        self.read_body()
         if self.headers.get('Origin') not in [None,'http://tauri.localhost','https://tauri.localhost','tauri://localhost']:
             return self.respond(403, {'error':'App origin required'})
         if self.headers.get('X-Local-Token') != TOKEN:
@@ -636,7 +648,7 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 <= length <= 16384:
                     raise ValueError('Request too large')
-                body = json.loads(self.rfile.read(length) or b'{}')
+                body = json.loads(self.read_body() or b'{}')
                 if not isinstance(body, dict):
                     raise ValueError('Object required')
                 if path == '/custom/import':
@@ -656,7 +668,7 @@ class Handler(BaseHTTPRequestHandler):
             # update_required 挡掉开箱功能，这里整体停用，只保留健康回执。
             action = path.rsplit('/', 1)[-1]
             try:
-                self.rfile.read(int(self.headers.get('Content-Length', '0') or 0))
+                self.read_body()
             except Exception:
                 pass
             if action == 'healthy':
@@ -669,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 <= length <= 16384:
                     raise ValueError('Request too large')
-                body = json.loads(self.rfile.read(length) or b'{}')
+                body = json.loads(self.read_body() or b'{}')
                 if not isinstance(body, dict):
                     raise ValueError('Object required')
                 return self.respond(200, ASSISTANT.handle(path.rsplit('/', 1)[-1], body, ACTUAL_OFFLINE))
@@ -677,7 +689,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(400, {'error': str(error)})
         if urlparse(self.path).path == '/sync':
             try:
-                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))) or b'{}')
+                body = json.loads(self.read_body() or b'{}')
                 return self.respond(200, start_sync(body.get('force') is True))
             except Exception as error:
                 return self.respond(409, {'error': str(error)})
@@ -686,7 +698,7 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get('Content-Length', '0'))
                 if length > 8192:
                     raise ValueError('Diagnostic too large')
-                payload = json.loads(self.rfile.read(length))
+                payload = json.loads(self.read_body())
                 with LOCK, (ROOT / 'client_diagnostics.jsonl').open('a', encoding='utf-8') as stream:
                     stream.write(json.dumps(payload, ensure_ascii=False) + '\n')
                 return self.respond(200, {'ok': True})
@@ -698,7 +710,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', '0'))
             if length > 1024:
                 raise ValueError('Request too large')
-            body = json.loads(self.rfile.read(length))
+            body = json.loads(self.read_body())
             enabled = body['enabled']
             if not isinstance(enabled, bool):
                 raise ValueError('enabled must be boolean')
