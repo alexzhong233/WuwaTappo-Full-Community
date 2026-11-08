@@ -33,6 +33,9 @@
 /windows/build-global/
 /windows/dist/
 /windows/.venv/
+# 临时目录：从这里取 CI 产物、解包、试装。里面有 100MB 级安装包，
+# 一旦被 git add -A 带进来会让 push 直接被 GitHub 的 100MB 限制拒掉。
+/windows/.work/
 /windows/assets/
 /windows/runtime/
 /windows/cache/

@@ -161,14 +161,23 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     await d.listenJoin(async code=>{if(atlas.enabled.value){d.toast('本地全图鉴开启时无法进入联机');return;}if(!updateRequired.value)await d.join(code);});
     window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);});
   }
-  let dashGen=0,requestedTab='overview';
-  function closePanel(){dashGen++;dashboard?.close();dashboard=null;}
+  let dashGen=0,requestedTab='overview',lastTab='overview';
+  // 关面板时记下停在哪一页：右键「控制台」再打开时回到那一页，而不是永远回概览。
+  function closePanel(){dashGen++;if(dashboard)lastTab=dashboard.currentTab?.()||lastTab;dashboard?.close();dashboard=null;}
   async function deleteRoom(code){await ready;return (await request('delete-room',{code})).rooms||[];}
   // 「控制台」在支持面板页签的壳里是面板的一页（联机下方、设置上方）；
   // 壳没提供就退回桌宠窗口内的浮层，两种都拿到同一套界面。
-  async function openPanel(initialTab='overview'){
-    requestedTab=initialTab;
+  async function openPanel(initialTab){
+    // 浮层已经开着就直接切页聚焦，别关了重建（重建会闪一下，还会丢掉正在看的页）。
+    // 面板壳（macOS）那条路不能这么走：它要靠 openTab 把页签叫到前台。
+    if(!window.__WUWA_OPEN_PANEL_TAB__&&dashboard){
+      dashboard.showTab(initialTab||dashboard.currentTab?.()||lastTab);
+      dashboard.focus();
+      return;
+    }
+    // 先关再取：面板正开着时，「当前页」比「上次关面板那页」更准。
     closePanel();
+    requestedTab=initialTab=initialTab||lastTab;
     await ready;
     const openTab=window.__WUWA_OPEN_PANEL_TAB__;
     if(openTab){

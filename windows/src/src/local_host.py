@@ -21,12 +21,37 @@ if '--apply-update' in sys.argv:
 if '--self-check' in sys.argv:
     import ssl
     context = ssl.create_default_context()
-    print(json.dumps({'tls_ready':True,'hostname_verification':context.check_hostname,
-                      'certificate_verification':context.verify_mode == ssl.CERT_REQUIRED}),flush=True)
-    sys.exit(0)
+    report = {'tls_ready':True,'hostname_verification':context.check_hostname,
+              'certificate_verification':context.verify_mode == ssl.CERT_REQUIRED}
+    # 打字自动表情靠 UIA 判断焦点。comtypes 或它生成的类型库模块没进包时，探测会
+    # 恒返回 uia-unavailable——构建照样成功，用户只看到「焦点不在输入框」，查不出原因。
+    # 所以打包后立刻验一次「依赖能不能初始化」，不要求真有焦点（runner 上没有）。
+    try:
+        from text_focus import open_automation
+        open_automation().close()
+        report['text_focus_ready'] = True
+    except Exception as error:
+        report['text_focus_ready'] = False
+        report['text_focus_error'] = f'{type(error).__name__}: {error}'
+    print(json.dumps(report),flush=True)
+    if not report['text_focus_ready'] and os.environ.get('WUWA_SKIP_UIA_CHECK') == '1':
+        print('warn: UIA 自检失败，按 WUWA_SKIP_UIA_CHECK=1 放行', file=sys.stderr, flush=True)
+        sys.exit(0)
+    sys.exit(0 if report['text_focus_ready'] else 1)
 
 ROOT = Path(sys.executable if getattr(sys,'frozen',False) else __file__).resolve().parent
 CONFIG = json.loads((ROOT / 'local_config.json').read_text(encoding='utf-8-sig'))
+# 旧布局的 local_config.json 里没有 community_version（那是 1.3 才加的字段），
+# 而它只在安装器跑 initialize.ps1 时才合并进来。直接从构建目录启动、或者装的是
+# 覆盖式升级包时，这一项会一直缺着：底栏退回桌面助手的 mod_version（1.2），
+# 更新页的「当前安装版本」也永远停在「检测中」。这里从构建产物补一次，不动其它字段
+# （尤其 asset_count：package_config 里是 0，真实值在 local_config 与 cache 里）。
+if not CONFIG.get('community_version'):
+    try:
+        CONFIG['community_version'] = json.loads(
+            (ROOT / 'package_config.json').read_text(encoding='utf-8-sig')).get('community_version') or ''
+    except (OSError, ValueError):
+        pass
 PORT = CONFIG['port']
 TOKEN = CONFIG['token']
 ASSISTANT = Assistant(ROOT, physical=PhysicalInput())

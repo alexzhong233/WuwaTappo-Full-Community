@@ -87,7 +87,7 @@ function createAssistantDashboard(d){
   el('span','关闭面板后，后台任务继续运行',footer);const version=button('v'+d.version+' · 检查更新',footer,()=>showTab('update'));
   // 底栏版本号统一取本仓库发布号：Windows 侧的 d.version 是上游 MOD 版本（1.2），
   // 和设置页「全图鉴版本」不是同一个号，直接显示会和 Mac 对不上。
-  d.atlas.request('/community/version',{}).then(r=>{if(r&&r.current)version.textContent='v'+r.current+' · 检查更新';}).catch(()=>{});
+  d.atlas.request('/community/version',{}).then(r=>{if(r&&r.current)version.textContent='v'+r.current+' · 检查更新';else version.textContent='版本未知 · 检查更新';}).catch(()=>{version.textContent='版本未知 · 检查更新';});
   const notice=el('div','',header,'wt-notice');
   const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['mods','Mod 管理'],['update','更新'],['settings','设置']],navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
@@ -226,7 +226,8 @@ function createAssistantDashboard(d){
       const actions=el('div',undefined,u,'wt-controls');
       button('打开 GitHub Releases',actions,openReleases);
       button('打开官方桌宠下载页',actions,openPetSite,'wt-primary');
-      d.atlas.request('/community/version',{}).then(r=>{if(r.current)modValue.textContent=r.current;}).catch(()=>{modValue.textContent=d.version||'未知';});
+      // 拿不到发布号就说「未知」，不要一直挂着「检测中」——那看着像还在等网络。
+      d.atlas.request('/community/version',{}).then(r=>{modValue.textContent=r.current||'未知';}).catch(()=>{modValue.textContent=d.version||'未知';});
       d.atlas.request('/official/update-check',{}).then(paintOfficial).catch(()=>{baseValue.textContent='未知';updates.textContent='无法读取官方基底版本；不影响全图鉴版本检查。';});
       // 官方清单偶尔会落后于我们已整合的基底（CDN 缓存或发布节奏差），
       // 这时说「已是最新（旧号）」会让人以为检查坏了，改成把两个号都摆出来。
@@ -285,6 +286,8 @@ function createAssistantDashboard(d){
           const r=await d.atlas.request('/update/status',{});
           paintInstall(r.installation);
           if(r.github_version){remoteValue.textContent=r.github_version;modValue.textContent=r.current||modValue.textContent;}
+          // 还没联网检查过、或上次检查没留下结果时，别把「检测中…」永远挂在页面上。
+          else if(remoteValue.textContent==='检测中…')remoteValue.textContent='未检查';
           paintNotes(r.release_notes);
           // 打开更新页时补一次联网检查，否则 release_notes 和远端版本号都是空的。
           if(!r.checked_at&&!installChecked){installChecked=true;d.atlas.request('/update/check',{}).then(pollInstall).catch(()=>{});}
@@ -348,5 +351,5 @@ function createAssistantDashboard(d){
   function paint(){if(!value||closed||pending)return;setBadge();renderView();}
   async function refresh(){if(closed||refreshing||pending)return;refreshing=true;try{const next=await d.getState();if(!pending){value=next;paint();}}catch(e){notice.textContent='连接失败：'+e.message;}finally{refreshing=false;}}
   showTab(tabs.some(([key])=>key===d.initialTab)?d.initialTab:'overview');refresh();checkOfficialNotice();officialTimer=window.setInterval(checkOfficialNotice,8*3600*1000);timer=window.setInterval(refresh,2000);root.focus();
-  return {close,focus:()=>root.focus(),showTab:key=>{if(tabs.some(([name])=>name===key))showTab(key);}};
+  return {close,focus:()=>root.focus(),showTab:key=>{if(tabs.some(([name])=>name===key))showTab(key);},currentTab:()=>tab};
 }

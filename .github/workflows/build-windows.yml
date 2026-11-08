@@ -45,6 +45,13 @@ jobs:
         with:
           python-version: '3.13'
 
+      # 前端只有 shared/frontend/ 一份源，两侧副本（含 windows/src/src/*.js）由
+      # scripts/sync-frontend.mjs 生成。副本落后时 Windows 包会带着旧界面发出去。
+      # macOS 工作流的 npm test 里有这道检查，但本工作流能单独触发（workflow_dispatch
+      # 与 release 都会直接调它），所以这里也得挡一次。
+      - name: Verify frontend copies are in sync
+        run: node scripts/sync-frontend.mjs --check
+
       # 注入器与本地服务都是 Python，Mod 相关测试只依赖标准库，十几秒跑完。
       # 放在下载官方安装包之前，坏掉时不必等十分钟。
       # 只跑 test_custom* / test_community* / test_inject*：其余测试依赖 psutil 与本机
