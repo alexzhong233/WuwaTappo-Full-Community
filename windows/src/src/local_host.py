@@ -8,7 +8,7 @@ import urllib.request
 from sync_cache import sync as sync_public_cache
 from desktop_assistant import Assistant, PhysicalInput
 from desktop_updater import Updater, apply_update
-from custom_resources import install_archive, list_packs, merge_official, remove_pack
+from custom_resources import install_archive, list_details, list_packs, merge_official, remove_pack
 
 if '--apply-update' in sys.argv:
     pos = sys.argv.index('--apply-update')
@@ -326,6 +326,7 @@ def cache_summary():
 READY = cache_ready()
 ACTUAL_OFFLINE = False
 SYNC = {'status': 'idle', 'done': 0, 'total': 0, 'checked_at': 0}
+CUSTOM_ERROR = None
 
 
 def _region_code():
@@ -342,6 +343,26 @@ def official_bundle():
 def custom_bundles():
     with CUSTOM_LOCK:
         return list_packs(CUSTOM_ROOT, _region_code())
+
+
+def custom_details():
+    with CUSTOM_LOCK:
+        return list_details(CUSTOM_ROOT, _region_code())
+
+
+def merged_bundle():
+    """Mod 叠加失败时降级返回官方数据，不让本地图鉴整体不可用。"""
+    global CUSTOM_ERROR
+    official = official_bundle()
+    try:
+        with CUSTOM_LOCK:
+            data = merge_official(official, custom_bundles())
+        CUSTOM_ERROR = None
+        return data
+    except Exception as error:
+        CUSTOM_ERROR = str(error)
+        official['atlas_count'] = len(official['atlas'])
+        return official
 
 
 def resources_ready():
@@ -432,20 +453,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/sync/status':
             return self.respond(200, dict(SYNC))
         if path == '/custom/status':
-            packs = custom_bundles()
+            packs = custom_details()
             info = {'installed': bool(packs), 'enabled': ACTUAL_OFFLINE, 'name': '、'.join(pack['name'] for pack in packs),
                     'atlas_count': sum(pack['item_count'] for pack in packs),
                     'asset_count': sum(pack['asset_count'] for pack in packs),
-                    'packs': [{'id': pack['id'], 'name': pack['name'], 'item_count': pack['item_count'],
-                               'asset_count': pack['asset_count']} for pack in packs],
-                    'region': _region_code()}
+                    'packs': packs, 'region': _region_code(), 'error': CUSTOM_ERROR}
             return self.respond(200, info)
         if path == '/offline-data':
             if not resources_ready():
                 return self.respond(409, {'error': '本地素材还在准备中，请等同步完成后再开启本地图鉴'})
-            with CUSTOM_LOCK:
-                data = merge_official(official_bundle(), custom_bundles())
-            return self.respond(200, data)
+            return self.respond(200, merged_bundle())
         if path.startswith('/custom-assets/'):
             relative = unquote(path.removeprefix('/custom-assets/'))
             parts = relative.split('/')

@@ -84,6 +84,12 @@ test('assistant chest timers bind to the official readiness computations after m
 test('prepared appearance renderers preserve local Mod image URLs', integratedOnly, async () => {
   const structure = JSON.parse(await readFile(new URL('../build/fullatlas-adapter/base/js_structure.json', import.meta.url), 'utf8'));
   const source = await readFile(new URL(`../build/frontend/assets/${structure.shared}`, import.meta.url), 'utf8');
+  assert.match(
+    source,
+    /customAssetUrl: \(reference, file\) => window\.__TAURI_INTERNALS__\.convertFileSrc\(file\)/,
+    '注入器必须把本地图片解析方式交给共享控制器，否则 Mod 图片无处可寻',
+  );
+  assert.match(source, /if \(!paths \|\| !Object\.keys\(paths\)\.length\) return data\.catalog;/, '没有覆盖项时不应该克隆整份 catalog');
   const ast = parse(source, { sourceType: 'module', ecmaVersion: 'latest' });
   const functions = new Set(['resolveAppearanceAssetUrl', 'resolveAppearanceAssetDisplayUrl', 'resolveAppearanceAtlasUrl']);
   const declarations = ast.body.filter(node => node.type === 'FunctionDeclaration' && functions.has(node.id.name));

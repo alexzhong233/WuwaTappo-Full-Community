@@ -70,7 +70,7 @@ shared = replace(shared, 'this.instance.interceptors.request.use(t => {', '''thi
 controller = (PROJECT / 'src/local_atlas_controller.js').read_text(encoding='utf-8')
 init = controller + '\nconst localAtlasController = createLocalAtlasController({\n' + \
     'ref, window, storage: localStorage, origin: ' + json.dumps(f'http://127.0.0.1:{config["port"]}') + ',\n' + \
-    'token: null' + ''', normalizeAtlasList, resolvePetAssetIdFromAppearanceId, getAppearanceAssetById,
+    'token: null, customAssetUrl: reference => ' + json.dumps(f'http://127.0.0.1:{config["port"]}') + ' + "/" + reference.split("/").map(encodeURIComponent).join("/")' + ''', normalizeAtlasList, resolvePetAssetIdFromAppearanceId, getAppearanceAssetById,
 snapshotCatalog: () => ({assets: appearanceAssetCatalog.value, atlases: appearanceAtlasCatalog.value, host: loadedAssetsHost, ts: loadedAssetsJsonTs}),
 getAccountCumulative: () => globalStore.userInfo ? isFrozenClickCount(globalStore.serverClickTotal) ? globalStore.serverClickTotal : clampClickCountSum(globalStore.serverClickTotal+globalStore.localClickCount) : parseSafeClickCount(globalStore.localClickCount),
 getAccountPending: () => parseSafeClickCount(globalStore.localClickCount),

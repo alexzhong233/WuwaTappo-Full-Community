@@ -31,11 +31,21 @@ for (const platform of ['macos', 'windows']) {
       }
       return { catalog, atlas, atlas_count: atlas.length, customAssetPaths: backend.installed ? { [reference]: localPath } : {} };
     }
-    function open() {
+    function open(options = {}) {
       const listeners = new Map();
       let applied = structuredClone(account);
+      const marks = new Set();
       const win = {
         location: { href: 'tauri://localhost/', origin: 'tauri://localhost' },
+        document: {
+          documentElement: {
+            setAttribute: name => marks.add(name), removeAttribute: name => marks.delete(name),
+            hasAttribute: name => marks.has(name),
+          },
+          getElementById: () => null,
+          createElement: () => ({ set textContent(value) {}, append() {} }),
+          head: { append() {} },
+        },
         fetch: async (url, options) => ({ ok: true, json: () => request(new URL(url).pathname, options?.body ? JSON.parse(options.body) : undefined) }), navigator: {},
         __TAURI_INTERNALS__: { convertFileSrc: path => 'asset://localhost/' + encodeURIComponent(path) },
         addEventListener: (name, callback) => listeners.set(name, callback),
@@ -62,6 +72,9 @@ for (const platform of ['macos', 'windows']) {
           },
         },
         request,
+        customAssetUrl: options.sharedDefault ? undefined : (platform === 'macos'
+          ? (reference, file) => 'asset://localhost/' + encodeURIComponent(file)
+          : reference => 'http://127.0.0.1:43229/' + reference.split('/').map(encodeURIComponent).join('/')),
         normalizeAtlasList: value => value,
         resolvePetAssetIdFromAppearanceId: id => Object.values(applied).find(group => group[id]?.height_light_id)?.[id].height_light_id ?? id,
         getAppearanceAssetById: id => ['character_skin', 'accessory', 'emote'].map(kind => applied[kind][id]).find(Boolean),
@@ -70,7 +83,7 @@ for (const platform of ['macos', 'windows']) {
         onError: error => { throw error; },
       });
       windows.push(listeners);
-      return { controller, catalog: () => applied };
+      return { controller, win, catalog: () => applied };
     }
     return { open, backend, values };
   }
@@ -86,6 +99,7 @@ for (const platform of ['macos', 'windows']) {
     assert.equal(first.controller.inventory([], bag).length, 4);
     const expectedURL = platform === 'macos' ? 'asset://localhost/' + encodeURIComponent(localPath) : 'http://127.0.0.1:43229/' + reference.split('/').map(encodeURIComponent).join('/');
     assert.equal(first.catalog().character_skin[1000000001].url, expectedURL);
+    assert.equal(first.win.document.documentElement.hasAttribute('data-wuwa-mod'), true, '本地模式下才挂 Mod 标记');
     assert.equal(first.catalog().character_skin[1000000001].body1.url, expectedURL);
     assert.equal(first.catalog().character_skin[1].url, account.character_skin[1].url);
     assert.equal(first.controller.offlineData.value.catalog.character_skin[1000000001].url, reference, 'runtime conversion leaves raw data intact');
@@ -106,6 +120,7 @@ for (const platform of ['macos', 'windows']) {
       assert.equal(user.emote.length, 0);
     }
     await first.controller.setEnabled(false);
+    assert.equal(first.win.document.documentElement.hasAttribute('data-wuwa-mod'), false, '官方模式不能留 Mod 标记');
     assert.equal(first.controller.viewUser(officialUser), officialUser);
     assert.equal(first.controller.inventory([], bag), bag);
     assert.equal(JSON.stringify(first.catalog()), JSON.stringify(account));
@@ -123,5 +138,15 @@ for (const platform of ['macos', 'windows']) {
     assert.equal(JSON.stringify(controller.offlineData.value), before);
     assert.equal(controller.inventory([], []).length, officialAtlas.length);
     controller.dispose();
+  });
+
+  test(platform + ': 注入器没有提供 customAssetUrl 时不拼出必然 404 的地址', async () => {
+    const app = harness(), opened = app.open({ sharedDefault: true });
+    await opened.controller.ready;
+    app.backend.installed = true;
+    await opened.controller.setEnabled(true);
+    assert.equal(opened.controller.assetUrl(reference), '', '缺省实现只能放弃这张图，不能猜地址');
+    assert.equal(opened.catalog().character_skin[1000000001].url, '', 'catalog 同样不能带坏地址');
+    opened.controller.dispose();
   });
 }

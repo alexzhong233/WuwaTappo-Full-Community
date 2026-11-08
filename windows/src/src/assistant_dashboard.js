@@ -24,6 +24,14 @@ function assistantUi(window) {
     .wt-setting{padding:13px 0;display:flex;gap:20px;justify-content:space-between;align-items:center;border-bottom:1px solid #f2efe9}.wt-setting:last-child{border:0}.wt-console input[type=checkbox]{appearance:none;flex-shrink:0;width:38px;height:22px;background:#d7d3ca;border:0;border-radius:15px;position:relative;cursor:pointer}.wt-console input[type=checkbox]:after{content:'';display:block;background:white;box-shadow:0 1px 3px #0002;width:16px;height:16px;border-radius:50%;position:absolute;top:3px;left:3px;transition:transform .15s}.wt-console input[type=checkbox]:checked{background:#b8965a}.wt-console input[type=checkbox]:checked:after{transform:translateX(16px)}
     .wt-console input[type=number]{font:inherit;color:var(--ink);width:112px;border:1px solid var(--line);padding:6px 10px;border-radius:8px;background:#faf9f7}.wt-chart{display:flex;gap:14px;align-items:flex-end;height:180px;margin:20px 0 8px}.wt-column{flex:1;min-width:0;text-align:center;font-size:11px;color:var(--muted)}.wt-bar{margin:5px auto;background:#ddc292;border-radius:5px 5px 2px 2px;width:70%}.wt-empty{padding:28px 10px;text-align:center;color:var(--muted);font-size:12px}
     .wt-console footer{padding:10px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:11px;color:var(--muted);background:#faf9f6;flex-shrink:0}.wt-console footer button{font-size:11px;padding:4px 10px;min-height:28px}.wt-notice{font-size:12px;color:#9c6c32;padding:6px 0;min-height:20px}
+    .wt-mod-pack{border:1px solid #efe9df;border-radius:13px;padding:12px 14px;margin-top:12px;background:#fdfcfa}
+    .wt-mod-pack strong{font-size:13px;font-weight:650}
+    .wt-console .wt-mod-remove{font-size:11px;padding:4px 10px;min-height:28px}
+    .wt-mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:10px;margin-top:12px}
+    .wt-mod-item{text-align:center;min-width:0}
+    .wt-mod-thumb{width:100%;aspect-ratio:1;object-fit:contain;background:#f4f1ea;border:1px solid #ece6da;border-radius:10px;display:block}
+    .wt-mod-item span{display:block;font-size:11px;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .wt-mod-type{font-style:normal;font-size:10px;color:var(--muted)}
     .wt-gate{position:fixed;inset:0;z-index:2147483500;background:#f7f4ee;display:grid;place-items:center;padding:16px;overflow:auto}.wt-gate article{max-width:480px;width:100%;padding:24px;background:white;border:1px solid var(--line);border-radius:18px;box-shadow:0 10px 30px #0001}.wt-gate h2{font-size:22px}.wt-gate p{margin:12px 0;font-size:13px}.wt-gate .wt-controls{display:flex;flex-wrap:wrap;gap:8px}
     @media(max-width:680px){.wt-stats{grid-template-columns:repeat(2,1fr)}.wt-content{padding:14px}.wt-console header{padding:16px 16px 10px}.wt-console nav{padding:0 14px 10px}.wt-console footer{padding:10px 14px}.wt-progress-grid{gap:14px}.wt-speeds{gap:6px}.wt-console .wt-speed{padding:8px}}
     `;
@@ -62,7 +70,7 @@ function createAssistantDashboard(d){
   const nav=el('nav',undefined,root),content=el('main',undefined,root,'wt-content'),footer=el('footer',undefined,root);
   el('span','关闭面板后，后台任务继续运行',footer);const version=button('v'+d.version+' · 检查更新',footer,()=>showTab('settings'));
   const notice=el('div','',header,'wt-notice');
-  const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['settings','设置与更新']],navButtons={};
+  const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['mods','Mod 管理'],['settings','设置与更新']],navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
   const fmt=n=>Number(n||0).toLocaleString('zh-CN');
   function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);root.remove();d.onClose?.();}
@@ -113,6 +121,64 @@ function createAssistantDashboard(d){
     }else if(key==='rooms'){
       const c=card();el('h3','去过的房间',c);el('p','成功进入后记录房间号与房主，收藏后置顶。本地全图鉴开启时不能进入联机。',c,'wt-muted');const list=el('div',undefined,c);
       renderView=()=>{list.replaceChildren();if(!value.rooms?.length)el('div','还没有房间历史',list,'wt-empty');for(const room of value.rooms||[]){const row=el('div',undefined,list,'wt-log');button(room.favorite?'★':'☆',row,async()=>{try{await d.favorite(room.code,!room.favorite);await refresh();}catch(e){notice.textContent=e.message;}});const join=button(room.code+' · '+(room.host||'未知房主'),row,()=>d.join(room.code).catch(e=>{notice.textContent=e.message;}));join.disabled=d.atlas.enabled.value||value.update_required;button('删除记录',row,async()=>{try{await d.deleteRoom(room.code);await refresh();}catch(e){notice.textContent=e.message;}});}};
+    }else if(key==='mods'){
+      const hero=card(content,'warm');el('h3','外观模式');const modeText=el('p','正在读取外观模式…',hero,'wt-muted');
+      const modeActions=el('div',undefined,hero,'wt-controls');
+      const toOfficial=button('官方（只用账号背包）',modeActions,()=>switchMode(false)),toCustom=button('全图鉴 + Mod',modeActions,()=>switchMode(true),'wt-primary');
+      const tools=card();el('h3','已安装的资源包',tools);const summary=el('p','正在读取…',tools,'wt-muted');
+      const actions=el('div',undefined,tools,'wt-controls');
+      const importPack=button('导入 Mod ZIP',actions,importArchive,'wt-primary');button('重新扫描',actions,()=>refreshPacks());
+      const list=el('div',undefined,tools);
+      async function switchMode(on){
+        toOfficial.disabled=toCustom.disabled=true;
+        try{await d.atlas.setEnabled(on);notice.textContent=on?'已切换到全图鉴 + Mod':'已切换到官方模式';}
+        catch(e){notice.textContent='切换失败：'+e.message;}
+        finally{paintMode();}
+      }
+      function paintMode(){
+        const on=d.atlas.enabled.value;
+        modeText.textContent=on?'当前：全图鉴 + Mod —— 本机资源包会出现在背包和图鉴里':'当前：官方模式 —— 背包只显示账号已拥有的物品，本机 Mod 不参与';
+        toOfficial.disabled=d.atlas.busy.value||!on;
+        toCustom.disabled=d.atlas.busy.value||on||!d.atlas.cacheReady.value;
+      }
+      async function importArchive(){
+        importPack.disabled=true;
+        try{
+          const path=await window.__TAURI_INTERNALS__.invoke('plugin:dialog|open',{options:{multiple:false,directory:false,filters:[{name:'Mod 资源包',extensions:['zip']}]}});
+          if(!path)return;
+          const result=await d.atlas.importCustomResources(path);
+          notice.textContent='已导入 '+result.name+' · '+result.item_count+' 项';
+          await refreshPacks();
+        }catch(e){notice.textContent='导入失败：'+e.message;}
+        finally{importPack.disabled=false;}
+      }
+      async function refreshPacks(){
+        try{
+          await d.atlas.prepare().catch(()=>{});
+          const r=await d.atlas.request('/custom/status');
+          const packs=r.packs||[];
+          list.replaceChildren();
+          summary.textContent=packs.length?('共 '+packs.length+' 个包 · '+r.atlas_count+' 项 · '+r.asset_count+' 张图片'):'还没有导入资源包。没有 Mod 时「全图鉴 + Mod」等同于原有全图鉴。';
+          if(r.error)el('p','Mod 叠加失败，已回退到官方图鉴：'+r.error,list,'wt-muted');
+          if(!packs.length)el('div','点上方「导入 Mod ZIP」选择资源包；格式见 macos/docs/MODS.md',list,'wt-empty');
+          for(const pack of packs){
+            const box=el('div',undefined,list,'wt-mod-pack'),head=el('div',undefined,box,'wt-row wt-between');
+            const title=el('div',undefined,head);el('strong',pack.name,title);
+            el('div',(pack.item_count||0)+' 项 · '+(pack.asset_count||0)+' 张图片'+(pack.region&&pack.region!=='ANY'?' · '+pack.region:''),title,'wt-muted');
+            button('移除',head,async()=>{try{await d.atlas.removeCustomResource(pack.id);notice.textContent='已移除 '+pack.name;await refreshPacks();}catch(e){notice.textContent='移除失败：'+e.message;}},'wt-mod-remove');
+            const grid=el('div',undefined,box,'wt-mod-grid');
+            for(const item of pack.items||[]){
+              const cell=el('div',undefined,grid,'wt-mod-item'),src=d.atlas.assetUrl(item.icon);
+              if(src){const img=el('img',undefined,cell,'wt-mod-thumb');img.src=src;img.alt=item.name;img.loading='lazy';}
+              else el('div',undefined,cell,'wt-mod-thumb');
+              el('span',item.name,cell);el('em',item.type==='character'?'角色':item.type==='accessory'?'挂饰':'表情',cell,'wt-mod-type');
+            }
+          }
+          paintMode();
+        }catch(e){notice.textContent='读取 Mod 列表失败：'+e.message;}
+      }
+      paintMode();refreshPacks();
+      renderView=paintMode;
     }else{
       const c=card();el('h3','自动化设置',c);const fields={};
       for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
@@ -122,48 +188,10 @@ function createAssistantDashboard(d){
       const u=card();el('h3','官方基底监控',u);el('p','每 8 小时检查一次 Kuro 官方版本。发现新版本后可以打开本项目 Releases，或把经过官方 HTTPS、区域和文件名校验的原始 Windows 安装包下载到 Downloads。全图鉴适配只在检测到完整维护环境时提供。',u,'wt-muted');const updates=el('p','当前基底 检测中…',u),tip=el('p','',u,'wt-muted'),actions=el('div',undefined,u,'wt-controls'),releases=button('打开 GitHub Releases',actions,async()=>{try{const r=await d.atlas.request('/official/releases',{});if(!r.ok)throw new Error(r.error||'打开失败');}catch(e){tip.textContent=e.message;}}),download=button('下载官方原包',actions,async()=>{download.disabled=true;tip.textContent='正在下载官方原包…';try{const r=await d.atlas.request('/official/download',{});if(!r.ok)throw new Error(r.error||'下载失败');tip.textContent=r.message;}catch(e){tip.textContent=e.message;}finally{download.disabled=false;}},'wt-primary'),mgr=button('本地适配并打补丁（维护环境）',actions,async()=>{try{const r=await d.atlas.request('/official/manager',{});if(!r.ok)throw new Error(r.error||'启动失败');tip.textContent='已启动更新管理器。更新前请先完全退出游戏。';}catch(e){tip.textContent=e.message;}}),check=button('检查官方版本',actions,async()=>{check.disabled=true;updates.textContent='正在查询官方版本…';try{const r=await d.atlas.request('/official/check',{});paintOfficial(r);}catch(e){updates.textContent='检查失败';tip.textContent=e.message;}finally{check.disabled=false;}});download.disabled=true;mgr.style.display='none';function paintOfficial(r){updates.textContent=r.remote?('本地基底 '+r.local+' · 官方最新 '+r.remote):('本地基底 '+r.local);tip.textContent=r.message;download.disabled=!r.newer||!r.download_available;mgr.style.display=r.newer&&r.local_adaptation_supported?'':'none';}updates.style.margin='12px 0';tip.style.margin='0 0 10px';d.atlas.request('/official/check',{}).then(paintOfficial).catch(()=>{updates.textContent='当前基底 未检测';});
       const sync=card();el('h3','本地图鉴资源',sync);el('p','本地开关只影响物品展示与本机装扮，登录、点数、开箱和版本检查仍使用原账号。',sync,'wt-muted');button('检查并同步官方图鉴',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'官方图鉴资源正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});
       const custom=card();el('h3','外观模式与 Mod',custom);
-      el('p','官方模式使用账号背包；全图鉴 + Mod 保留完整离线图鉴，并叠加本机导入的角色、挂饰和表情。没有 Mod 时仍可使用全图鉴。',custom,'wt-muted');
-      el('p','ZIP 只需名称、资源类型和图片路径，ID 由应用管理。同名资源包再次导入会更新该包。',custom,'wt-muted');
-      const resourceStatus=el('p','正在读取外观模式…',custom,'wt-muted'),sourceActions=el('div',undefined,custom,'wt-controls');
-      async function switchAppearance(on){
-        official.disabled=customSource.disabled=true;
-        try{await d.atlas.setEnabled(on);await refreshResourceStatus();}
-        catch(e){notice.textContent='切换失败：'+e.message;}
-        finally{paintResourceMode();}
-      }
-      const official=button('官方',sourceActions,()=>switchAppearance(false)),customSource=button('全图鉴 + Mod',sourceActions,()=>switchAppearance(true));
-      const importPack=button('导入 Mod ZIP',sourceActions,async()=>{
-        importPack.disabled=true;
-        try{
-          const path=await window.__TAURI_INTERNALS__.invoke('plugin:dialog|open',{options:{multiple:false,directory:false,filters:[{name:'Mod 资源包',extensions:['zip']}]}});
-          if(!path)return;
-          const result=await d.atlas.importCustomResources(path);
-          await refreshResourceStatus();notice.textContent='已导入 '+result.name+' · '+result.item_count+' 项';
-        }catch(e){notice.textContent='导入失败：'+e.message;}
-        finally{importPack.disabled=false;}
-      });
-      const packList=el('div',undefined,custom,'wt-mod-list');
-      function paintResourceMode(){
-        const on=d.atlas.enabled.value;
-        official.disabled=d.atlas.busy.value||!on;
-        customSource.disabled=d.atlas.busy.value||on||!d.atlas.cacheReady.value;
-        official.setAttribute('aria-pressed',String(!on));customSource.setAttribute('aria-pressed',String(on));
-        resourceStatus.textContent=(on?'当前：全图鉴 + Mod':'当前：官方（账号背包）')+(d.atlas.cacheReady.value?'':' · 官方图鉴素材尚未准备好，请先同步');
-      }
-      async function refreshResourceStatus(){
-        try{
-          const r=await d.atlas.request('/custom/status');
-          packList.replaceChildren();
-          if(!r.packs?.length)el('p','还没有导入 Mod，可先使用原有全图鉴。',packList,'wt-muted');
-          for(const pack of r.packs||[]){
-            const row=el('div',undefined,packList,'wt-log');el('span',pack.name+' · '+pack.item_count+' 项',row);
-            const remove=button('移除',row,async()=>{remove.disabled=true;try{await d.atlas.removeCustomResource(pack.id);await refreshResourceStatus();}catch(e){notice.textContent='移除失败：'+e.message;remove.disabled=false;}});
-          }
-          paintResourceMode();
-        }catch(e){notice.textContent='读取 Mod 列表失败：'+e.message;}
-      }
-      refreshResourceStatus();
-      renderView=()=>{paintResourceMode();for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox')input.checked=!!value.settings[k];else input.value=value.settings[k];}};
+      el('p','「全图鉴 + Mod」使用完整离线图鉴并叠加本机导入的角色、挂饰和表情；官方模式只用账号背包，不会显示任何本机资源。',custom,'wt-muted');
+      el('p','导入、移除与缩略图预览都在「Mod 管理」里。ZIP 只需名称、类型和图片路径，ID 由应用管理。',custom,'wt-muted');
+      button('打开 Mod 管理',custom,()=>showTab('mods'));
+      renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox')input.checked=!!value.settings[k];else input.value=value.settings[k];}};
     }
     if(value)paint();
   }

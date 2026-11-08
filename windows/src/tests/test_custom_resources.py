@@ -78,6 +78,8 @@ class CustomResourcesTests(unittest.TestCase):
         self.assertTrue(all(asset_id >= resources.MIN_GENERATED_ID for asset_id in custom_ids))
         self.assertTrue(set(custom_ids).isdisjoint({42, 43}))
         self.assertEqual(len({row['asset_code'] for row in merged['atlas'][1:]}), 4)
+        # 背包用它当缩略图容器 class（atlas-thumb--mod），也是唯一的 Mod 视觉标记。
+        self.assertEqual({row['rarity'] for row in merged['atlas'][1:]}, {'MOD'})
 
     def test_ids_are_stable_across_loads_and_pack_order(self):
         one, two = self.root / 'one', self.root / 'two'
@@ -195,6 +197,55 @@ class CustomResourcesTests(unittest.TestCase):
         del official['catalog']['emote']
         with self.assertRaises(ValueError):
             resources.merge_official(official, [resources.inspect_bundle(pack_root, 'CN')])
+
+    def test_no_mods_is_a_pure_passthrough_even_for_odd_official_data(self):
+        # 没有装 Mod 时，Mod 层不该成为基础功能的失败点：官方目录缺分类也照原样返回。
+        official = empty_official()
+        del official['catalog']['emote']
+        passthrough = resources.merge_official(official, [])
+        self.assertEqual(passthrough['catalog'], official['catalog'])
+        self.assertEqual(passthrough['atlas_count'], 1)
+        self.assertNotIn('customAssetPaths', passthrough)
+        self.assertNotIn('custom_resources', passthrough)
+
+    def test_details_expose_icon_references_for_the_management_panel(self):
+        write_pack(self.root / 'mod-id', 'creator')
+        details = resources.list_details(self.root, 'CN')
+        self.assertEqual(len(details), 1)
+        pack = details[0]
+        self.assertEqual(pack['item_count'], len(pack['items']))
+        self.assertGreaterEqual(pack['asset_count'], pack['item_count'])
+        for item in pack['items']:
+            self.assertIn(item['type'], ('character', 'accessory', 'emote'))
+            self.assertTrue(item['icon'].startswith('custom-assets/%s/' % pack['id']), item['icon'])
+            self.assertNotIn('..', item['icon'])
+        character = next(item for item in pack['items'] if item['type'] == 'character')
+        self.assertTrue(character['icon'].endswith('.png'))
+
+    def test_missing_action_frames_fall_back_to_the_base_layer(self):
+        # 只给 body1/head1 的角色也要能切换动作帧：渲染器缺帧时会拿到空 URL，
+        # 表现为每 5 秒眨眼时头部闪一下、拖动时身体消失。
+        write_pack(self.root / 'minimal', 'minimal')
+        merged = resources.merge_official(
+            empty_official(), [resources.inspect_bundle(self.root / 'minimal', 'CN')])
+        hero = merged['catalog']['character_skin'][str(next(
+            int(key) for key in merged['catalog']['character_skin'] if int(key) >= resources.MIN_GENERATED_ID))]
+        for action in ('body2', 'body3'):
+            self.assertEqual(hero[action]['url'], hero['body1']['url'], action)
+        self.assertEqual(hero['head2']['url'], hero['head1']['url'])
+
+    def test_supplied_action_frames_are_kept(self):
+        items = [{'type': 'character', 'name': '会动', 'assets': {
+            'body1': 'assets/character/body.png', 'head1': 'assets/character/head.png',
+            'body2': 'assets/character/body_2.png', 'head2': 'assets/character/head_2.png'}}]
+        write_pack(self.root / 'animated', 'animated', items)
+        merged = resources.merge_official(
+            empty_official(), [resources.inspect_bundle(self.root / 'animated', 'CN')])
+        hero = next(value for value in merged['catalog']['character_skin'].values()
+                    if 'body1' in value)
+        self.assertIn('body_2', hero['body2']['url'])
+        self.assertIn('head_2', hero['head2']['url'])
+        self.assertEqual(hero['body3']['url'], hero['body1']['url'], '没给 body3 时回退到 body1')
 
 
 if __name__ == '__main__':

@@ -15,6 +15,12 @@ function createLocalAtlasController(d) {
   const sockets = new Set(), xhrs = new Set(), fetches = new Set();
   const rawFetch = d.window.fetch.bind(d.window);
   const origin = d.origin;
+  // 本地图片怎么变成可加载 URL 是平台差异：Mac 只能走 asset: 协议（要绝对路径），
+  // Windows 走本机 HTTP（只用 reference，避免把用户主目录拼进 URL）。
+  // 由各自注入器提供；漏了就给空串，宁可这张图不显示，也不拼出一个必然 404 的地址。
+  const customAssetUrl = typeof d.customAssetUrl === 'function'
+    ? d.customAssetUrl
+    : reference => (/^https?:/i.test(String(reference || '')) ? reference : '');
   const offlineError = () => new Error('本地全图鉴已开启：不能进入联机或把本地图鉴外观写入账号。真实点击和开箱正常。');
   const read = () => { try { return JSON.parse(d.storage.getItem(KEY) || '{}'); } catch { return {}; } };
   const remote = value => {
@@ -138,19 +144,48 @@ function createLocalAtlasController(d) {
     return offlineData.value;
   }
   function runtimeCatalog(data) {
-    if (!data.customAssetPaths) return data.catalog;
+    const paths = data.customAssetPaths;
+    if (!paths || !Object.keys(paths).length) return data.catalog;
     const catalog = JSON.parse(JSON.stringify(data.catalog));
-    const convert = path => d.window.__TAURI_INTERNALS__.convertFileSrc(path);
     function visit(value) {
       if (Array.isArray(value)) { for (const item of value) visit(item); return; }
       if (!value || typeof value !== 'object') return;
       for (const [key, item] of Object.entries(value)) {
-        if (key === 'url' && typeof item === 'string' && data.customAssetPaths[item]) value[key] = typeof convert === 'function' ? convert(data.customAssetPaths[item]) : origin + '/' + item.split('/').map(encodeURIComponent).join('/');
+        if (key === 'url' && typeof item === 'string' && paths[item]) value[key] = customAssetUrl(item, paths[item]);
         else visit(item);
       }
     }
     visit(catalog);
     return catalog;
+  }
+  // 背包/图鉴里的 Mod 条目用专属稀有度 class 打标：样式只在本地模式挂到 html 上，
+  // 切回官方后立刻失效，账号背包里不会留下任何 Mod 痕迹。
+  function installModBadge() {
+    const doc = d.window.document;
+    if (!doc || doc.getElementById('wuwa-mod-badge')) return;
+    const style = doc.createElement('style');
+    style.id = 'wuwa-mod-badge';
+    style.textContent = 'html[data-wuwa-mod] .atlas-thumb--mod{background-image:none;outline:2px dashed #7f77dd;outline-offset:-2px}'
+      + 'html[data-wuwa-mod] .atlas-thumb--mod::after{content:"MOD";position:absolute;left:3px;bottom:3px;z-index:2;font:600 9px/1 -apple-system,"Segoe UI",sans-serif;letter-spacing:.3px;padding:2px 4px;border-radius:4px;background:#534ab7;color:#fff}'
+      // 官方排序把未知稀有度固定排在最后，数据层没有位置可调，只能在渲染后靠 flex order 挪：
+      // 平铺网格（背包「全部」）与分组列表（背包/图鉴的稀有度分组）都是 flex 容器，
+      // 用 :has() 认出装着 Mod 条目那一组，把它提到最前。:has() 不支持时只是保持原顺序。
+      + 'html[data-wuwa-mod] .atlas-list>.atlas-item:has(>.atlas-thumb--mod){order:-1}'
+      + 'html[data-wuwa-mod] .atlas-group-list>.atlas-section:has(.atlas-thumb--mod){order:-1}'
+      + 'html[data-wuwa-mod] .atlas-section:has(>.atlas-group){display:flex;flex-direction:column}'
+      + 'html[data-wuwa-mod] .atlas-section:has(>.atlas-group)>.atlas-group{flex:0 0 auto}'
+      + 'html[data-wuwa-mod] .atlas-section:has(>.atlas-group)>.atlas-group:has(.atlas-thumb--mod){order:-1}';
+    doc.head.append(style);
+  }
+  function paintModFlag() {
+    const root = d.window.document?.documentElement;
+    if (!root) return;
+    if (enabled.value) root.setAttribute('data-wuwa-mod', '');
+    else root.removeAttribute('data-wuwa-mod');
+  }
+  function assetUrl(reference) {
+    const path = offlineData.value?.customAssetPaths?.[reference];
+    return path ? customAssetUrl(reference, path) : '';
   }
   function applyData(data) { d.applyOfflineCatalog(runtimeCatalog(data), origin); }
   async function applyMode(on) {
@@ -168,6 +203,7 @@ function createLocalAtlasController(d) {
       // Restore reactively; reloading would discard a running background driver.
     }
     revision.value++;
+    paintModFlag();
   }
   function cacheProgressMessage() {
     const s = syncStatus.value || {};
@@ -283,6 +319,7 @@ function createLocalAtlasController(d) {
   const initial = read();
   enabled.value = initial.enabled === true;
   selection.value = initial.selection || {}; favorites.value = initial.favorites || {};
+  installModBadge();
   installNetworkGuards();
   d.window.addEventListener('securitypolicyviolation', event => reportDiagnostic('policy', {
     directive: event.violatedDirective, blocked: String(event.blockedURI).slice(0, 600)
@@ -353,6 +390,6 @@ function createLocalAtlasController(d) {
   }
   function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);}
   return {enabled, busy, selection, favorites, revision, ready, cacheReady, setEnabled, inventory, viewUser, select,
-    favorite, reorder, prepare, offlineData, assetsHost: origin, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, request: localRequest, dispose,
+    favorite, reorder, prepare, offlineData, assetsHost: origin, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, assetUrl, request: localRequest, dispose,
     restricted,normalCumulative:()=>d.getAccountCumulative?.()??0,normalPending:()=>d.getAccountPending?.()??0};
 }

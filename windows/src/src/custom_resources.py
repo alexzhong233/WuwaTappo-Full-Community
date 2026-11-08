@@ -190,6 +190,11 @@ def materialize(pack, used):
             for layer in ('body1', 'head1', 'body2', 'head2', 'body3'):
                 if layer in assets:
                     entry[layer] = {'url': _asset_ref(pack, _asset_path(assets[layer])), 'offset_x': 0, 'offset_y': 0, 'my_offset_x': 0, 'my_offset_y': 0}
+            # 渲染器切换动作帧时不会回退：缺帧会拿到空 URL，那一瞬间整层消失
+            # （表现为每 5 秒眨眼时头部闪一下）。用基础帧补齐，等价于动作时保持静止。
+            for action, base in (('body2', 'body1'), ('body3', 'body1'), ('head2', 'head1')):
+                if action not in entry and base in entry:
+                    entry[action] = dict(entry[base])
             atlas_url = _asset_ref(pack, _asset_path(assets.get('icon') or primary))
         else:
             primary = assets['image']
@@ -204,7 +209,7 @@ def materialize(pack, used):
         atlas.append({'asset_id': int(atlas_id), 'asset_name': item['name'], 'display_name': item['name'],
                       'asset_code': 'mod:%s:%s' % (pack['id'], item['id']),
                       'asset_type': atlas_kind, 'star_level': 0, 'region_code': '',
-                      'series_name': pack['name'], 'rarity': 'Custom',
+                      'series_name': pack['name'], 'rarity': 'MOD',
                       'custom_pack_id': pack['id'], 'custom_item_id': item['id']})
     return {'atlas': atlas, 'catalog': catalog, 'customAssetPaths': paths,
             'custom_resources': {'id': pack['id'], 'name': pack['name'], 'region': pack['region']}}
@@ -214,9 +219,13 @@ def merge_official(official, packs):
     if not isinstance(official, dict) or not isinstance(official.get('atlas'), list) or not isinstance(official.get('catalog'), dict):
         raise ValueError('官方图鉴缓存不完整，无法叠加 Mod')
     merged = copy.deepcopy(official)
-    used = _used_ids(official)
     pack_meta = []
     all_paths = {}
+    if not packs:
+        # 没有 Mod 时原样透传：Mod 层不该成为基础功能的失败点。
+        merged['atlas_count'] = len(merged['atlas'])
+        return merged
+    used = _used_ids(official)
     for pack in sorted(packs, key=lambda row: row['id']):
         addon = materialize(pack, used)
         merged['atlas'].extend(addon['atlas'])
@@ -227,9 +236,8 @@ def merge_official(official, packs):
         all_paths.update(addon['customAssetPaths'])
         pack_meta.append({'id': pack['id'], 'name': pack['name'], 'region': pack['region'],
                           'item_count': pack['item_count'], 'asset_count': pack['asset_count']})
-    if packs:
-        merged['customAssetPaths'] = all_paths
-        merged['custom_resources'] = {'packs': pack_meta}
+    merged['customAssetPaths'] = all_paths
+    merged['custom_resources'] = {'packs': pack_meta}
     merged['atlas_count'] = len(merged['atlas'])
     return merged
 
@@ -246,6 +254,23 @@ def list_packs(root, region):
             packs.append(inspect_bundle(path, region))
         except (OSError, ValueError):
             continue
+    return packs
+
+
+def list_details(root, region):
+    """管理面板用：包内条目明细 + 可直接渲染的缩略图引用。"""
+    packs = []
+    for pack in list_packs(root, region):
+        items = []
+        for item in pack['items']:
+            assets = item['assets']
+            primary = (assets.get('icon') or assets.get('preview') or assets.get('image')
+                       or assets.get('body1') or 'assets/missing.png')
+            items.append({'id': item['id'], 'name': item['name'], 'type': item['type'],
+                          'icon': _asset_ref(pack, _asset_path(primary))})
+        packs.append({'id': pack['id'], 'name': pack['name'], 'region': pack['region'],
+                      'item_count': pack['item_count'], 'asset_count': pack['asset_count'],
+                      'items': items})
     return packs
 
 

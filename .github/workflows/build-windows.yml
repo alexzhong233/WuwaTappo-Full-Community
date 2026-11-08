@@ -41,6 +41,15 @@ jobs:
         with:
           python-version: '3.13'
 
+      # 注入器与本地服务都是 Python，Mod 相关测试只依赖标准库，十几秒跑完。
+      # 放在下载官方安装包之前，坏掉时不必等十分钟。
+      # 只跑 test_custom*：其余测试依赖 psutil 与本机 PowerShell 执行策略，
+      # 属于环境差异而不是代码质量，不该在这里当门禁。
+      - name: Run local service unit tests
+        shell: pwsh
+        run: |
+          python -m unittest discover -s windows/src/tests -p 'test_custom*.py' -v
+
       - name: Read pinned official client identity
         id: pinned
         shell: pwsh

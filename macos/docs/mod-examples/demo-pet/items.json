@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "name": "小家伙（演示）",
+      "type": "character",
+      "assets": {
+        "icon": "assets/character/icon.png",
+        "body1": "assets/character/body_1.png",
+        "body2": "assets/character/body_2.png",
+        "body3": "assets/character/body_3.png",
+        "head1": "assets/character/head_1.png",
+        "head2": "assets/character/head_2.png"
+      }
+    }
+  ]
+}

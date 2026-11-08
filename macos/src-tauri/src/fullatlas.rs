@@ -76,6 +76,7 @@ pub struct FullAtlasState {
     inner: Mutex<Inner>,
     catalog: Mutex<Option<Value>>,
     official_catalog: Mutex<Option<Value>>,
+    custom_error: Mutex<Option<String>>,
 }
 
 fn unix_time() -> u64 {
@@ -384,6 +385,7 @@ impl FullAtlasState {
             }),
             catalog: Mutex::new(None),
             official_catalog: Mutex::new(None),
+            custom_error: Mutex::new(None),
         })
     }
     pub fn enabled(&self) -> bool {
@@ -416,9 +418,29 @@ impl FullAtlasState {
         } else {
             "GLOBAL"
         };
-        let value = crate::custom_resources::merge_official(
-            &official, &self.dir.join("custom-atlas"), region,
-        )?;
+        // Mod 叠加失败不能让全图鉴跟着不可用：降级返回官方数据，把原因留给
+        // 设置页显示。没有导入 Mod 时这里本来就走透传路径。
+        let value = match crate::custom_resources::merge_official(
+            &official,
+            &self.dir.join("custom-atlas"),
+            region,
+        ) {
+            Ok(value) => {
+                if let Ok(mut slot) = self.custom_error.lock() {
+                    *slot = None;
+                }
+                value
+            }
+            Err(error) => {
+                if let Ok(mut slot) = self.custom_error.lock() {
+                    *slot = Some(error);
+                }
+                let mut fallback = official;
+                fallback["atlas_count"] =
+                    json!(fallback["atlas"].as_array().map(Vec::len).unwrap_or(0));
+                fallback
+            }
+        };
         *memo = Some(value.clone());
         Ok(value)
     }
@@ -815,13 +837,25 @@ impl FullAtlasState {
                 } else {
                     "GLOBAL"
                 };
-                let installed = crate::custom_resources::list_summaries(
+                let packs = crate::custom_resources::list_details(
                     &self.dir.join("custom-atlas"),
                     region,
                 )?;
-                let packs: Vec<Value> = installed.iter().map(|pack|json!({"id":pack.id,"name":pack.name,"item_count":pack.item_count,"asset_count":pack.asset_count})).collect();
+                let items: usize = packs
+                    .iter()
+                    .map(|pack| pack["item_count"].as_u64().unwrap_or(0) as usize)
+                    .sum();
+                let assets: usize = packs
+                    .iter()
+                    .map(|pack| pack["asset_count"].as_u64().unwrap_or(0) as usize)
+                    .sum();
+                let error = self
+                    .custom_error
+                    .lock()
+                    .ok()
+                    .and_then(|slot| slot.clone());
                 Ok(
-                    json!({"enabled":self.enabled(),"region":region,"installed":!installed.is_empty(),"packs":packs,"atlas_count":installed.iter().map(|p|p.item_count).sum::<usize>(),"asset_count":installed.iter().map(|p|p.asset_count).sum::<usize>()}),
+                    json!({"enabled":self.enabled(),"region":region,"installed":!packs.is_empty(),"packs":packs,"atlas_count":items,"asset_count":assets,"error":error}),
                 )
             }
             "custom/import" => {

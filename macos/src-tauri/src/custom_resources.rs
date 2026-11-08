@@ -213,6 +213,56 @@ pub fn list_summaries(root: &Path, region: &str) -> Result<Vec<Summary>, String>
     }
     Ok(summaries)
 }
+/// 管理面板用：每个包的条目明细 + 可直接渲染的缩略图引用。
+/// 引用格式与 catalog 里的 `url` 完全一致，前端用同一套解析还原成本地文件。
+pub fn list_details(root: &Path, region: &str) -> Result<Vec<Value>, String> {
+    let mut directories = match fs::read_dir(root) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|entry| entry.path()).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    directories.sort();
+    let mut packs = Vec::new();
+    for path in directories {
+        if !path.is_dir()
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
+        let Ok((summary, pack)) = parse_pack(&path, region) else {
+            continue;
+        };
+        let pack_id = pack["id"].as_str().unwrap_or_default();
+        let mut items = Vec::new();
+        for item in pack["items"].as_array().into_iter().flatten() {
+            let assets = item["assets"].as_object();
+            let primary = ["icon", "preview", "image", "body1"]
+                .iter()
+                .find_map(|key| assets.and_then(|assets| assets.get(*key)))
+                .and_then(Value::as_str)
+                .unwrap_or("assets/missing.png");
+            items.push(json!({
+                "id": item["id"],
+                "name": item["name"],
+                "type": item["type"],
+                "icon": format!("custom-assets/{pack_id}/{}", primary.trim_start_matches("assets/")),
+            }));
+        }
+        packs.push(json!({
+            "id": summary.id,
+            "name": summary.name,
+            "item_count": summary.item_count,
+            "asset_count": summary.asset_count,
+            "items": items,
+        }));
+    }
+    Ok(packs)
+}
 pub fn remove_pack(root: &Path, pack_id: &str) -> Result<(), String> {
     text(Some(&json!(pack_id)), "Mod ID", 64, true)?;
     let target = root.join(pack_id);
@@ -319,6 +369,15 @@ fn materialize(
                         obj.insert(layer.to_owned(),json!({"url":format!("custom-assets/{id}/{}",rel.trim_start_matches("assets/")),"offset_x":0,"offset_y":0,"my_offset_x":0,"my_offset_y":0}));
                     }
                 }
+                // 渲染器切换动作帧时不回退：缺帧会拿到空 URL，那一瞬间整层消失
+                // （表现为每 5 秒眨眼时头部闪一下）。用基础帧补齐，等价于动作时保持静止。
+                for (action, base) in [("body2", "body1"), ("body3", "body1"), ("head2", "head1")] {
+                    if !obj.contains_key(action) {
+                        if let Some(value) = obj.get(base).cloned() {
+                            obj.insert(action.to_owned(), value);
+                        }
+                    }
+                }
             }
         }
         catalog
@@ -333,39 +392,14 @@ fn materialize(
             icon_rel.trim_start_matches("assets/")
         );
         catalog.get_mut(&format!("{cat_kind}_atlas")).unwrap().as_object_mut().unwrap().insert(atlas_id.to_string(),json!({"height_light_id":aid,"game_role_id":0,"url":icon_url,"offset_x":0,"offset_y":0,"my_offset_x":0,"my_offset_y":0}));
-        atlas.push(json!({"asset_id":atlas_id,"asset_name":item["name"],"display_name":item["name"],"asset_code":format!("mod:{id}:{iid}"),"asset_type":format!("{cat_kind}_atlas"),"star_level":0,"region_code":"","series_name":name,"rarity":"Custom","custom_pack_id":id,"custom_item_id":iid}));
+        atlas.push(json!({"asset_id":atlas_id,"asset_name":item["name"],"display_name":item["name"],"asset_code":format!("mod:{id}:{iid}"),"asset_type":format!("{cat_kind}_atlas"),"star_level":0,"region_code":"","series_name":name,"rarity":"MOD","custom_pack_id":id,"custom_item_id":iid}));
     }
     (atlas, catalog, paths)
 }
 pub fn merge_official(official: &Value, root: &Path, region: &str) -> Result<Value, String> {
-    for kind in [
-        "character_skin",
-        "character_skin_atlas",
-        "accessory",
-        "accessory_atlas",
-        "emote",
-        "emote_atlas",
-    ] {
-        if !official["catalog"][kind].is_object() || !official["atlas"].is_array() {
-            return Err("官方图鉴缓存不完整，无法叠加 Mod".into());
-        }
-    }
-    let mut merged = official.clone();
-    let mut used = used_ids(official);
-    let mut paths = Map::new();
-    let mut packs_meta = Vec::new();
-    let mut addon_atlas = Vec::new();
-    let mut addon_catalog = Map::new();
-    for k in [
-        "character_skin",
-        "character_skin_atlas",
-        "accessory",
-        "accessory_atlas",
-        "emote",
-        "emote_atlas",
-    ] {
-        addon_catalog.insert(k.to_owned(), Value::Object(Map::new()));
-    }
+    // 先收集包，再决定要不要碰官方数据。没有 Mod 的用户走的是纯透传路径：
+    // 官方结构怎么变都不该因为「Mod 叠加」这一步失败。
+    let mut packs = Vec::new();
     if let Ok(directories) = fs::read_dir(root) {
         let mut directories = directories
             .map(|entry| entry.map(|entry| entry.path()).map_err(|e| e.to_string()))
@@ -382,24 +416,56 @@ pub fn merge_official(official: &Value, root: &Path, region: &str) -> Result<Val
             {
                 continue;
             }
-            {
-                let Ok((summary, pack)) = parse_pack(&dir, region) else {
-                    continue;
-                };
-                let (atlas, catalog, map) = materialize(&pack, &mut used);
-                addon_atlas.extend(atlas);
-                for (k, v) in catalog {
-                    addon_catalog
-                        .get_mut(&k)
-                        .unwrap()
-                        .as_object_mut()
-                        .unwrap()
-                        .extend(v.as_object().unwrap().clone());
-                }
-                paths.extend(map);
-                packs_meta.push(json!({"id":summary.id,"name":summary.name,"item_count":summary.item_count,"asset_count":summary.asset_count}));
+            if let Ok((_, pack)) = parse_pack(&dir, region) {
+                packs.push(pack);
             }
         }
+    }
+    let mut merged = official.clone();
+    if packs.is_empty() {
+        merged["atlas_count"] = json!(merged["atlas"].as_array().map(Vec::len).unwrap_or(0));
+        return Ok(merged);
+    }
+    for kind in [
+        "character_skin",
+        "character_skin_atlas",
+        "accessory",
+        "accessory_atlas",
+        "emote",
+        "emote_atlas",
+    ] {
+        if !official["catalog"][kind].is_object() || !official["atlas"].is_array() {
+            return Err("官方图鉴缓存不完整，无法叠加 Mod".into());
+        }
+    }
+    let mut used = used_ids(official);
+    let mut paths = Map::new();
+    let mut packs_meta = Vec::new();
+    let mut addon_atlas = Vec::new();
+    let mut addon_catalog = Map::new();
+    for k in [
+        "character_skin",
+        "character_skin_atlas",
+        "accessory",
+        "accessory_atlas",
+        "emote",
+        "emote_atlas",
+    ] {
+        addon_catalog.insert(k.to_owned(), Value::Object(Map::new()));
+    }
+    for pack in &packs {
+        let (atlas, catalog, map) = materialize(pack, &mut used);
+        addon_atlas.extend(atlas);
+        for (k, v) in catalog {
+            addon_catalog
+                .get_mut(&k)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .extend(v.as_object().unwrap().clone());
+        }
+        paths.extend(map);
+        packs_meta.push(json!({"id":pack["id"],"name":pack["name"],"item_count":pack["items"].as_array().map(Vec::len).unwrap_or(0),"asset_count":count_assets(pack)}));
     }
     if let Some(a) = merged.get_mut("atlas").and_then(Value::as_array_mut) {
         a.extend(addon_atlas);
@@ -416,6 +482,20 @@ pub fn merge_official(official: &Value, root: &Path, region: &str) -> Result<Val
     merged["custom_resources"] = json!({"packs":packs_meta});
     merged["atlas_count"] = json!(merged["atlas"].as_array().map(Vec::len).unwrap_or(0));
     Ok(merged)
+}
+
+fn count_assets(pack: &Value) -> usize {
+    let mut seen = HashSet::new();
+    if let Some(items) = pack["items"].as_array() {
+        for item in items {
+            if let Some(assets) = item["assets"].as_object() {
+                for value in assets.values().filter_map(Value::as_str) {
+                    seen.insert(value.to_owned());
+                }
+            }
+        }
+    }
+    seen.len()
 }
 pub fn install_archive(
     archive_path: &Path,
@@ -641,6 +721,10 @@ mod tests {
         assert_eq!(merged["catalog"]["accessory"].as_object().unwrap().len(), 1);
         assert_eq!(merged["catalog"]["emote"].as_object().unwrap().len(), 2);
         assert_eq!(merged["atlas"][0]["asset_id"], 43);
+        assert_eq!(
+            merged["atlas"][1]["rarity"], "MOD",
+            "背包装配用 rarity 生成 atlas-thumb--mod 容器"
+        );
         assert!(merged["customAssetPaths"]
             .as_object()
             .unwrap()
@@ -648,6 +732,19 @@ mod tests {
                 "custom-assets/mod-{:016x}/body.png",
                 hash("pack-one")
             )));
+        // 只给了 body1/head1 的角色也要能切换动作帧：缺帧会让渲染器拿到空 URL，
+        // 表现为每 5 秒眨眼时头部闪一下。这里断言动作帧被基础帧补齐。
+        let hero = merged["catalog"]["character_skin"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|entry| entry["body1"].is_object())
+            .unwrap()
+            .clone();
+        for action in ["body2", "body3"] {
+            assert_eq!(hero[action]["url"], hero["body1"]["url"], "{} 应回退到 body1", action);
+        }
+        assert_eq!(hero["head2"]["url"], hero["head1"]["url"], "head2 应回退到 head1");
         let again = merge_official(&original, &root.join("mods"), "CN").unwrap();
         assert_eq!(merged, again);
         let mut reordered = sample_items().as_array().unwrap().clone();
@@ -723,6 +820,18 @@ mod tests {
         }
         let mut invalid = official();
         invalid["catalog"].as_object_mut().unwrap().remove("emote");
+        // 没有装 Mod 时，官方目录结构再怪也必须原样透传：Mod 层不能拖垮基础功能。
+        let passthrough = merge_official(&invalid, &root, "CN").unwrap();
+        assert_eq!(passthrough["catalog"], invalid["catalog"]);
+        assert_eq!(passthrough["atlas_count"], 1);
+        assert!(passthrough.get("customAssetPaths").is_none());
+        // 装了 Mod 才需要官方目录完整，缺分类时明确报错而不是产出半套数据。
+        write_pack(
+            &root.join("one"),
+            "pack-one",
+            "ANY",
+            json!([{"id":"solo","type":"emote","name":"Solo","assets":{"image":"assets/happy.png"}}]),
+        );
         assert!(merge_official(&invalid, &root, "CN").is_err());
         fs::remove_dir_all(root).unwrap();
     }

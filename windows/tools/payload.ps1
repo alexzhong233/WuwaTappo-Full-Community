@@ -17,6 +17,9 @@ function Get-WuwaPayloadFiles {
     # 离线素材缓存：几十到上百 MB，且与本机同步进度绑定。发行包走「按需回源官方 CDN」，
     # 和 CI 产物保持一致；否则本机打过一次图鉴，安装包体积就翻倍。
     if ($rel -like 'cache\*') { $skip = $true }
+    # 用户导入的 Mod：维护机一旦导入过，发行包里就带着别人的角色图。与 cache\ 同理，
+    # 属于运行期状态而非程序本体，发行包必须从空目录开始。
+    if ($rel -like 'custom-atlas\*') { $skip = $true }
     # 只排除真正的运行期状态；local_config.json 是部署必需（含本机 HTTP 的 token），必须带上
     if ($rel -in @('offline_state.json', 'assistant_state.json', 'update_hint.json', 'update_state.json')) { $skip = $true }
     # 自提权脚本：部分机器的安全策略禁止读取/分发，且产物用 WuwaTappoLauncher.exe 即进入口
