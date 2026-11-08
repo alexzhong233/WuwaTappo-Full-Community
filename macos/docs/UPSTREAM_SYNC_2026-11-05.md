@@ -106,3 +106,6 @@ FullAtlas 只合入与本项目双平台架构兼容的改动：
 **两端一致性**
 
 `assistant_dashboard.js` 两端只差品牌那一行；`desktop_assistant.js` 只差首行注释与 `VERSION` 两行（`macos/tests/platform-parity.test.mjs` 守着）。控制台页签与右键菜单只在 Windows 壳里生效：macOS 仍走菜单栏「控制台」+ 桌宠窗口内浮层，同一个 `openPanel` 通过 `window.__WUWA_OPEN_PANEL_TAB__` 探测，壳提供了才走页签。
+
+> 上面「仍然不做的」四项，加上另外四项代码组织差异（更新强制门禁、房间历史拆函数、更新进度独立模块、独立进程启动的 DLL 隔离），
+> 逐条细节、上游源码行号、以及「将来真要搬怎么接」都写在 [UPSTREAM_NOT_PORTED.md](UPSTREAM_NOT_PORTED.md)。
