@@ -19,10 +19,12 @@ export async function prepareCatalog(root, profile) {
     validateCatalog(value);
     if (value.assets_host === profile.assetsOrigin) return;
   } catch {}
-  async function request(url, asset = false, attempts = 3) {
+  async function request(url, asset = false, attempts = 5) {
     if (asset && (new URL(url).origin !== profile.assetsOrigin || new URL(url).protocol !== 'https:')) throw new Error('Unrecognized FullAtlas catalog origin');
     // 国内 CDN 从海外 runner 连不稳，单次 10 秒连接超时就整条链失败；
     // 重试的是同一地址、同一断言，成功与否的判定不变，只是不再被一次抖动打死。
+    // 一次抖动会同时打掉 DNS 里所有国内节点（undici 并发试完全部 A 记录才报错），
+    // 所以这里给到 5 次、退避 1/2/4/8 秒，把可恢复的窗口拉到一分多钟。
     let lastError;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
