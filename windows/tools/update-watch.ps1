@@ -82,8 +82,28 @@ New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 $env:WUWA_EXTRACT_ROOT = $newBase
 & $Py (Join-Path $Root 'src\tools\extract_static.py') (Join-Path $newBase 'WuwaTappo.official.exe')
 if ($LASTEXITCODE -ne 0) { throw '解包失败（extract_static.py）' }
+# 与 build.py 相同：解包后必须跑 inspect_js.cjs 生成 js_structure.json
+if (-not (Test-Path -LiteralPath (Join-Path $newBase 'js_structure.json'))) {
+  $shared = Get-ChildItem -LiteralPath (Join-Path $newBase 'readable_js\assets') -Filter *.js |
+    Where-Object { (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8) -match 'function applyCatalog\(' } |
+    Select-Object -First 1
+  if (-not $shared) { throw 'readable_js 里找不到 applyCatalog 所在共享模块' }
+  & node (Join-Path $Root 'src\tools\inspect_js.cjs') $newBase $shared.Name
+  if ($LASTEXITCODE -ne 0) { throw 'js_structure.json 生成失败（inspect_js.cjs）' }
+}
 
 $env:WUWA_BUILD_ROOT = $stagingRoot
+# build_integration.py 约定构建根目录内必须有 current_base.txt 与 local_config.json
+# 无 BOM、无尾换行地写，Python 端按 utf-8 直接读，带 BOM 会污染路径/JSON
+[System.IO.File]::WriteAllText((Join-Path $stagingRoot 'current_base.txt'), $newBase, (New-Object System.Text.UTF8Encoding($false)))
+$cfgSrc = Join-Path $Root 'build\local_config.json'
+if (Test-Path -LiteralPath $cfgSrc) {
+  $cfg = Get-Content -LiteralPath $cfgSrc -Raw -Encoding UTF8 | ConvertFrom-Json
+  $cfg.client_version = $remoteVer
+  [System.IO.File]::WriteAllText((Join-Path $stagingRoot 'local_config.json'), ($cfg | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+} else {
+  throw "缺少 $cfgSrc —— 请先在旧基底上跑过一次 tools\build.ps1"
+}
 & $Py (Join-Path $Root 'src\tools\build_integration.py')
 $code = $LASTEXITCODE
 
@@ -106,3 +126,6 @@ if ($code -ne 0) {
 "  1) powershell -File tools\build.ps1 -Base `"$newBase`""
 "  2) 冒烟：双击 app\WuwaTappoLauncher.exe，看设置里图鉴是否正常"
 "  3) 回滚：把 app\ 改名为 app.old，旧目录随时可用"
+
+
+

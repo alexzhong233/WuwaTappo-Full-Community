@@ -217,7 +217,7 @@ assert match, 'Favorite toggle layout changed'
 panel = panel[:match.start()] + f'__lg.enabled.value ? __lg.favorite({match[3]}.item.asset_id,!{match[1]}.value) : ' + panel[match.start():]
 
 from integrate_assistant import integrate
-assert config['client_version'] in ('1.0.2', '1.0.3'), 'Desktop assistant requires a verified adapter'
+assert config['client_version'] in ('1.0.2', '1.0.3', '1.0.4'), 'Desktop assistant requires a verified adapter'
 shared, main, panel = integrate(PROJECT, BASE, frontend, structure, shared, main, panel, main_name, panel_name)
 extra_patched_assets = [p.name for p in (BASE/'frontend/assets').glob('switchDisplayMonitor-*.js')
                         if (frontend/'assets'/p.name).read_bytes() != p.read_bytes()]
