@@ -79,6 +79,10 @@ WUWA_REGION=global node macos/scripts/inventory-contract.mjs   # 覆盖 tests/co
 
 Mac 应用不在本地做“Windows EXE → Mac + FullAtlas DMG”重编。这个过程需要仓库源码、Node、7-Zip、Rust、Xcode 和完整测试，应该由维护者或 GitHub Actions 运行 `npm run official:update -- --apply` 后发布新的 Mac Release。
 
+## 输入监控授权
+
+键鼠监听走 HID 层只监听的 event tap，需要用户在「系统设置 > 隐私与安全性 > 输入监控」授权。授权绑定代码签名身份，重装后可能出现「功能可用但设置列表里没有本应用」：旧 TCC 记录仍在生效，而旧版授权请求在 preflight 为真时会跳过，列表那一行就再也没被重建。现在启动时会在已授权前提下静默重新登记，主菜单「启用键鼠监听…」也会无条件补登记；诊断与手动重置见 `docs/INPUT_PERMISSION.md`。发布时设置 `APPLE_SIGNING_IDENTITY` 用固定证书签名，可让授权跨版本保留。
+
 ## 三条刻意不动的约定
 
 1. **Bundle identifier 保持 `dev.w33d.wuwatappo.fullatlas.mac`**。改了等于换一个应用：已有用户的 `~/Library/Application Support/` 与钥匙串全部作废。改名只动显示名与产物名。

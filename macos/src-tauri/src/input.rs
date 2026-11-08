@@ -17,6 +17,103 @@ pub struct InputStatus {
     pub error: Option<String>,
 }
 
+const HID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+const HID_ACCESS_GRANTED: u32 = 0;
+const HID_ACCESS_DENIED: u32 = 1;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputAccessDiagnostics {
+    pub input_monitoring_granted: bool,
+    pub hid_access: &'static str,
+    pub accessibility_granted: bool,
+    pub bundle_identifier: String,
+    pub executable_path: String,
+    pub translocated: bool,
+    pub hint: &'static str,
+}
+
+fn access_hint(input_monitoring_granted: bool, translocated: bool) -> &'static str {
+    if translocated {
+        // Gatekeeper runs an app opened straight from the DMG from a randomized
+        // AppTranslocation path, so the granted row can never match the next launch.
+        "move_app_to_applications"
+    } else if !input_monitoring_granted {
+        "grant_input_monitoring"
+    } else {
+        "ok"
+    }
+}
+
+/// Re-issues the Input Monitoring request so the app keeps its row in System Settings.
+///
+/// `CGRequestListenEventAccess` is idempotent while access is already granted: it returns
+/// true without prompting. Re-issuing it is what restores the row under
+/// System Settings > Privacy & Security > Input Monitoring, because that list is rebuilt
+/// from request records and a reinstall can leave the old TCC record authorizing the event
+/// tap while the row disappears. Callers must only reach this with access already granted
+/// or from an explicit user action, since it prompts otherwise.
+fn register_listen_event() {
+    unsafe {
+        CGRequestListenEventAccess();
+        // IOKit keeps a parallel record; some macOS releases only refresh the panel row
+        // when the HID request is made.
+        IOHIDRequestAccess(HID_REQUEST_TYPE_LISTEN_EVENT);
+    }
+}
+
+fn ensure_input_monitoring_listed() {
+    if !unsafe { CGPreflightListenEventAccess() } {
+        return;
+    }
+    unsafe {
+        CGRequestListenEventAccess();
+    }
+    // Only re-issue the HID request when it cannot prompt, so a silent startup path
+    // never turns into a permission dialog.
+    if unsafe { IOHIDCheckAccess(HID_REQUEST_TYPE_LISTEN_EVENT) } != HID_ACCESS_DENIED {
+        unsafe {
+            IOHIDRequestAccess(HID_REQUEST_TYPE_LISTEN_EVENT);
+        }
+    }
+}
+
+pub fn diagnostics(app: &AppHandle) -> InputAccessDiagnostics {
+    let input_monitoring_granted = unsafe { CGPreflightListenEventAccess() };
+    let hid = unsafe { IOHIDCheckAccess(HID_REQUEST_TYPE_LISTEN_EVENT) };
+    let executable_path = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let translocated = executable_path.contains("/AppTranslocation/");
+    InputAccessDiagnostics {
+        input_monitoring_granted,
+        hid_access: match hid {
+            HID_ACCESS_GRANTED => "granted",
+            HID_ACCESS_DENIED => "denied",
+            _ => "unknown",
+        },
+        accessibility_granted: unsafe { AXIsProcessTrusted() },
+        bundle_identifier: app.config().identifier.clone(),
+        executable_path,
+        translocated,
+        hint: access_hint(input_monitoring_granted, translocated),
+    }
+}
+
+pub fn describe_access(app: &AppHandle) -> String {
+    let access = diagnostics(app);
+    format!(
+        "input-monitoring={} hid={} accessibility={} translocated={} bundle={} hint={} path={}",
+        access.input_monitoring_granted,
+        access.hid_access,
+        access.accessibility_granted,
+        access.translocated,
+        access.bundle_identifier,
+        access.hint,
+        access.executable_path
+    )
+}
+
 pub fn physical_input_quiet() -> bool {
     if unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) } < 0.25 {
         return false;
@@ -197,6 +294,9 @@ impl InputMonitor {
     }
 
     fn start_inner(&self, app: AppHandle) -> Result<InputStatus, String> {
+        // Restore the Settings row before the worker starts: a reinstall can leave the tap
+        // authorized by a stale TCC record while the Input Monitoring entry is gone.
+        ensure_input_monitoring_listed();
         let mut worker = self
             .worker
             .lock()
@@ -294,19 +394,24 @@ pub fn get_input_status(app: AppHandle) -> InputStatus {
 }
 
 #[tauri::command]
+pub fn get_input_access_diagnostics(app: AppHandle) -> InputAccessDiagnostics {
+    diagnostics(&app)
+}
+
+#[tauri::command]
 pub fn resume_input_monitor(app: AppHandle) -> Result<InputStatus, String> {
-    // Recheck existing permission only; this path never requests access.
+    // Recheck existing permission only; this path never prompts for access. Restoring the
+    // Settings row while access is granted is silent, so it stays safe to reach from here.
     start(app)
 }
 
 #[tauri::command]
 pub fn request_input_access(app: AppHandle) -> Result<InputStatus, String> {
     // This is the only permission-requesting path, invoked by an explicit app action.
-    if !unsafe { CGPreflightListenEventAccess() } {
-        unsafe {
-            CGRequestListenEventAccess();
-        }
-    }
+    // It deliberately skips the preflight short-circuit: when a reinstall leaves access
+    // granted but the Settings row missing, a preflight check would report success and
+    // never re-register the app, which is how the row goes missing in the first place.
+    register_listen_event();
     start(app)
 }
 
@@ -879,6 +984,17 @@ fn key_label(code: u16) -> String {
     .to_owned()
 }
 
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOHIDCheckAccess(request_type: u32) -> u32;
+    fn IOHIDRequestAccess(request_type: u32) -> bool;
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
+
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightListenEventAccess() -> bool;
@@ -1334,6 +1450,24 @@ mod tests {
             status.error.as_deref(),
             Some("input_event_tap_enable_failed")
         );
+    }
+
+    #[test]
+    fn translocated_builds_point_at_the_applications_folder() {
+        // A relocated app can hold a stale grant while the Settings row points at a
+        // randomized path, so this hint must win over the granted state.
+        assert_eq!(access_hint(true, true), "move_app_to_applications");
+        assert_eq!(access_hint(false, true), "move_app_to_applications");
+    }
+
+    #[test]
+    fn granted_input_monitoring_is_reported_as_healthy() {
+        assert_eq!(access_hint(true, false), "ok");
+    }
+
+    #[test]
+    fn missing_input_monitoring_asks_for_the_grant() {
+        assert_eq!(access_hint(false, false), "grant_input_monitoring");
     }
 
     #[test]
