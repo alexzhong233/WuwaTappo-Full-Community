@@ -47,13 +47,16 @@ jobs:
 
       # 注入器与本地服务都是 Python，Mod 相关测试只依赖标准库，十几秒跑完。
       # 放在下载官方安装包之前，坏掉时不必等十分钟。
-      # 只跑 test_custom* 与 test_community*：其余测试依赖 psutil 与本机 PowerShell
-      # 执行策略，属于环境差异而不是代码质量，不该在这里当门禁。
+      # 只跑 test_custom* / test_community* / test_inject*：其余测试依赖 psutil 与本机
+      # PowerShell 执行策略，属于环境差异而不是代码质量，不该在这里当门禁。
+      # test_inject* 覆盖 shared/tools/inject_core.py 与 assistant_core.py —— 这两个是
+      # 注入器的公共核，坏了会让两个平台的构建同时出错，必须在这里挡住。
       - name: Run local service unit tests
         shell: pwsh
         run: |
           python -m unittest discover -s windows/src/tests -p 'test_custom*.py' -v
           python -m unittest discover -s windows/src/tests -p 'test_community*.py' -v
+          python -m unittest discover -s windows/src/tests -p 'test_inject*.py' -v
 
       - name: Read pinned official client identity
         id: pinned
