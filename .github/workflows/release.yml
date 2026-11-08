@@ -57,6 +57,7 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
           const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
           const cnLock = JSON.parse(readFileSync('macos/upstream-cn.json', 'utf8'));
           const globalLock = JSON.parse(readFileSync('macos/upstream-global.json', 'utf8'));
@@ -78,21 +79,28 @@ jobs:
               throw new Error(`Windows ${label}锁里的安装包哈希与 macOS 不是同一个官方包：镜像回退与完整性校验会各对各错`);
             }
           }
-          // 四个产物缺一不可：两服 × 两平台，格式各自唯一（mac=dmg / win=exe）。
+          // 六个产物缺一不可：两服 × 两平台（mac=dmg / win=exe），
+          // Windows 每个服再带一个程序内升级 zip（桌宠里「一键更新」下载的就是它）。
           const expected = [
             `WuwaTappo-Full-CN-Community-${version}-macOS-arm64.dmg`,
             `WuwaTappo-Full-Global-Community-${version}-macOS-arm64.dmg`,
             `WuwaTappo-Full-CN-Community-Windows-x64-${version}.exe`,
             `WuwaTappo-Full-Global-Community-Windows-x64-${version}.exe`,
+            `WuwaTappo-Full-CN-Community-${version}-win-x64-update.zip`,
+            `WuwaTappo-Full-Global-Community-${version}-win-x64-update.zip`,
           ];
           const missing = expected.filter(name => !existsSync(`dist/${name}`));
           if (missing.length) throw new Error(`Release 缺少产物，两个平台都必须构建成功：${missing.join(', ')}`);
+          // 升级包的身份写在 SHA256SUMS.txt 里，更新器下载完会按这个名字核对哈希。
+          const sumLines = expected.map(name =>
+            `${createHash('sha256').update(readFileSync(`dist/${name}`)).digest('hex')}  ${name}`);
+          writeFileSync('dist/SHA256SUMS.txt', sumLines.join('\n') + '\n');
           const notes = `macos/docs/RELEASE_NOTES_${version}.md`;
           const body = existsSync(notes)
             ? readFileSync(notes, 'utf8')
-            : `# WuwaTappo Full Community ${version}\n\n社区版整合了官方客户端的本地图鉴与桌宠能力，国服与国际服分开打包。\n\n- macOS：Apple Silicon / macOS 13 及以上，下载 \`.dmg\` 拖入「应用程序」\n- Windows：下载 \`.exe\` 安装后双击快捷方式即可使用\n\n实验预发布，完整业务仍需验收。\n`;
+            : `# WuwaTappo Full Community ${version}\n\n社区版整合了官方客户端的本地图鉴与桌宠能力，国服与国际服分开打包。\n\n- macOS：Apple Silicon / macOS 13 及以上，下载 \`.dmg\` 拖入「应用程序」\n- Windows：下载 \`.exe\` 安装后双击快捷方式即可使用；已装旧版可在控制台「更新」里一键升级\n\n实验预发布，完整业务仍需验收。\n`;
           writeFileSync('/tmp/release-notes.md', `${body}\n\n官方基底：国服 ${cn} / 国际服 ${global}。\n`);
-          writeFileSync('/tmp/assets.txt', expected.map(name => `dist/${name}`).join('\n') + '\n');
+          writeFileSync('/tmp/assets.txt', [...expected.map(name => `dist/${name}`), 'dist/SHA256SUMS.txt'].join('\n') + '\n');
           NODE
           mapfile -t FILES < /tmp/assets.txt
           for FILE in "${FILES[@]}"; do ls -la "$FILE"; done

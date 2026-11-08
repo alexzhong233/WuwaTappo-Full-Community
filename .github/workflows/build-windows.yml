@@ -147,5 +147,7 @@ jobs:
           path: |
             dist/*Windows-x64*.exe
             dist/*Windows-x64*.exe.sha256
+            dist/*win-x64-update.zip
+            dist/*win-x64-update.zip.sha256
           if-no-files-found: error
           retention-days: 14

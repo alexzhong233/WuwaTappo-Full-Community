@@ -7,7 +7,7 @@ import argparse, base64, ctypes, hashlib, json, mimetypes, os, subprocess, threa
 import urllib.request
 from sync_cache import sync as sync_public_cache
 from desktop_assistant import Assistant, PhysicalInput
-from desktop_updater import Updater, apply_update
+from desktop_updater import Updater, apply_update, release_asset_name
 from custom_resources import install_archive, list_details, list_packs, merge_official, remove_pack
 
 if '--apply-update' in sys.argv:
@@ -26,7 +26,7 @@ CONFIG = json.loads((ROOT / 'local_config.json').read_text(encoding='utf-8-sig')
 PORT = CONFIG['port']
 TOKEN = CONFIG['token']
 ASSISTANT = Assistant(ROOT, physical=PhysicalInput())
-UPDATER = Updater(ROOT, CONFIG)
+UPDATER = Updater(ROOT, CONFIG, allow_prerelease=ASSISTANT.prerelease_updates)
 
 def monitor_releases():
     """盯官方 Kuro 版本，每 8 小时一次。
@@ -260,7 +260,7 @@ def check_community(include_prerelease=False):
     `include_prerelease` 决定——默认不算，用户在控制台里可以打开。
     """
     current = str(CONFIG.get('community_version') or '')
-    result = {'current': current, 'latest': '', 'updateAvailable': False,
+    result = {'current': current, 'latest': '', 'updateAvailable': False, 'installable': False,
               'releaseUrl': COMMUNITY_RELEASES_URL, 'pageUrl': COMMUNITY_RELEASES_URL,
               'publishedAt': '', 'prereleaseIncluded': include_prerelease,
               'skippedPrerelease': 0, 'message': ''}
@@ -284,11 +284,15 @@ def check_community(include_prerelease=False):
                 continue
             if best is None or _compare_semver(tag, best[0]) > 0:
                 best = (tag, str(release.get('html_url') or COMMUNITY_RELEASES_URL),
-                        str(release.get('published_at') or ''))
+                        str(release.get('published_at') or ''), release)
         result['skippedPrerelease'] = skipped
         if best:
-            result['latest'], result['releaseUrl'], result['publishedAt'] = best
+            result['latest'], result['releaseUrl'], result['publishedAt'], best_release = best
             result['updateAvailable'] = bool(current) and _compare_semver(best[0], current) > 0
+            # 有没有能直接装的原地升级包（zip）。没有这条路时前端只剩「跳 GitHub 下载」。
+            wanted = release_asset_name(CONFIG, best[0])
+            result['installable'] = bool(result['updateAvailable']) and any(
+                str(asset.get('name')) == wanted for asset in best_release.get('assets') or [])
             if result['updateAvailable']:
                 result['message'] = '发现新版本 v%s，当前 v%s。' % (best[0], current)
             elif current:
@@ -675,18 +679,34 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 return self.respond(409, {'error': str(error)})
         if path.startswith('/update/'):
-            # autor 仓库的原地更新会整包覆盖本地适配补丁，且会强制置
-            # update_required 挡掉开箱功能，这里整体停用，只保留健康回执。
+            # 程序内更新（只做 Windows）：下载本仓库 Release 里的 update.zip，
+            # 校验 SHA256 后由独立助手进程备份、替换、重启，失败自动回滚。
+            # 没有可用升级包或安装失败时，前端退回「因系统原因跳 GitHub 下载」。
             action = path.rsplit('/', 1)[-1]
             try:
-                self.read_body()
+                body = json.loads(self.read_body() or b'{}')
             except Exception:
-                pass
+                body = {}
+            if not isinstance(body, dict):
+                body = {}
             if action == 'healthy':
-                return self.respond(200, {'ok': True, 'version': CONFIG.get('mod_version')})
-            return self.respond(200, {
-                'available': False, 'required': False, 'repository': '',
-                'message': '修改版自动更新已停用（会覆盖本地适配）。请用「官方基底监控」检查 Kuro 官方版本。'})
+                return self.respond(200, UPDATER.healthy(body.get('version')))
+            if action == 'status':
+                return self.respond(200, UPDATER.status())
+            if action == 'check':
+                try:
+                    return self.respond(200, UPDATER.check())
+                except Exception as error:
+                    return self.respond(200, {**UPDATER.status(), 'installable': False,
+                                              'message': '检查更新失败（%s）。' % error,
+                                              'release_url': COMMUNITY_RELEASES_URL})
+            if action == 'install':
+                try:
+                    return self.respond(200, UPDATER.prepare())
+                except Exception as error:
+                    return self.respond(409, {'error': str(error), 'installable': False,
+                                              'release_url': COMMUNITY_RELEASES_URL})
+            return self.respond(404, {'error': 'Unknown update action'})
         if path.startswith('/assistant/'):
             try:
                 length = int(self.headers.get('Content-Length', '0'))

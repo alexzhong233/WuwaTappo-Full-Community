@@ -300,6 +300,23 @@ if (-not (Test-Path -LiteralPath $exe)) { throw "没有生成安装包：$exe" }
 
 if (-not $KeepStaging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 
+# 程序内升级包：同一份 payload 再打一个带清单的 zip，供桌宠里的「一键更新」下载。
+# 安装包本身仍然是 exe；zip 只走应用内更新，用户不会看到它。
+Write-Host "== 生成程序内升级包 =="
+$py = if ($env:WUWA_PYTHON) { $env:WUWA_PYTHON } else { Join-Path $Root '.venv\Scripts\python.exe' }
+if (-not (Test-Path -LiteralPath $py)) {
+  $command = Get-Command python -ErrorAction SilentlyContinue
+  if (-not $command) { throw "找不到 python，无法生成程序内升级包（先跑 tools\setup-env.ps1）" }
+  $py = $command.Source
+}
+& $py (Join-Path $Root 'src\tools\make_update.py') $R.Id
+if ($LASTEXITCODE -ne 0) { throw "生成程序内升级包失败，退出码 $LASTEXITCODE" }
+$zip = Join-Path $OutDir "$($R.ArtifactPrefix)-$version-win-x64-update.zip"
+if (-not (Test-Path -LiteralPath $zip)) { throw "没有生成程序内升级包：$zip" }
+$zipSha = Get-Sha256Hex $zip
+"$zipSha  $(Split-Path $zip -Leaf)" | Set-Content -LiteralPath "$zip.sha256" -Encoding ASCII
+Write-Host ("  升级包: {0}（{1:N1} MB）" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1MB))
+
 $exeSize = (Get-Item -LiteralPath $exe).Length
 $sha = Get-Sha256Hex $exe
 "$sha  $name.exe" | Set-Content -LiteralPath "$exe.sha256" -Encoding ASCII

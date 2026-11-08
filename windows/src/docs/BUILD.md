@@ -30,8 +30,8 @@ python tools/make_update.py
 
 控制器测试需要先完成构建以读取 `build/payload/cache`。仅测试逻辑或缓存单元不等于通过真实网络与联机行为测试。发布前必须安装到包含空格或中文的新目录，验证本地模式、普通网络可用、房间禁止、更新入口和旧规则清理。
 
-`build/`、`dist/` 和 `inputs/` 均不进入 Git。本地安装器输出 `dist/WuwaTappo全图鉴版-1.2-Setup.exe`。GitHub 会改写附件名中的中文，因此线上文件使用英文附件名，安装程序内部仍使用中文名称。
+`build/`、`dist/` 和 `inputs/` 均不进入 Git。`package-installer.ps1` 会产出三个东西：`dist/WuwaTappo-Full-{CN|Global}-Community-Windows-x64-<版本>.exe`（NSIS 安装包，用户下载的就是它）、它的 `.sha256`，以及原地升级 ZIP `dist/WuwaTappo-Full-{CN|Global}-Community-<版本>-win-x64-update.zip`（及其 `.sha256`）。Release 工作流再把所有发行文件汇总成一份 `SHA256SUMS.txt` 一起上传。
 
-原地升级 ZIP 为 `dist/WuwaTappo-FullAtlas-1.2-x64-update.zip`，只含程序、服务、脚本及公共配置；排除账号目录、控制令牌、本地设置、素材缓存和运行时。发布时同时上传 `SHA256SUMS.txt`。客户端只接受本仓库的正式 Release、匹配版本清单、精确文件列表和逐文件 SHA256；不接受未知路径或覆盖用户数据的升级包。
+升级 ZIP 只含程序本体：`WuwaTappo.Local.exe`、`LocalGalleryHost.exe`、`WuwaTappoLauncher.exe`、`package_config.json`（**已剥掉本机 token**）、图标与许可，加上 `_internal/`；不含 `local_config.json`、账号目录、缓存、导入的 Mod、设置和 `host/`（早期布局的副本，运行期不用）。客户端只接受本仓库 Release、匹配版本清单、精确文件列表和逐文件 SHA256；不接受未知路径、覆盖用户数据，或清单里没有的文件。
 
 修改版更新保留账号目录和本地状态。辅助进程在原程序正常退出后备份及替换文件，重新启动；新前端确认启动成功后清理旧程序备份。启动超时回退。官方后续版本发生结构变化时必须重新适配并发布修改版，不直接运行官方安装器覆盖修改版。

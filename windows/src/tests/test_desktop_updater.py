@@ -7,14 +7,37 @@ import unittest
 import zipfile
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-from desktop_updater import FileTransaction, unpack, safe_name, validate_manifest, apply_update, Updater
+from desktop_updater import (FileTransaction, is_prerelease, release_asset_name, safe_name,
+                             unpack, validate_manifest, version_tuple, apply_update, Updater)
+
+CONFIG={'community_version':'1.1','region':'cn'}
+SHA='SHA256SUMS.txt'
+ZIP='WuwaTappo-Full-CN-Community-1.2-win-x64-update.zip'
+BASE='https://github.com/alexzhong233/WuwaTappo-Full-Community/releases/download/v1.2/'
+
+
+class VersionTests(unittest.TestCase):
+    def test_prerelease_ordering_matches_semver(self):
+        self.assertGreater(version_tuple('1.3.0'),version_tuple('1.3.0-alpha.4'))
+        self.assertGreater(version_tuple('1.3.0-alpha.10'),version_tuple('1.3.0-alpha.9'))
+        self.assertGreater(version_tuple('1.3.0-alpha.4'),version_tuple('1.2.9'))
+        self.assertEqual(version_tuple('1.3'),version_tuple('1.3.0.0'))
+        self.assertTrue(is_prerelease('1.3.0-alpha.4'))
+        self.assertFalse(is_prerelease('1.3.0'))
+    def test_release_names_follow_region(self):
+        self.assertEqual(release_asset_name(CONFIG,'1.2'),ZIP)
+        self.assertEqual(release_asset_name({'region':'global'},'1.2'),
+                         'WuwaTappo-Full-Global-Community-1.2-win-x64-update.zip')
+    def test_bad_version_rejected(self):
+        for value in ['1','v1.2','1.2.3.4.5','1.2 beta']:
+            with self.subTest(value=value),self.assertRaises(ValueError):version_tuple(value)
 
 
 class UpdaterTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.contents={'WuwaTappo.Local.exe':b'new-pet','LocalGalleryHost.exe':b'new-host',
-                       'package_config.json':b'{"mod_version":"1.1","client_version":"1.0.2"}'}
+                       'package_config.json':b'{"community_version":"1.1","client_version":"1.0.2"}'}
         self.manifest={'schema':1,'version':'1.1','files':[{'path':n,'size':len(v),'sha256':hashlib.sha256(v).hexdigest()} for n,v in self.contents.items()]}
     def tearDown(self):self.temp.cleanup()
     def archive(self,extra=None):
@@ -49,55 +72,63 @@ class UpdaterTests(unittest.TestCase):
         self.contents['WuwaTappo.Local.exe']=b'fake'
         with self.assertRaises(ValueError):unpack(self.archive(),self.root/'hash')
     def test_data_paths_and_traversal_denied(self):
-        for name in ['../a','/a','C:/a','_internal/../../x','profile/account','cache/atlas.json','local_config.json','assistant_state.json','runtime/msedgewebview2.exe','_internal/a:stream','_internal\\a']:
+        for name in ['../a','/a','C:/a','_internal/../../x','profile/account','cache/atlas.json','local_config.json','assistant_state.json','custom-atlas/item.json','runtime/msedgewebview2.exe','_internal/a:stream','_internal\\a','launch.ps1']:
             with self.subTest(name=name),self.assertRaises(ValueError):safe_name(name)
     def test_duplicate_case_collision_denied(self):
         self.manifest['files'].append({**self.manifest['files'][0],'path':'WUWATAPPO.LOCAL.EXE'})
         with self.assertRaises(ValueError):validate_manifest(self.manifest)
     def test_api_quota_uses_public_release(self):
-        updater=Updater(self.root,{'mod_version':'1.1'})
+        updater=Updater(self.root,CONFIG)
         with patch.object(updater,'fetch',side_effect=OSError('API quota')),patch.object(updater,'public_release',return_value={'tag_name':'v1.0','assets':[]}) as fallback:
             self.assertFalse(updater.check()['available'])
             fallback.assert_called_once()
-    def release(self, draft=False, prerelease=False, complete=True):
-        base='https://github.com/Averionx/WuwaTappo-FullAtlas/releases/download/v1.2/'
-        name='WuwaTappo-FullAtlas-1.2-x64-update.zip'
-        return {'tag_name':'v1.2','draft':draft,'prerelease':prerelease,'assets':[
-            {'name':name,'browser_download_url':base+name,'size':1234},
-            {'name':'SHA256SUMS.txt','browser_download_url':base+'SHA256SUMS.txt'}] if complete else []}
+    def release(self, version='1.2', draft=False, prerelease=False, complete=True):
+        base=BASE.replace('v1.2','v'+version)
+        name=ZIP.replace('1.2',version)
+        return {'tag_name':'v'+version,'draft':draft,'prerelease':prerelease,
+                'html_url':base.replace('/releases/download/','/releases/tag/'),
+                'assets':[{'name':name,'browser_download_url':base+name,'size':1234},
+                          {'name':SHA,'browser_download_url':base+SHA}] if complete else []}
     def check_release(self,updater,release):
-        sums=('a'*64+'  WuwaTappo-FullAtlas-1.2-x64-update.zip\n').encode()
-        with patch.object(updater,'fetch',side_effect=[json.dumps(release).encode(),sums]):
+        name=next((a['name'] for a in release['assets'] if a['name']!=SHA),ZIP)
+        sums=('a'*64+'  '+name+'\n').encode()
+        with patch.object(updater,'fetch',side_effect=[json.dumps([release]).encode(),sums]):
             return updater.check()
-    def test_formal_release_required_cached_and_survives_outage(self):
-        updater=Updater(self.root,{'mod_version':'1.1'})
-        self.assertTrue(self.check_release(updater,self.release())['required'])
-        other=Updater(self.root,{'mod_version':'1.1'})
-        self.assertTrue(other.status()['required'])
-        with patch.object(other,'fetch',side_effect=OSError('offline')),patch.object(other,'public_release',side_effect=OSError('offline')):
-            self.assertTrue(other.check()['required'])
-        self.assertFalse(Updater(self.root,{'mod_version':'1.2'}).status()['required'])
-    def test_draft_prerelease_incomplete_do_not_lock(self):
-        for release in [self.release(draft=True),self.release(prerelease=True),self.release(complete=False)]:
-            updater=Updater(self.root,{'mod_version':'1.1'})
-            self.assertFalse(self.check_release(updater,release)['required'])
-    def test_bad_checksum_never_creates_mandatory_policy(self):
-        updater=Updater(self.root,{'mod_version':'1.1'})
-        with patch.object(updater,'fetch',side_effect=[json.dumps(self.release()).encode(),b'invalid']):
+    def test_formal_release_is_an_optional_update(self):
+        updater=Updater(self.root,CONFIG)
+        result=self.check_release(updater,self.release())
+        self.assertTrue(result['available'])
+        self.assertTrue(result['installable'])
+        # 可选更新：前端不会拿它挡住开箱等原有功能
+        self.assertFalse(result['required'])
+        self.assertTrue(Updater(self.root,CONFIG).status()['installable'])
+        self.assertFalse(Updater(self.root,{'community_version':'1.2','region':'cn'}).status()['available'])
+    def test_draft_and_older_release_ignored(self):
+        for release in [self.release(draft=True),self.release(version='1.1')]:
+            self.assertFalse(self.check_release(Updater(self.root,CONFIG),release)['available'])
+    def test_prerelease_needs_opt_in(self):
+        release=self.release(version='1.1.5-alpha.1',prerelease=True)
+        self.assertFalse(self.check_release(Updater(self.root,CONFIG),release)['available'])
+        allowed=Updater(self.root,CONFIG,allow_prerelease=lambda:True)
+        self.assertTrue(self.check_release(allowed,release)['available'])
+    def test_release_without_zip_falls_back_to_github(self):
+        updater=Updater(self.root,CONFIG)
+        result=self.check_release(updater,self.release(complete=False))
+        self.assertFalse(result['available'])
+        self.assertFalse(result['installable'])
+        self.assertIn('1.2',result['message'])
+        self.assertFalse(updater.status()['available'])
+    def test_bad_checksum_never_creates_candidate(self):
+        updater=Updater(self.root,CONFIG)
+        with patch.object(updater,'fetch',side_effect=[json.dumps([self.release()]).encode(),b'invalid']):
             with self.assertRaises(ValueError):updater.check()
-        self.assertFalse(updater.status()['required'])
-    def test_frontend_health_must_match_package_version(self):
-        updater=Updater(self.root,{'mod_version':'1.2'})
-        with self.assertRaises(ValueError):updater.healthy('1.1')
+        self.assertFalse(updater.status()['available'])
+    def test_health_ack_uses_installed_version(self):
+        updater=Updater(self.root,CONFIG)
+        folder=self.root/'.updates/job';folder.mkdir(parents=True)
+        (folder/'pending.json').write_text('{"version":"1.1","id":"job"}')
         self.assertTrue(updater.healthy('1.2')['ok'])
-    def test_invalid_later_release_cannot_clear_confirmed_requirement(self):
-        updater=Updater(self.root,{'mod_version':'1.1'})
-        self.check_release(updater,self.release())
-        bad=self.release()
-        bad['assets'][0]['browser_download_url']=bad['assets'][0]['browser_download_url'].replace('/v1.2/','/v9.9/')
-        result=self.check_release(updater,bad)
-        self.assertTrue(result['required'])
-        self.assertEqual(result['version'],'1.2')
+        self.assertTrue((folder/'healthy').exists())
     def helper_fixture(self):
         target=self.root/'install';target.mkdir()
         (target/'WuwaTappo.Local.exe').write_bytes(b'old-pet')
@@ -116,7 +147,8 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual((target/'local_config.json').read_text(),'private')
     def test_helper_startup_timeout_restores_old_executable(self):
         target,folder,stage=self.helper_fixture()
-        with patch('desktop_updater.processes',return_value=[]),patch('desktop_updater.launch') as launch,patch('psutil.wait_procs',return_value=([],[])),patch('desktop_updater.time.monotonic',side_effect=[0,0,91]):
+        from unittest.mock import MagicMock
+        with patch('desktop_updater.processes',return_value=[]),patch('desktop_updater.launch') as launch,patch('desktop_updater.psutil',MagicMock()),patch('desktop_updater.time.monotonic',side_effect=[0,0,91]):
             apply_update(target,stage)
         self.assertFalse(json.loads((folder/'result.json').read_text())['ok'])
         self.assertEqual((target/'WuwaTappo.Local.exe').read_bytes(),b'old-pet')

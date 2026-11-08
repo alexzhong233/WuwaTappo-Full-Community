@@ -54,7 +54,7 @@ function createAssistantUpdateGate({window,result,retry,install,quit}){
   const {el,button}=assistantUi(window),root=el('section',undefined,window.document.body,'wt-gate');
   root.setAttribute('role','alertdialog');root.setAttribute('aria-modal','true');root.tabIndex=-1;
   const card=el('article',undefined,root),title=el('h2','需要更新',card),message=el('p','',card);
-  el('p','新版本来自 Averionx/WuwaTappo-FullAtlas。更新会保留账号、图鉴缓存与设置；确认后自动下载、校验、备份并重启。',card,'wt-muted');
+  el('p','新版本来自本项目 GitHub 发布。更新会保留账号、图鉴缓存与设置；Windows 版可自动下载、校验、备份并重启，macOS 版因系统限制只能跳转下载页。',card,'wt-muted');
   const actions=el('div',undefined,card,'wt-controls'),status=el('p','',card,'wt-notice');
   let busy=false;
   const update=button('一键更新',actions,async()=>{
@@ -245,10 +245,23 @@ function createAssistantDashboard(d){
       function confirmUpdate(r){
         const gate=el('section',undefined,doc.body,'wt-gate');gate.setAttribute('role','alertdialog');gate.setAttribute('aria-modal','true');
         const box=el('article',undefined,gate);el('h2','发现新版本',box);
-        el('p','当前全图鉴版本 '+r.current+'，GitHub 最新发布 '+r.latest+'。',box);
+        el('p','当前整合版 '+r.current+'，GitHub 最新发布 '+r.latest+'。',box);
         el('p','更新会保留账号、图鉴缓存与已导入的 Mod 资源包。',box,'wt-muted');
-        const row=el('div',undefined,box,'wt-controls');
-        button('打开下载页',row,()=>{gate.remove();openReleases();},'wt-primary');
+        const row=el('div',undefined,box,'wt-controls'),status=el('p','',box,'wt-notice');
+        const github=()=>{gate.remove();openReleases();};
+        // 只有服务端明确说这个发布带原地升级包时才给「一键更新」；
+        // 其余情况（macOS 版、发布里没 zip、下载校验失败）都退回跳 GitHub 下载安装包。
+        if(r.installable){
+          const install=button('一键更新',row,async()=>{
+            install.disabled=true;status.textContent='正在下载并校验升级包…';
+            try{const res=await d.atlas.request('/update/install',{});status.textContent=res.message||'正在退出桌宠并原地升级…';}
+            catch(e){status.textContent='程序内更新失败：'+e.message+'。可以改为下载安装包覆盖安装。';install.disabled=false;if(!row.querySelector('[data-github-fallback]')){const fallback=button('前往 GitHub 下载',row,github);fallback.setAttribute('data-github-fallback','true');}}
+          },'wt-primary');
+          button('前往 GitHub 下载',row,github);
+        }else{
+          el('p','当前系统或这个发布不支持程序内更新，将打开 GitHub Releases 下载安装包。',box,'wt-muted');
+          button('前往 GitHub 下载',row,github,'wt-primary');
+        }
         button('稍后',row,()=>gate.remove());
       }
       const sync=card();el('h3','本地图鉴资源',sync);el('p','本地开关只影响物品展示与本机装扮，登录、点数、开箱和版本检查仍使用原账号。',sync,'wt-muted');button('检查并同步官方图鉴',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'官方图鉴资源正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});

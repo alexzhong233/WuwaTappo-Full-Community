@@ -4,7 +4,7 @@ Bindings and component locations come from parsed JavaScript, not guessed
 minified variable names. Unknown layouts fail before an installed file changes.
 """
 from pathlib import Path
-import hashlib, json, re, shutil, os
+import hashlib, json, re, shutil, os, sys
 
 PROJECT = Path(__file__).resolve().parents[1]
 ROOT = Path(os.environ['WUWA_BUILD_ROOT'])
@@ -65,6 +65,32 @@ MOD_NAME_FALLBACK_NEW = '''function resolveAssetDisplayName(e, t) {
   return resolved || (mods && mods.has(n) ? n : "")
 }'''
 shared = replace(shared, MOD_NAME_FALLBACK_OLD, MOD_NAME_FALLBACK_NEW)
+
+# 任务栏默认隐藏。官方默认是显示（设置里「显示任务栏图标」勾着），这里只改默认值，
+# 官方设置项本身保持可用；已经存过设置的用户迁移一次，之后手动勾回来就永久生效。
+# 官方改版后锚点可能变，这时只跳过这一项，不让整条构建链红掉。
+_TASKBAR_DEFAULT = 'showTaskbarIcon: !0'
+if shared.count(_TASKBAR_DEFAULT) == 1 and shared.count('function clampPetScale(e) {') == 1:
+    shared = replace(shared, _TASKBAR_DEFAULT, 'showTaskbarIcon: !1')
+    shared = replace(shared, 'function clampPetScale(e) {', '''// 社区版：默认不占任务栏按钮；历史设置只迁移一次，避免每次启动覆盖用户选择。
+(function () {
+  try {
+    const key = "wuwatappo-settings", marker = key + "-community-taskbar-v1";
+    if (window.localStorage.getItem(marker)) return;
+    const saved = JSON.parse(window.localStorage.getItem(key) || "null");
+    if (saved && typeof saved === "object" && "showTaskbarIcon" in saved) {
+      saved.showTaskbarIcon = false;
+      window.localStorage.setItem(key, JSON.stringify(saved));
+    }
+    window.localStorage.setItem(marker, "1");
+  } catch (error) {
+    console.warn("[community] taskbar default skipped", error);
+  }
+})();
+
+function clampPetScale(e) {''')
+else:
+    print('warn: 官方前端里找不到任务栏图标默认值，跳过「默认隐藏」这一项', file=sys.stderr)
 
 # 背包「我的预设」左边的预览走的是另一条链路：按名字拼 CDN 地址（character/<名字>.png），
 # 不走 _atlas 目录查表，所以 Mod 条目在那里拼出一个必然 404 的官方地址，界面就剩一个「？」。
