@@ -26,6 +26,10 @@ jobs:
             artifact: WuwaTappo-Full-CN-Community-Windows-x64
           - region: global
             artifact: WuwaTappo-Full-Global-Community-Windows-x64
+    env:
+      # 官方 CDN 从 runner 侧会间歇性连不上，取包脚本据此回退到仓库的 upstream-resources
+      # 镜像（与 macOS 侧同名变量同语义），镜像内容由锁文件里的 sha256 兜底。
+      WUWA_INSTALLER_MIRROR_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/upstream-resources
     steps:
       - uses: actions/checkout@v5
         with:

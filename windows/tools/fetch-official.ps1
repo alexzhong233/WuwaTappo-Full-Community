@@ -226,28 +226,48 @@ if ($OfficialExe) {
       # （CI 上已经因为 "operation has timed out" 挂过）。改用 HttpClient 并给 30 分钟，
       # 失败重试 3 次，每次清掉半截文件。
       Add-Type -AssemblyName System.Net.Http | Out-Null
-      $attempt = 0
-      while ($true) {
-        $attempt++
-        $client = $null
-        try {
-          $client = New-Object System.Net.Http.HttpClient
-          $client.Timeout = [TimeSpan]::FromMinutes(30)
-          $client.DefaultRequestHeaders.Add('User-Agent', 'WuwaTappo-FullAtlas-Fetch/1.0')
-          $response = $client.GetAsync($url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-          $response.EnsureSuccessStatusCode() | Out-Null
-          $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-          $file = [IO.File]::Create($setup)
-          try { $stream.CopyTo($file) } finally { $file.Dispose(); $stream.Dispose(); $response.Dispose() }
-          break
-        } catch {
-          if (Test-Path -LiteralPath $setup) { Remove-Item -LiteralPath $setup -Force -ErrorAction SilentlyContinue }
-          if ($attempt -ge 3) { throw "安装包下载失败（已重试 3 次）：$url`n$($_.Exception.Message)" }
-          "下载失败（第 $attempt 次）：$($_.Exception.Message)，10 秒后重试"
-          Start-Sleep -Seconds 10
-        } finally {
-          if ($client) { $client.Dispose() }
+      # 主源是官方 CDN。国服 CDN 从海外 runner 时通时不通（2026-11-08 发版就是被它
+      # 连不上一路打死），失败后退到仓库自建的 upstream-resources 镜像：文件名带安装包
+      # sha256，内容由下方的哈希校验兜底，镜像投毒改不动字节。
+      $mirror = ''
+      if ($env:WUWA_INSTALLER_MIRROR_BASE -and $lock -and [string]$lock.client_version -eq $target -and $lock.installer_sha256) {
+        $mirror = "$($env:WUWA_INSTALLER_MIRROR_BASE.TrimEnd('/'))/$($lock.installer_sha256)-$(Split-Path $url -Leaf)"
+      }
+      $sources = @($url)
+      if ($mirror) { $sources += $mirror }
+      $lastError = $null
+      foreach ($source in $sources) {
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+          $client = $null
+          try {
+            $client = New-Object System.Net.Http.HttpClient
+            $client.Timeout = [TimeSpan]::FromMinutes(30)
+            $client.DefaultRequestHeaders.Add('User-Agent', 'WuwaTappo-FullAtlas-Fetch/1.0')
+            $response = $client.GetAsync($source, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            $response.EnsureSuccessStatusCode() | Out-Null
+            $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+            $file = [IO.File]::Create($setup)
+            try { $stream.CopyTo($file) } finally { $file.Dispose(); $stream.Dispose(); $response.Dispose() }
+            break
+          } catch {
+            $lastError = $_
+            if (Test-Path -LiteralPath $setup) { Remove-Item -LiteralPath $setup -Force -ErrorAction SilentlyContinue }
+            if ($attempt -lt 3) {
+              "下载失败（第 $attempt 次）：$($_.Exception.Message)，10 秒后重试"
+              Start-Sleep -Seconds 10
+            }
+          } finally {
+            if ($client) { $client.Dispose() }
+          }
         }
+        if (Test-Path -LiteralPath $setup) {
+          if ($source -ne $url) { "主源不可用，已改用镜像: $source" }
+          break
+        }
+        if ($mirror -and $source -eq $url) { "主源 3 次均失败，改用镜像: $mirror" }
+      }
+      if (-not (Test-Path -LiteralPath $setup)) {
+        throw "安装包下载失败（主源与镜像均不可用）：$url`n$($lastError.Exception.Message)"
       }
       "下载完成: {0:N1} MB" -f ((Get-Item -LiteralPath $setup).Length / 1MB)
     }
@@ -258,6 +278,16 @@ if ($OfficialExe) {
     $work = Join-Path $R.WorkDir "official\$target"
     New-Item -ItemType Directory -Path $work -Force | Out-Null
     "使用指定安装包: $setup"
+  }
+
+  # 安装包完整性：锁定版本的包哈希必须对得上，否则说明下载被截断或被替换，或锁文件写错。
+  # 只对锁定版本校验 —— 用 -Latest 或指定别的版本时没有可比对的基准。
+  if ($lock -and [string]$lock.client_version -eq $target -and $lock.installer_sha256) {
+    $actualInstallerSha = Get-Sha256Hex $setup
+    if ($actualInstallerSha -ne [string]$lock.installer_sha256) {
+      throw "安装包 sha256 与锁文件不一致：$setup`n实际 $actualInstallerSha`n期望 $($lock.installer_sha256)"
+    }
+    '安装包 sha256 校验通过'
   }
   $sourceExe = $null
 }

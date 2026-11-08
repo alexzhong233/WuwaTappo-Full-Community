@@ -1,8 +1,10 @@
 {
-  "$comment": "Windows 侧注入适配所锁定的官方客户端版本。CI 与 fetch-official.ps1 默认按这里的版本取包，保证可重现；官方发新版后不会让 main 的构建静默变成未适配版本。",
-  "client_version": "1.0.3",
-  "official_exe_sha256": "cedc37d0c11d112f4d933647fb6cf00e1dca847fc763250984c647080f849080",
-  "official_exe_size": 78064864,
-  "installer_url": "https://mc-wuwatappo.kurogames-global.com/app/0ad48bb0-55bf-49f0-b57d-2b9f3edc0c73/WuwaTappo-cn_1.0.3_x64-setup.exe",
-  "adapter_notes": "1.0.3 的 6 处注入断点处理见 tools/patches/1.0.3-adaptation.diff 与 windows/README.md。切换到新版本前需重新定位锚点并实机验证。"
+  "$comment": "Windows 侧注入适配所锁定的官方客户端版本。跟随官方最新版，与 macos/upstream-cn.json 保持一致；CI 与 fetch-official.ps1 默认按这里取包，保证可重现。升级前必须在 staging 上重跑注入，锚点断裂会直接失败。",
+  "client_version": "1.0.4",
+  "official_exe_sha256": "ee829c55916619ea2882e4a13546cbaf2f880363237608285105c7a4958e70b3",
+  "official_exe_size": 78128864,
+  "installer_url": "https://mc-wuwatappo.kurogames-global.com/app/b1975d6f-8c84-4412-9692-f1022d620a04/WuwaTappo-cn_1.0.4_x64-setup.exe",
+  "installer_sha256": "eb4e6d2103c222297508837a5ca92eeaa058891c9f1e2e7bf034c23f37668e26",
+  "installer_size": 201758432,
+  "adapter_notes": "国服 1.0.4 与 mac 侧同一份前端产物（共享 JS 20 个模块），注入锚点全部命中，行为与 1.0.3 一致，未新增断点。"
 }

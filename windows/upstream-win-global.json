@@ -1,10 +1,10 @@
 {
-  "$comment": "Windows 侧国际服注入适配所锁定的官方客户端版本。与国服 upstream-win.json 同构：CI 与 fetch-official.ps1 -Region global 按这里取包，保证可重现；官方发新版后不会让 main 的构建静默变成未适配版本。",
-  "client_version": "1.0.3",
-  "official_exe_sha256": "e872582d245a76b58737d4c281b7d62e22df7beb91b3e312fce31448a23ab5e6",
-  "official_exe_size": 78072032,
-  "installer_url": "https://wutheringwaves-wuwatappo.kurogames-global.com/app/64208fbd-fff2-4cfa-8457-4331dda0c054/WuwaTappo-global_1.0.3_x64-setup.exe",
-  "installer_sha256": "69d289e9ea0c3c45778d5d26e6b13be4c72a3ea0f0dc9ea5c581a395b07a33f2",
-  "installer_size": 201734368,
-  "adapter_notes": "国际服 1.0.3 与国服同版本，前端压缩产物把 listen 导成 listen$1、应用标识是 com.kuro.wuwatappo.global（国服是 .cn），注入脚本按候选列表兼容两侧。切换版本前需重新定位锚点并实机验证。"
+  "$comment": "Windows 侧国际服注入适配所锁定的官方客户端版本。跟随官方最新版，与 macos/upstream-global.json 保持一致；CI 与 fetch-official.ps1 -Region global 按这里取包，保证可重现。",
+  "client_version": "1.0.4",
+  "official_exe_sha256": "186701dadf56efbbc4b44e071e2ed9da831fa0f7fb298102c7a53909adf77480",
+  "official_exe_size": 78131936,
+  "installer_url": "https://wutheringwaves-wuwatappo.kurogames-global.com/app/bcea8e4b-6805-407e-af8d-a45a26bc3727/WuwaTappo-global_1.0.4_x64-setup.exe",
+  "installer_sha256": "674d4932c1fa1818406246669d2ab4027a8f70dbca6f365755b23210678d7ff5",
+  "installer_size": 201766624,
+  "adapter_notes": "国际服 1.0.4 的共享 JS 是 index-CBYJTno0.js（19 个模块，与国服产物不同），应用标识 com.kuro.wuwatappo.global，注入按候选列表兼容两侧，1.0.4 上锚点全部命中。"
 }

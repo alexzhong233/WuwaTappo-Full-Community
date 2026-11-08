@@ -145,12 +145,15 @@ windows\
 
 游戏版本和 FullAtlas 前端是两条独立的轴：
 
-- **游戏版本**（1.0.3 → 1.0.4）：前端 JS 结构变化会让注入锚点失效。`check-update.ps1` 查版本，`update-watch.ps1` 取新版基底并试注入到 staging（不碰 `app\`、不执行安装器），注入失败会报出是哪一处锚点断了。
+- **游戏版本**：基线跟随官方最新版，**两个平台锁同一版本**。前端 JS 结构变化会让注入锚点失效，所以升级动作是「先验证、再改锁」：`check-update.ps1` 查版本，`update-watch.ps1`（或 `fetch-official.ps1 -Latest`）取新版基底并试注入到 staging（不碰 `app\`、不执行安装器），锚点断裂会直接报出是哪一处。验证通过后才改 `upstream-win*.json` 的 `client_version` / `official_exe_sha256` / `installer_*`。
+- **版本漂移会被测试挡住**：`macos/tests/upstream-baseline.test.mjs` 断言 Windows 与 macOS 锁的官方版本、安装包哈希完全一致，`npm test` 里跑。一边升、另一边没升会当场红掉——2026-11-08 那次发版就是 Windows 停在 1.0.3、macOS 已经 1.0.4，Windows 产物里还是旧客户端。
 - **FullAtlas 前端**（上游仓库 v1.2 → v1.3）：改动在 `src\src\` 那 3 个 JS 里，合并后要重跑一次构建验证。
 
 发行版设置面板发现官方新版本时，会提供本项目 Releases 和官方原包下载入口。原包下载只保存到用户 `Downloads`，不会覆盖现有全图鉴程序；只有检测到完整源码与 `tools\update-watch.ps1` / `tools\apply-update.ps1` 的维护环境，才显示本地适配按钮。普通安装包无法安全地自行推断新版注入锚点。
 
-注入锚点是压缩后的变量名，1.0.3 相对 1.0.2 断了 6 处（主锚点 `applyCatalog(e,t,n)` 三次都没变，辅助模块会漂移）。锚点不对时脚本直接报错并保持 `app\` 不动，不做「能启动但 UI 错位」的静默失败。
+注入锚点是压缩后的变量名，1.0.3 相对 1.0.2 断了 6 处（主锚点 `applyCatalog(e,t,n)` 三次都没变，辅助模块会漂移）；1.0.4 相对 1.0.3 没有新增断点，两侧锚点全部命中，行为不变。锚点不对时脚本直接报错并保持 `app\` 不动，不做「能启动但 UI 错位」的静默失败。
+
+官方 CDN 从境外的 GitHub runner 会间歇性连不上（2026-11-08 国服两个平台都被它打断）。`fetch-official.ps1` 现在会在主源重试 3 次仍失败后，改用仓库 `upstream-resources` 发布里的镜像包（文件名带安装包 sha256），下载完照样按锁文件的 `installer_sha256` 校验字节。镜像地址由 CI 的 `WUWA_INSTALLER_MIRROR_BASE` 传入，与 macOS 侧同一套约定。
 
 ## 已知限制
 

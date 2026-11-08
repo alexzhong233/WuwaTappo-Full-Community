@@ -3,14 +3,14 @@
 
   前置：
     1. tools\setup-env.ps1 已执行（.venv 就绪）
-    2. 官方 1.0.3 主程序放到 build\base-103\WuwaTappo.official.exe
+    2. tools\fetch-official.ps1 已取好官方基底（按 upstream-win*.json 锁定的最新版本）
     3. assets\cache 已由 prepare_cache.py 拉好
 
   用法： powershell -ExecutionPolicy Bypass -File tools\build.ps1 [-Extract] [-NoDeploy] [-NoRuntime] [-Base <目录>]
-        -Extract   先重新解包官方 EXE（覆盖 build\base-103 的前端产物）
+        -Extract   先重新解包官方 EXE（覆盖基底目录里的前端产物）
         -NoDeploy  只构建到 build\，不自动同步到 app\（更新流程用，先装配到中转目录再整体覆盖）
         -NoRuntime 装配时不内嵌 WebView2 运行时（CI / 小体积产物用）
-        -Base      指定官方主程序所在基底目录（默认为 build\base-103）
+        -Base      指定官方主程序所在基底目录（默认取 build\official\current.json，未取包时退回 build\base-103）
 #>
 param([switch]$Extract, [switch]$NoDeploy, [switch]$NoRuntime, [string]$Base,
   [ValidateSet('cn', 'global')][string]$Region)
@@ -20,7 +20,16 @@ $Root = Split-Path $PSScriptRoot -Parent
 $R = Get-RegionProfile -Root $Root -Region $Region
 $env:WUWA_REGION = $R.Id
 $Py = Join-Path $Root '.venv\Scripts\python.exe'
-if (-not $Base) { $Base = Join-Path $R.WorkDir 'base-103' }
+if (-not $Base) {
+  # 默认用 fetch-official.ps1 最近一次取到的基底——跟着锁定的官方版本走，
+  # 不再写死 base-103（否则换了基线还得靠人记得传 -Base，实际就会一直用旧客户端）。
+  $current = Join-Path $R.WorkDir 'official\current.json'
+  if (Test-Path -LiteralPath $current) {
+    $Base = [string]((Get-Content -LiteralPath $current -Raw -Encoding UTF8 | ConvertFrom-Json).base)
+  } else {
+    $Base = Join-Path $R.WorkDir 'base-103'
+  }
+}
 $Official = Join-Path $Base 'WuwaTappo.official.exe'
 $Patched = Join-Path $Root 'src'
 
