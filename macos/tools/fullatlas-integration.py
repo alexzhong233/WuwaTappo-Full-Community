@@ -46,6 +46,16 @@ def named(meta, name):
     assert len(found) == 1, (name, found)
     return found[0]
 
+# Preserve Tauri asset URLs for local Mod images in the official renderers.
+for name in ('resolveAppearanceAssetUrl', 'resolveAppearanceAssetDisplayUrl', 'resolveAppearanceAtlasUrl'):
+    pattern = r'function ' + name + r'\([^\n]*\) \{[\s\S]*?(?=\n(?:async )?function )'
+    match = re.search(pattern, shared)
+    assert match, name
+    original = match.group()
+    updated = original.replace(r'/^https?:\/\//i', r'/^(?:https?|asset):\/\//i')
+    assert updated != original, name
+    shared = replace(shared, original, updated)
+
 # Shared public functions retain readable names between these releases.
 shared = replace(shared, 'loaderModule.init(kurodataConfig);\nwindow.kurodata = loaderModule;\ninitTrackCommonProps();\ninitFrontendAlertReporting();', '''let localOnlineServicesStarted = false;
 function localStartOnlineServices() {
@@ -176,8 +186,8 @@ async function __toggleLocal(event){{try{{await __lg.setEnabled(event.target.che
 async function __syncLocal(){{try{{const status=await __lg.syncCache(true);{pi['showToast']}('本地图鉴已同步：'+(status.result?.atlas_count||'')+'项');}}catch(error){{{pi['showToast']}(error.message);}}}}
 '''
 row = f'''{h}('div',{{class:'setting-item','data-local-gallery-setting':'true'}},[
- {h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'本地全图鉴'),{h}('div',{{class:'setting-sub'}},__localBusy.value?'正在切换本地显示模式…':__localEnabled.value?'已开启 · 联机不可用，其他网络功能正常':'开启全部本地图鉴；关闭后恢复账号背包',1)]),
- {h}('div',{{class:'setting-content'}},[{h}('label',{{class:'setting-switch'}},[{h}('input',{{type:'checkbox',role:'switch','aria-label':'本地全图鉴',style:'display:block;position:absolute;width:1px;height:1px;opacity:0',checked:__localEnabled.value,disabled:__localBusy.value||__localSync.value.status==='running',onChange:__toggleLocal,onMousedown:{with_modifiers}(()=>{{}},['stop'])}},null,40,['checked','disabled']),{h}('span',{{class:'setting-slider'}})])])]),
+ {h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'外观模式'),{h}('div',{{class:'setting-sub'}},__localBusy.value?'正在切换本地显示模式…':__localEnabled.value?'当前：全图鉴 + Mod · 联机不可用，其他网络功能正常':'当前：官方 · 开启后使用全图鉴和已导入 Mod',1)]),
+ {h}('div',{{class:'setting-content'}},[{h}('label',{{class:'setting-switch'}},[{h}('input',{{type:'checkbox',role:'switch','aria-label':'全图鉴 + Mod',style:'display:block;position:absolute;width:1px;height:1px;opacity:0',checked:__localEnabled.value,disabled:__localBusy.value||__localSync.value.status==='running',onChange:__toggleLocal,onMousedown:{with_modifiers}(()=>{{}},['stop'])}},null,40,['checked','disabled']),{h}('span',{{class:'setting-slider'}})])])]),
  {h}('div',{{class:'setting-item','data-local-gallery-sync':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'更新本地图鉴'),{h}('div',{{class:'setting-sub'}},__localSync.value.status==='running'?'正在同步 '+__localSync.value.done+'/'+__localSync.value.total:'联网检查新增图鉴，本地全图鉴开启时也可同步',1)]),{h}('button',{{class:'setting-btn',type:'button',disabled:__localSync.value.status==='running',onClick:__syncLocal}},'检查并同步',8,['disabled'])]),
 '''
 edits = [(0, 0, f'import {{zzLocalAtlas as __lg}} from "./{shared_name}";\n'),

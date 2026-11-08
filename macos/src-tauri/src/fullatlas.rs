@@ -75,6 +75,7 @@ pub struct FullAtlasState {
     dir: PathBuf,
     inner: Mutex<Inner>,
     catalog: Mutex<Option<Value>>,
+    official_catalog: Mutex<Option<Value>>,
 }
 
 fn unix_time() -> u64 {
@@ -382,6 +383,7 @@ impl FullAtlasState {
                 runtime: Runtime::default(),
             }),
             catalog: Mutex::new(None),
+            official_catalog: Mutex::new(None),
         })
     }
     pub fn enabled(&self) -> bool {
@@ -400,7 +402,32 @@ impl FullAtlasState {
         Ok(())
     }
     fn catalog(&self, app: &AppHandle, refresh: bool) -> Result<Value, String> {
+        // Serialize catalog reads with Mod installation/removal so a stale
+        // request cannot put a removed pack back into the memoized catalog.
         let mut memo = self.catalog.lock().map_err(|_| "图鉴缓存锁失败")?;
+        if !refresh {
+            if let Some(value) = memo.as_ref() {
+                return Ok(value.clone());
+            }
+        }
+        let official = self.official_catalog(app, refresh)?;
+        let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn {
+            "CN"
+        } else {
+            "GLOBAL"
+        };
+        let value = crate::custom_resources::merge_official(
+            &official, &self.dir.join("custom-atlas"), region,
+        )?;
+        *memo = Some(value.clone());
+        Ok(value)
+    }
+
+    fn official_catalog(&self, app: &AppHandle, refresh: bool) -> Result<Value, String> {
+        let mut memo = self
+            .official_catalog
+            .lock()
+            .map_err(|_| "官方图鉴缓存锁失败")?;
         if !refresh {
             if let Some(value) = memo.as_ref() {
                 return Ok(value.clone());
@@ -763,17 +790,112 @@ impl FullAtlasState {
             return Err("该操作仅允许主桌宠执行".into());
         }
         match action {
-            "official/update-check" => official_update_status(crate::profile::Region::from_app(app)),
-            "official/download" => download_official_installer(app, crate::profile::Region::from_app(app)),
-            "status"=>Ok(json!({"ready":true,"enabled":self.enabled(),"mode_verified":true,"network_policy":"rooms-only","sync":{"status":"idle"}})),
-            "offline-data"=>self.catalog(app,false),
-            "sync"=>self.catalog(app,true).map(|v|json!({"status":"complete","checked_at":unix_time(),"result":{"changed":true,"assets_json_ts":v["assets_json_ts"],"atlas_count":v["atlas"].as_array().map(Vec::len).unwrap_or(0)}})),
-            "mode"=>{let enabled=body.get("enabled").and_then(Value::as_bool).ok_or("模式必须是布尔值")?; if enabled{self.catalog(app,false)?;}let mut inner=self.inner.lock().map_err(|_|"全图鉴数据锁失败")?;inner.saved.enabled=enabled;self.save(&mut inner,true)?;drop(inner);if enabled{crate::socket::shutdown(app);}app.emit("fullatlas-mode-changed",enabled).map_err(|e|e.to_string())?;Ok(json!({"enabled":enabled,"mode_verified":true,"network_policy":"rooms-only"}))},
-            "update/status"|"update/check"|"update/healthy"=>Ok(json!({"required":false,"version":env!("CARGO_PKG_VERSION"),"message":UPDATE_MESSAGE})),
-            "update/install"=>Err(UPDATE_MESSAGE.into()),
-            "diagnostic"=>Ok(json!({"ok":true})),
-            name if name.starts_with("assistant/")=>{let quiet=app.state::<crate::input::InputMonitor>().status().running&&crate::input::physical_input_quiet();self.assistant(name.trim_start_matches("assistant/"),body,quiet)},
-            _=>Err(format!("未知全图鉴操作：{action}")),
+            "official/update-check" => {
+                official_update_status(crate::profile::Region::from_app(app))
+            }
+            "official/download" => {
+                download_official_installer(app, crate::profile::Region::from_app(app))
+            }
+            "status" => Ok(
+                json!({"ready":true,"enabled":self.enabled(),"mode_verified":true,"network_policy":"rooms-only","sync":{"status":"idle"}}),
+            ),
+            "offline-data" => self.catalog(app, false),
+            "sync" => {
+                let v = self.official_catalog(app, true)?;
+                *self.catalog.lock().map_err(|_| "图鉴缓存锁失败")? = None;
+                Ok(
+                    json!({"status":"complete","checked_at":unix_time(),"result":{"changed":true,"assets_json_ts":v["assets_json_ts"],"atlas_count":v["atlas"].as_array().map(Vec::len).unwrap_or(0)}}),
+                )
+            }
+            "custom/status" => {
+                let _catalog = self.catalog.lock().map_err(|_| "图鉴缓存锁失败")?;
+                let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn
+                {
+                    "CN"
+                } else {
+                    "GLOBAL"
+                };
+                let installed = crate::custom_resources::list_summaries(
+                    &self.dir.join("custom-atlas"),
+                    region,
+                )?;
+                let packs: Vec<Value> = installed.iter().map(|pack|json!({"id":pack.id,"name":pack.name,"item_count":pack.item_count,"asset_count":pack.asset_count})).collect();
+                Ok(
+                    json!({"enabled":self.enabled(),"region":region,"installed":!installed.is_empty(),"packs":packs,"atlas_count":installed.iter().map(|p|p.item_count).sum::<usize>(),"asset_count":installed.iter().map(|p|p.asset_count).sum::<usize>()}),
+                )
+            }
+            "custom/import" => {
+                let mut memo = self.catalog.lock().map_err(|_| "图鉴缓存锁失败")?;
+                let path = body
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or("请选择 ZIP 资源包")?;
+                let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn
+                {
+                    "CN"
+                } else {
+                    "GLOBAL"
+                };
+                let summary = crate::custom_resources::install_archive(
+                    Path::new(path),
+                    &self.dir.join("custom-atlas"),
+                    region,
+                )?;
+                *memo = None;
+                Ok(
+                    json!({"installed":true,"id":summary.id,"name":summary.name,"item_count":summary.item_count,"asset_count":summary.asset_count,"region":region}),
+                )
+            }
+            "custom/remove" => {
+                let mut memo = self.catalog.lock().map_err(|_| "图鉴缓存锁失败")?;
+                let id = body
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or("Mod ID 无效")?;
+                let root = self.dir.join("custom-atlas");
+                crate::custom_resources::remove_pack(&root, id)?;
+                let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn
+                {
+                    "CN"
+                } else {
+                    "GLOBAL"
+                };
+                let any = !crate::custom_resources::list_summaries(&root, region)?.is_empty();
+                *memo = None;
+                Ok(
+                    json!({"removed":id,"any_installed":any}),
+                )
+            }
+            "mode" => {
+                let enabled = body
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or("模式必须是布尔值")?;
+                if enabled {
+                    self.catalog(app, false)?;
+                }
+                let mut inner = self.inner.lock().map_err(|_| "全图鉴数据锁失败")?;
+                inner.saved.enabled = enabled;
+                self.save(&mut inner, true)?;
+                drop(inner);
+                if enabled {
+                    crate::socket::shutdown(app);
+                }
+                app.emit("fullatlas-mode-changed", enabled)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"enabled":enabled,"mode_verified":true,"network_policy":"rooms-only"}))
+            }
+            "update/status" | "update/check" | "update/healthy" => Ok(
+                json!({"required":false,"version":env!("CARGO_PKG_VERSION"),"message":UPDATE_MESSAGE}),
+            ),
+            "update/install" => Err(UPDATE_MESSAGE.into()),
+            "diagnostic" => Ok(json!({"ok":true})),
+            name if name.starts_with("assistant/") => {
+                let quiet = app.state::<crate::input::InputMonitor>().status().running
+                    && crate::input::physical_input_quiet();
+                self.assistant(name.trim_start_matches("assistant/"), body, quiet)
+            }
+            _ => Err(format!("未知全图鉴操作：{action}")),
         }
     }
 }

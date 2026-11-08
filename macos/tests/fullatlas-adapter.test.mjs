@@ -80,3 +80,25 @@ test('assistant chest timers bind to the official readiness computations after m
     assert.ok(prepared.includes(`${side}:{remaining:Math.max(0,${ready[index][3]}.value),ready:${ready[index][1]}.value}`), `${side}: assistant must read the same timer as the official readiness computation`);
   }
 });
+
+test('prepared appearance renderers preserve local Mod image URLs', integratedOnly, async () => {
+  const structure = JSON.parse(await readFile(new URL('../build/fullatlas-adapter/base/js_structure.json', import.meta.url), 'utf8'));
+  const source = await readFile(new URL(`../build/frontend/assets/${structure.shared}`, import.meta.url), 'utf8');
+  const ast = parse(source, { sourceType: 'module', ecmaVersion: 'latest' });
+  const functions = new Set(['resolveAppearanceAssetUrl', 'resolveAppearanceAssetDisplayUrl', 'resolveAppearanceAtlasUrl']);
+  const declarations = ast.body.filter(node => node.type === 'FunctionDeclaration' && functions.has(node.id.name));
+  assert.equal(declarations.length, 3);
+  const url = 'asset://localhost/%2FUsers%2Fexample%2Fmod%2Fimage.png';
+  const renderers = vm.runInNewContext(declarations.map(node => source.slice(node.start, node.end)).join('\n') + '\n({resolveAppearanceAssetUrl,resolveAppearanceAssetDisplayUrl,resolveAppearanceAtlasUrl})', {
+    withAssetUrlCacheBust: value => value,
+    resolveAppearanceMeta: () => ({ url, atlas: { url } }),
+    getAppearanceAtlasById: () => ({ url, asset_type: 'emote_atlas' }),
+    atlasTypeToAssetType: () => 'emote',
+    loadedAssetsHost: 'https://official.invalid',
+    buildAssetUrl() { throw new Error('Local Mod URL was sent to the CDN'); },
+  });
+  assert.equal(renderers.resolveAppearanceAssetUrl(url, 'https://official.invalid'), url);
+  assert.equal(renderers.resolveAppearanceAssetDisplayUrl({ assetId: 1 }), url);
+  assert.equal(renderers.resolveAppearanceAtlasUrl({ assetId: 1 }), url);
+  assert.equal(renderers.resolveAppearanceAtlasUrl({}), url);
+});

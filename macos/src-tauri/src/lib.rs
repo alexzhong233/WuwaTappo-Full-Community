@@ -1,4 +1,5 @@
 mod auth;
+mod custom_resources;
 mod fullatlas;
 mod fullscreen;
 mod gamepad;

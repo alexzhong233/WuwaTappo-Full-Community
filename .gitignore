@@ -45,3 +45,4 @@ __pycache__/
 
 # 本地工作区记忆与工具数据
 /.workbuddy/
+.idea/

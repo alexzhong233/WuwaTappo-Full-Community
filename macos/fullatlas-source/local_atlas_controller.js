@@ -137,6 +137,22 @@ function createLocalAtlasController(d) {
     }
     return offlineData.value;
   }
+  function runtimeCatalog(data) {
+    if (!data.customAssetPaths) return data.catalog;
+    const catalog = JSON.parse(JSON.stringify(data.catalog));
+    const convert = path => d.window.__TAURI_INTERNALS__.convertFileSrc(path);
+    function visit(value) {
+      if (Array.isArray(value)) { for (const item of value) visit(item); return; }
+      if (!value || typeof value !== 'object') return;
+      for (const [key, item] of Object.entries(value)) {
+        if (key === 'url' && typeof item === 'string' && data.customAssetPaths[item]) value[key] = typeof convert === 'function' ? convert(data.customAssetPaths[item]) : origin + '/' + item.split('/').map(encodeURIComponent).join('/');
+        else visit(item);
+      }
+    }
+    visit(catalog);
+    return catalog;
+  }
+  function applyData(data) { d.applyOfflineCatalog(runtimeCatalog(data), origin); }
   async function applyMode(on) {
     if (on) {
       enabled.value = true;
@@ -145,7 +161,7 @@ function createLocalAtlasController(d) {
       if(d.catalogConsumer===false){revision.value++;return;}
       const data = await prepare();
       if (!originalCatalog) originalCatalog = d.snapshotCatalog();
-      d.applyOfflineCatalog(data.catalog, origin);
+      applyData(data);
     } else {
       enabled.value = false;
       if (originalCatalog) { d.restoreCatalog(originalCatalog); originalCatalog = null; }
@@ -197,8 +213,8 @@ function createLocalAtlasController(d) {
       if (first) character = {id:first.asset_id,name:first.asset_name};
     }
     return {...official, character,
-      accessory: Object.hasOwn(s, 'accessory') ? s.accessory : official?.accessory || null,
-      emote: s.emote || official?.emote || [],
+      accessory: (() => { const item = Object.hasOwn(s, 'accessory') ? s.accessory : official?.accessory; return d.getAppearanceAssetById(item?.id) ? item : null; })(),
+      emote: (s.emote || official?.emote || []).filter(item => d.getAppearanceAssetById(item.id)),
       role_id: String(d.getAppearanceAssetById(character?.id)?.game_role_id || official?.role_id || '')};
   }
   function select(item, official, maxEmotes) {
@@ -240,12 +256,29 @@ function createLocalAtlasController(d) {
     if (syncStatus.value.status === 'failed') throw new Error(syncStatus.value.error || '图鉴同步失败，原缓存保留');
     const status = await localRequest('/status');
     cacheReady.value = status.ready === true;
-    if(enabled.value){const data=await prepare(true);d.applyOfflineCatalog(data.catalog,origin);revision.value++;}
+    if(enabled.value){const data=await prepare(true);applyData(data);revision.value++;}
     if(syncStatus.value.result?.changed){
       const generation=String(syncStatus.value.result.assets_json_ts||syncStatus.value.checked_at);
       if(d.storage.getItem(CACHE_KEY)!==generation)d.storage.setItem(CACHE_KEY,generation);
     }
     return syncStatus.value;
+  }
+  let resourceRevision = 0;
+  async function refreshCustomResources() {
+    offlineData.value = null;
+    d.storage.setItem(CACHE_KEY, 'mod:' + Date.now() + ':' + (++resourceRevision));
+    if (enabled.value && d.catalogConsumer !== false) applyData(await prepare(true));
+    revision.value++;
+  }
+  async function importCustomResources(path) {
+    const result = await localRequest('/custom/import', {path});
+    await refreshCustomResources();
+    return result;
+  }
+  async function removeCustomResource(id) {
+    const result = await localRequest('/custom/remove', {id});
+    await refreshCustomResources();
+    return result;
   }
   const initial = read();
   enabled.value = initial.enabled === true;
@@ -260,7 +293,7 @@ function createLocalAtlasController(d) {
   d.window.addEventListener('storage', event => {
     if(disposed)return;
     if(event.key===CACHE_KEY){
-      if(enabled.value&&d.catalogConsumer!==false)prepare(true).then(data=>{d.applyOfflineCatalog(data.catalog,origin);revision.value++;}).catch(d.onError);
+      if(enabled.value&&d.catalogConsumer!==false)prepare(true).then(applyData).then(()=>{revision.value++;}).catch(d.onError);
       else offlineData.value=null;
       return;
     }
@@ -320,6 +353,6 @@ function createLocalAtlasController(d) {
   }
   function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);}
   return {enabled, busy, selection, favorites, revision, ready, cacheReady, setEnabled, inventory, viewUser, select,
-    favorite, reorder, prepare, offlineData, assetsHost: origin, offlineError, checkInvoke, syncStatus, syncCache, request: localRequest, dispose,
+    favorite, reorder, prepare, offlineData, assetsHost: origin, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, request: localRequest, dispose,
     restricted,normalCumulative:()=>d.getAccountCumulative?.()??0,normalPending:()=>d.getAccountPending?.()??0};
 }

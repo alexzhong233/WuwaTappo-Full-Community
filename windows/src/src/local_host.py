@@ -1,13 +1,14 @@
 """Local cache host and executable-scoped Windows Firewall switch."""
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 import sys
 import argparse, base64, ctypes, hashlib, json, mimetypes, os, subprocess, threading, time, re
 import urllib.request
 from sync_cache import sync as sync_public_cache
 from desktop_assistant import Assistant, PhysicalInput
 from desktop_updater import Updater, apply_update
+from custom_resources import install_archive, list_packs, merge_official, remove_pack
 
 if '--apply-update' in sys.argv:
     pos = sys.argv.index('--apply-update')
@@ -43,6 +44,8 @@ def monitor_releases():
 
 ASSISTANT.update_required = False
 STATE = ROOT / 'offline_state.json'
+CUSTOM_ROOT = ROOT / 'custom-atlas'
+CUSTOM_LOCK = threading.RLock()
 # 素材与更新清单的官方源由构建区域决定（build.ps1 写进 local_config.json）。
 # 老配置没有这两个字段时退回国服，既有部署照常工作。
 CDN_HOST = (CONFIG.get('cdn_host') or 'https://mc-wuwatappo.kurogames-global.com').rstrip('/')
@@ -324,6 +327,26 @@ READY = cache_ready()
 ACTUAL_OFFLINE = False
 SYNC = {'status': 'idle', 'done': 0, 'total': 0, 'checked_at': 0}
 
+
+def _region_code():
+    return 'GLOBAL' if CONFIG.get('region') == 'global' else 'CN'
+
+
+def official_bundle():
+    catalog = json.loads((ROOT / 'cache/offline_catalog.json').read_text(encoding='utf-8'))
+    atlas = json.loads((ROOT / 'cache/atlas.json').read_text(encoding='utf-8'))['data']
+    return {'catalog': catalog, 'atlas': atlas, 'atlas_count': len(atlas),
+            'asset_count': CONFIG.get('asset_count', 0)}
+
+
+def custom_bundles():
+    with CUSTOM_LOCK:
+        return list_packs(CUSTOM_ROOT, _region_code())
+
+
+def resources_ready():
+    return READY
+
 def start_sync(force=False):
     global READY
     with LOCK:
@@ -401,19 +424,37 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(403, {'error':'App origin required'})
             return self.respond(200, {'token':TOKEN})
         if path == '/status':
-            return self.respond(200, {'ready': READY, 'enabled': ACTUAL_OFFLINE,
+            return self.respond(200, {'ready': resources_ready(), 'enabled': ACTUAL_OFFLINE,
                                       'mod_version': CONFIG.get('mod_version'), 'client_version': CONFIG.get('client_version'),
                                       'firewall_verified': False, 'mode_verified': True, 'network_policy': 'rooms-only',
                                       'asset_count': CONFIG['asset_count'], 'atlas_count': CONFIG['atlas_count'],
                                       'cache': cache_summary(), 'sync': dict(SYNC)})
         if path == '/sync/status':
             return self.respond(200, dict(SYNC))
+        if path == '/custom/status':
+            packs = custom_bundles()
+            info = {'installed': bool(packs), 'enabled': ACTUAL_OFFLINE, 'name': '、'.join(pack['name'] for pack in packs),
+                    'atlas_count': sum(pack['item_count'] for pack in packs),
+                    'asset_count': sum(pack['asset_count'] for pack in packs),
+                    'packs': [{'id': pack['id'], 'name': pack['name'], 'item_count': pack['item_count'],
+                               'asset_count': pack['asset_count']} for pack in packs],
+                    'region': _region_code()}
+            return self.respond(200, info)
         if path == '/offline-data':
-            if not READY:
+            if not resources_ready():
                 return self.respond(409, {'error': '本地素材还在准备中，请等同步完成后再开启本地图鉴'})
-            return self.respond(200, {'catalog': json.loads((ROOT / 'cache/offline_catalog.json').read_text(encoding='utf-8')),
-                                      'atlas': json.loads((ROOT / 'cache/atlas.json').read_text(encoding='utf-8'))['data'],
-                                      'atlas_count': CONFIG['atlas_count'], 'asset_count': CONFIG['asset_count']})
+            with CUSTOM_LOCK:
+                data = merge_official(official_bundle(), custom_bundles())
+            return self.respond(200, data)
+        if path.startswith('/custom-assets/'):
+            relative = unquote(path.removeprefix('/custom-assets/'))
+            parts = relative.split('/')
+            if len(parts) < 2 or any(part in ('', '.', '..') or '\\' in part or ':' in part for part in parts):
+                return self.respond(400, {'error': 'Invalid path'})
+            asset = (CUSTOM_ROOT / parts[0] / 'assets' / Path(*parts[1:])).resolve()
+            if not asset.is_relative_to(CUSTOM_ROOT.resolve()) or not asset.is_file():
+                return self.respond(404, {'error': 'Not found'})
+            return self.respond(200, asset.read_bytes(), mimetypes.guess_type(asset.name)[0] or 'application/octet-stream')
         # Several official preview paths rebuild a type folder from the file
         # key. Cached file keys are content-addressed, so serve those aliases
         # from the same verified cache rather than falling back to the CDN.
@@ -454,6 +495,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, download_official())
         if path == '/official/manager':
             return self.respond(200, open_manager())
+        if path in ('/custom/import', '/custom/remove'):
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 <= length <= 16384:
+                    raise ValueError('Request too large')
+                body = json.loads(self.rfile.read(length) or b'{}')
+                if not isinstance(body, dict):
+                    raise ValueError('Object required')
+                if path == '/custom/import':
+                    with CUSTOM_LOCK:
+                        info = install_archive(body.get('path', ''), CUSTOM_ROOT, _region_code())
+                    return self.respond(200, dict(info, installed=True, enabled=ACTUAL_OFFLINE))
+                if path == '/custom/remove':
+                    with CUSTOM_LOCK:
+                        remove_pack(CUSTOM_ROOT, body.get('id'))
+                        packs = custom_bundles()
+                    return self.respond(200, {'removed': body.get('id'), 'any_installed': bool(packs),
+                                              'enabled': ACTUAL_OFFLINE})
+            except Exception as error:
+                return self.respond(409, {'error': str(error)})
         if path.startswith('/update/'):
             # autor 仓库的原地更新会整包覆盖本地适配补丁，且会强制置
             # update_required 挡掉开箱功能，这里整体停用，只保留健康回执。
@@ -506,7 +567,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(enabled, bool):
                 raise ValueError('enabled must be boolean')
             with LOCK:
-                if enabled and not READY:
+                if enabled and not resources_ready():
                     raise RuntimeError('离线素材缓存不完整，未开启。')
                 set_firewall(False)
                 ACTUAL_OFFLINE = enabled
@@ -527,7 +588,7 @@ def main():
         STATE.write_text('{"enabled":false}', encoding='utf-8')
         return
     if desired_offline():
-        if READY:
+        if resources_ready():
             set_firewall(False)
             ACTUAL_OFFLINE = True
         else:
