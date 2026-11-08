@@ -77,6 +77,9 @@ function createAssistantDashboard(d){
   const heading=el('div',undefined,header,'wt-row wt-between');el('h2','桌宠控制台',heading);const badge=el('span','读取中',heading,'wt-badge paused');
   const nav=el('nav',undefined,root),content=el('main',undefined,root,'wt-content'),footer=el('footer',undefined,root);
   el('span','关闭面板后，后台任务继续运行',footer);const version=button('v'+d.version+' · 检查更新',footer,()=>showTab('settings'));
+  // 底栏版本号统一取本仓库发布号：Windows 侧的 d.version 是上游 MOD 版本（1.2），
+  // 和设置页「全图鉴版本」不是同一个号，直接显示会和 Mac 对不上。
+  d.atlas.request('/community/version',{}).then(r=>{if(r&&r.current)version.textContent='v'+r.current+' · 检查更新';}).catch(()=>{});
   const notice=el('div','',header,'wt-notice');
   const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['mods','Mod 管理'],['settings','设置与更新']],navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
