@@ -31,6 +31,7 @@
 # 国际服一套独立目录，结构相同
 /windows/app-global/
 /windows/build-global/
+/windows/dist/
 /windows/.venv/
 /windows/assets/
 /windows/runtime/
