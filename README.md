@@ -1,6 +1,6 @@
 # WuwaTappo Full Community
 
-> `main` 已合入官方国服 **1.0.3** 适配，整合版为 **1.2.6**。`dev` 从 `main` 派生，CI 成功后会自动更新滚动开发版；正式版本仍通过 `v*` 标签发布。详见 [1.0.3 适配记录](macos/docs/OFFICIAL_1.0.3.md)。
+> `main` 已合入官方国服 **1.0.4** 适配，整合版为 **1.2.8**。`dev` 从 `main` 派生，CI 成功后会自动更新滚动开发版；正式版本仍通过 `v*` 标签发布。详见 [1.0.4 适配记录](macos/docs/RELEASE_NOTES_1.2.7.md)（更早的 1.0.3 适配见 [OFFICIAL_1.0.3.md](macos/docs/OFFICIAL_1.0.3.md)）。
 
 让《鸣潮》桌宠在 macOS 和 Windows 上运行，并在原有面板中加入本地全图鉴和桌面助手。
 
@@ -64,7 +64,7 @@ Windows 侧版本由 `windows/upstream-win.json` 锁定，不会因为官方发�
 | --- | --- |
 | 服务区域 | 国服与国际服都构建：两侧各自锁定官方 1.0.3 基底，产物名带 `Full-CN-Community` / `Full-Global-Community` |
 | 系统 | macOS：Apple Silicon（M 系列），macOS 13 及以上；Windows：10/11 x64 |
-| 整合版本 | 1.2.6 实验版，基于官方国服 1.0.3 与 FullAtlas 1.3.6 兼容子集（Windows 仍保留 v1.2 基线） |
+| 整合版本 | 1.2.8 实验版，基于官方国服 1.0.4 与 FullAtlas 1.3.6 兼容子集（Windows 仍保留 v1.2 基线） |
 | 分支 | `main` 为 1.0.3 基底，两个平台同仓共用；`dev` 用于开发版；`official-1.0.3` 保留为历史适配分支 |
 | 验证 | 自动测试、原生构建、签名与 DMG / EXE 校验通过；角色和设置面板可显示，完整业务仍需实机验收 |
 | 应用标识 | 沿用 `dev.w33d.wuwatappo.fullatlas.mac`，改名只动显示名与产物名，既有数据目录和钥匙串不受影响 |
@@ -74,7 +74,7 @@ Windows 侧版本由 `windows/upstream-win.json` 锁定，不会因为官方发�
 
 `feature/custom-local-resources` 新增「官方 / 全图鉴 + Mod」外观模式：官方模式使用账号背包；全图鉴模式保留原有完整离线图鉴，并叠加本机导入的自制角色、挂饰和表情。没有 Mod 时仍可使用原有全图鉴，官方缓存独立保存。
 
-在「挂机与统计 → Mod 管理」切换「官方 / 全图鉴 + Mod」，导入 ZIP 资源包后可同时安装多个包、查看条目缩略图或单独移除；官方模式下不会显示任何本机 Mod。包内无需填写 ID，应用自动管理编号，Mod 条目在背包里单独成组置顶、带 `MOD` 角标。格式与示例见 [Mod 制作说明](macos/docs/MODS.md)，想先试效果可直接导入 [演示包](macos/docs/mod-examples/demo-animated-pet.zip)：五个动作帧齐全，静置看眨眼、拖动看迈步；[逐帧预览](macos/docs/mod-examples/frames.png) 与[制作过程](macos/docs/mod-examples/README.md)（含生成脚本）在同目录。本功能在独立分支开发，尚未发布到 1.2.6；macOS 目前接入国服前端。
+在「挂机与统计 → Mod 管理」切换「官方 / 全图鉴 + Mod」，导入 ZIP 资源包后可同时安装多个包、查看条目缩略图或单独移除；官方模式下不会显示任何本机 Mod。包内无需填写 ID，应用自动管理编号，Mod 条目在背包里单独成组置顶、带 `MOD` 角标。格式与示例见 [Mod 制作说明](macos/docs/MODS.md)，想先试效果可直接导入 [演示包](macos/docs/mod-examples/demo-animated-pet.zip)：五个动作帧齐全，静置看眨眼、拖动看迈步；[逐帧预览](macos/docs/mod-examples/frames.png) 与[制作过程](macos/docs/mod-examples/README.md)（含生成脚本）在同目录。本功能在独立分支开发，尚未合入 1.2.8 主线；macOS 目前接入国服前端。
 
 ## 功能
 

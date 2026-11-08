@@ -13,7 +13,7 @@ const integratedOnly = profile.id === 'cn' ? {} : { skip: `FullAtlas 集成不�
 
 test('FullAtlas accepts only the reviewed official version and exact installer digest', async () => {
   const lock = JSON.parse(await readFile(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
-  assert.equal(verifiedAdapterVersion(lock), '1.0.3');
+  assert.equal(verifiedAdapterVersion(lock), '1.0.4');
   assert.throws(() => verifiedAdapterVersion({ ...lock, version: '1.0.99' }), /no verified Mac adapter/);
   assert.throws(() => verifiedAdapterVersion({ ...lock, installer: { ...lock.installer, sha256: 'f'.repeat(64) } }), /no verified Mac adapter/);
   assert.throws(() => verifiedAdapterVersion({ ...lock, region: 'GLOBAL' }), /no verified Mac adapter/);
@@ -86,10 +86,11 @@ test('prepared appearance renderers preserve local Mod image URLs', integratedOn
   const source = await readFile(new URL(`../build/frontend/assets/${structure.shared}`, import.meta.url), 'utf8');
   assert.match(
     source,
-    /customAssetUrl: \(reference, file\) => window\.__TAURI_INTERNALS__\.convertFileSrc\(file\)/,
+    // 1.0.4 的产物会把注入片段一起压缩，空格不再固定，这里只校验语义。
+    /customAssetUrl:\s*\(reference,\s*file\)\s*=>\s*window\.__TAURI_INTERNALS__\.convertFileSrc\(file\)/,
     '注入器必须把本地图片解析方式交给共享控制器，否则 Mod 图片无处可寻',
   );
-  assert.match(source, /if \(!paths \|\| !Object\.keys\(paths\)\.length\) return data\.catalog;/, '没有覆盖项时不应该克隆整份 catalog');
+  assert.match(source, /if\s*\(!paths\s*\|\|\s*!Object\.keys\(paths\)\.length\)\s*return data\.catalog;/, '没有覆盖项时不应该克隆整份 catalog');
   const ast = parse(source, { sourceType: 'module', ecmaVersion: 'latest' });
   const functions = new Set(['resolveAppearanceAssetUrl', 'resolveAppearanceAssetDisplayUrl', 'resolveAppearanceAtlasUrl']);
   const declarations = ast.body.filter(node => node.type === 'FunctionDeclaration' && functions.has(node.id.name));

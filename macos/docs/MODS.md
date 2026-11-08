@@ -1,6 +1,6 @@
 # 自制角色、挂饰和表情 Mod
 
-本功能在 `feature/custom-local-resources` 分支开发。macOS 国服和 Windows 的资源格式相同。
+本功能在独立分支开发（已同步官方 1.0.4 基底），尚未合入主线。macOS 国服和 Windows 的资源格式相同。
 
 ## 两种外观模式
 

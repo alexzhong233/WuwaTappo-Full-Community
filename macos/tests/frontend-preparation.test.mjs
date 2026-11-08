@@ -14,7 +14,7 @@ const fixture = `${originalBridge}async function bindOverseasAuthDeepLink(e){if(
 
 test('login regression fixtures preserve the selected official loader or state filter', async () => {
   const domestic = profile.region === 'CN';
-  const name = domestic ? 'we' : 'handleRawUrls';
+  const name = domestic ? 'ge' : 'handleRawUrls';
   const source = findSource(value => value.includes(`async function ${name}(`)).source;
   const fixture = await readFile(new URL(domestic ? './fixtures/domestic-sdk-loader.js' : './fixtures/global-oauth-handler.js', import.meta.url), 'utf8');
   function declaration(value) {
@@ -75,7 +75,7 @@ test('prepared resources preserve the selected region and contain its macOS adap
     assert.ok(preparedMain.indexOf(listener) < preparedMain.indexOf(current));
   } else {
     assert.ok(preparedMain.includes('isdkSrc="https://pro-cdn-sdk.kurogame.com/pro/web-sdk/1.x/kr-sdk.js"'));
-    const login = findSource(source => source.includes('async function we(e=!1)'));
+    const login = findSource(source => source.includes('async function ge(e=!1)'));
     const preparedLogin = await readFile(path.join(root, profile.preparedDir, 'assets', login.name), 'utf8');
     assert.ok(preparedLogin.includes('document.getElementById("KrSDK")?.remove()'));
     parse(preparedLogin, { sourceType: 'module', ecmaVersion: 'latest' });

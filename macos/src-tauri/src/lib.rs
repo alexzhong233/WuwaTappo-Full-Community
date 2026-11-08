@@ -116,6 +116,10 @@ fn begin_session(
                 if let Err(error) = input::start(handle.clone()) {
                     eprintln!("Global input unavailable: {error}");
                 }
+                // Permission state only, never recorded input: the Settings row can go
+                // missing after a reinstall while the event tap keeps working, so the log
+                // needs to show what macOS actually reports.
+                eprintln!("Input access: {}", input::describe_access(&handle));
                 if let Err(error) = gamepad::start(handle.clone()) {
                     eprintln!("Game controller input unavailable: {error}");
                 }
@@ -246,6 +250,7 @@ fn handle(invoke: Invoke) -> bool {
         storage::load_cumulative_click_count,
         storage::save_cumulative_click_count,
         input::get_input_status,
+        input::get_input_access_diagnostics,
         input::request_input_access,
         input::resume_input_monitor,
         session::session_snapshot,

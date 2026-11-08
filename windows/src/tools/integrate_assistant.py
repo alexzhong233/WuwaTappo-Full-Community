@@ -44,7 +44,18 @@ def integrate(project, base, frontend, structure, shared, main, panel, main_name
     chest_text = source[chest['start']:chest['end']]
     cost = re.search(re.escape(store)+r'\.totalClickCount < ([\w$]+)', chest_text)[1]
     animation = re.search(r'const \w+ = ([\w$]+)\(e\);', chest_text)[1]
-    assert 'Wn = pe(() =>' in source and 'Gn = pe(() =>' in source, 'chest readiness contract'
+    # Chest readiness computeds drift every official rebuild (1.0.3: Wn/Gn,
+    # 1.0.4: Vn/Wn), so resolve them structurally instead of hardcoding names.
+    # Shape: <ready> = pe(() => <blocked>.value || !<store>.isLoggedIn ? !0 : <remaining>.value <= 0)
+    ready_pairs = re.findall(
+        r'([\w$]+) = pe\(\(\) => ([\w$]+)\.value \|\| ![\w$]+\.isLoggedIn \? !0 : ([\w$]+)\.value <= 0\)', source)
+    assert len(ready_pairs) == 2, 'chest readiness contract (expected two ready computeds)'
+    left_ready, left_rem = ready_pairs[0][0], ready_pairs[0][2]
+    right_ready, right_rem = ready_pairs[1][0], ready_pairs[1][2]
+    # Busy guard inside the chest entry: if (<in-flight>.value || <blocked>.value) return;
+    busy_guard = re.search(r'if \(([\w$]+)\.value \|\| ([\w$]+)\.value\) return;', chest_text)
+    assert busy_guard, 'chest busy guard contract'
+    busy_open, blocked = busy_guard.group(1), busy_guard.group(2)
     # Counters, native persistence and logout remain byte-for-byte original.
     # The official installer would replace this executable and lose integrations.
     shared = once(shared, 'function isAppUpdaterEnabled() {', 'function isAppUpdaterEnabled() {\n return false;')
@@ -78,7 +89,7 @@ localAtlasController.assistant=createDesktopAssistant({ref,window,atlas:localAtl
  account:()=>String({store}.userInfo?.cuid||{store}.userInfo?.user_id||{store}.userInfo?.uid||'guest'),
  loggedIn:()=>{store}.isLoggedIn,blocked:()=>__lg.assistant.updateRequired.value,
  press:key=>{handlers[0]}(key,true),release:{handlers[1]},chestCost:{cost},
- chests:()=>({{left:{{remaining:Math.max(0,Bt.value),ready:Wn.value}},right:{{remaining:Math.max(0,Nt.value),ready:Gn.value}},cooldown:1800000,busy:Dn.value||kt.value}}),
+ chests:()=>({{left:{{remaining:Math.max(0,{left_rem}.value),ready:{left_ready}.value}},right:{{remaining:Math.max(0,{right_rem}.value),ready:{right_ready}.value}},cooldown:1800000,busy:{busy_open}.value||{blocked}.value}}),
  monitors:__assistantMonitors,restoreMonitor:__assistantRestoreMonitor,
  currentMonitor:{mi['currentMonitor']},toast:{mi['showToast']},
  openSettings:{open_settings},

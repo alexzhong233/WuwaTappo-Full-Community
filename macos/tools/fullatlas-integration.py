@@ -64,7 +64,12 @@ function localStartOnlineServices() {
  loaderModule.init(kurodataConfig); window.kurodata = loaderModule;
  initTrackCommonProps(); initFrontendAlertReporting();
 }''')
-for name in (['invoke'] if config['client_version'] == '1.0.3' else ['invoke$1', 'invoke']):
+# Wrapper names drift per official build (1.0.2 had invoke$1; 1.0.3/1.0.4 ship invoke).
+# Detect which wrappers actually exist instead of branching on the version string.
+invoke_names = [name for name in ('invoke$1', 'invoke')
+                if f'async function {name}(e, t = {{}}, n) {{' in shared]
+assert invoke_names, 'tauri invoke wrapper contract'
+for name in invoke_names:
     anchor = f'async function {name}(e, t = {{}}, n) {{'
     shared = replace(shared, anchor, anchor + '\n window.__WUWA_LOCAL_ATLAS__?.checkInvoke(e, t);')
 for name in ['ensureAppearanceAssetCatalog(e)']:
@@ -219,7 +224,7 @@ assert match, 'Favorite toggle layout changed'
 panel = panel[:match.start()] + f'__lg.enabled.value ? __lg.favorite({match[3]}.item.asset_id,!{match[1]}.value) : ' + panel[match.start():]
 
 from integrate_assistant import integrate
-assert config['client_version'] in ('1.0.2', '1.0.3'), 'Desktop assistant requires a reviewed adapter'
+assert config['client_version'] in ('1.0.2', '1.0.3', '1.0.4'), 'Desktop assistant requires a reviewed adapter'
 shared, main, panel = integrate(PROJECT, BASE, frontend, structure, shared, main, panel, main_name, panel_name)
 extra_patched_assets = [p.name for p in (BASE/'frontend/assets').glob('switchDisplayMonitor-*.js')
                         if (frontend/'assets'/p.name).read_bytes() != p.read_bytes()]

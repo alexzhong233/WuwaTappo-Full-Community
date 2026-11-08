@@ -93,8 +93,11 @@ export async function verifySourceContract(assetDirectory = path.join(root, prof
       assert.ok(login.includes(value), `Missing domestic login marker: ${value}`);
     }
     assert.ok(!login.includes('plugin:deep-link|'), 'Domestic login unexpectedly requires a native OAuth callback');
-    assert.ok(/\b_e\(e,1\)/.test(login), 'Domestic player query must pass is_domestic=1');
-    assert.ok(/\bse\([^;]+,"sdk",i,a,1\)/.test(login), 'Domestic SDK login must pass source=sdk and is_domestic=1');
+    // 压缩名每次官方重建都会漂移：1.0.3 是 `_e(e,1)` + `se(...,"sdk",i,a,1)`，
+    // 1.0.4 的 queryPlayer 改为命名参数（is_domestic:t），SDK 登录是 `X(...,"sdk",y,z,1)`。
+    // 都按结构断言，语义不变：玩家查询与国服 SDK 登录必须携带 is_domestic=1。
+    assert.ok(main.includes('"api/auth/player/query",{cuid:e,is_domestic:'), 'Domestic player query must carry an is_domestic flag');
+    assert.ok(/\b[\w$]{1,3}\([^;]{0,160},"sdk",[\w$]+,[\w$]+,1\)/.test(login), 'Domestic SDK login must pass source=sdk and is_domestic=1');
     assert.ok(loginView.includes('handleInlandSDKLogin'), 'Login view must bind the domestic SDK callback');
     verifyDomesticSdkAssetBinding(main, loginView);
     const scriptIsHttps = main.includes(`isdkSrc="${contract.auth.sdk.scriptUrl}"`);
@@ -113,9 +116,11 @@ export async function verifySourceContract(assetDirectory = path.join(root, prof
       'plugin:deep-link|get_current',
       'if(!assertPendingStateMatches(n.state))',
       'function assertPendingStateMatches(e){const t=readPendingState();return t?t===e:!1}',
-      'await queryPlayer(e,0)',
-      'Login(e.cuid,e.puid,e.channelId,e.userId,e.userName,e.accessToken,"sdk",t,n,0)',
-      'await startOverseasBrowserLogin({lang:t})',
+      // 1.0.4 起国服/海外玩家查询收进 fetchDomesticSdkPlayers / fetchForeignSdkPlayers，
+      // is_domestic 由第二实参表达；登录调用与浏览器 OAuth 入口只断言结构前缀。
+      'await queryPlayer(e,0,',
+      'Login(e.cuid,e.puid,e.channelId,e.userId,e.userName,e.accessToken,"sdk",',
+      'await startOverseasBrowserLogin({lang:',
     ]) assert.ok(login.includes(value), `Missing global OAuth contract marker: ${value}`);
     globalOAuthDelivery = verifyGlobalCallbackBridge(login, { prepared });
     assert.ok(loginView.includes('handleForeignSDKLogin'), 'Global login view must bind the browser OAuth entry point');

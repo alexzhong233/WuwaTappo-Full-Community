@@ -1,12 +1,12 @@
 {
   "schemaVersion": 2,
-  "application": "WuwaTappo-global 1.0.3",
+  "application": "WuwaTappo-global 1.0.4",
   "region": "GLOBAL",
   "source": {
-    "main": "index-DnHotUmh.js",
-    "room": "index-CxsrU06E.js",
-    "login": "index-DnHotUmh.js",
-    "loginView": "login-BEc7g7o3.js"
+    "main": "index-CBYJTno0.js",
+    "room": "index-DRyeCNeO.js",
+    "login": "index-CBYJTno0.js",
+    "loginView": "index-CBYJTno0.js"
   },
   "http": {
     "baseUrl": "https://api-wutheringwaves-wuwatappo.kurogames-global.com",

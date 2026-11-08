@@ -83,6 +83,26 @@ if [ ! -f "$BINARY" ] || [ "$(/usr/bin/lipo -archs "$BINARY")" != arm64 ]; then
 fi
 /usr/bin/codesign --verify --deep --strict "$APP"
 
+# 输入监控授权绑定到代码签名身份。临时签名（adhoc）每次构建的 cdhash 都不同，重装或升级后
+# TCC 会留下失效记录：功能可能仍可用，但「系统设置 > 隐私与安全性 > 输入监控」里的条目会消失。
+# 设置 APPLE_SIGNING_IDENTITY 后在这里改用固定证书重签，跨版本保留授权。
+phase '检查签名身份'
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ "$APPLE_SIGNING_IDENTITY" != '-' ]; then
+  /usr/bin/codesign --force --deep --options runtime --timestamp \
+    --preserve-metadata=entitlements --sign "$APPLE_SIGNING_IDENTITY" "$APP"
+  /usr/bin/codesign --verify --deep --strict "$APP"
+  printf '签名身份：%s\n' "$APPLE_SIGNING_IDENTITY"
+else
+  SIGN_INFO=$(/usr/bin/codesign -dv --verbose=4 "$APP" 2>&1 || true)
+  if printf '%s' "$SIGN_INFO" | grep -q 'Signature=adhoc'; then
+    printf '%s\n' \
+      '警告：本次为临时签名（adhoc）。输入监控授权与构建绑定，重装后可能需要在系统设置中重新授权，' \
+      '「输入监控」列表也可能出现旧条目。正式发布请设置 APPLE_SIGNING_IDENTITY 使用固定开发者证书。' >&2
+  else
+    printf '签名身份：%s\n' "$(printf '%s' "$SIGN_INFO" | sed -n 's/^Authority=//p' | head -1)"
+  fi
+fi
+
 # Tauri 将前端编译进主程序；检查打包输入及嵌入路径，而不是复制用户数据。
 phase "检查${REGION_LABEL}内置资源"
 node --input-type=module -e '

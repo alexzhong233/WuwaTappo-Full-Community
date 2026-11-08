@@ -35,16 +35,19 @@ export function patchDomesticSdkUrls(source) {
 }
 
 export function patchDomesticLoginReload(source) {
-  const start = 'async function we(e=!1){if(E)return E;if(!e&&$())';
-  const end = 'async function me()';
+  const marker = 't.dataset.kuroSdkRetry="true"';
   const insertion = ',document.head.appendChild(t),r=window.setTimeout(';
-  const offset = source.indexOf(start);
-  const limit = source.indexOf(end, offset);
-  if (offset < 0 || limit < 0 || source.split(start).length !== 2) {
+  const markerIdx = source.indexOf(marker);
+  // When the marker is corrupted, fall back to the module's unique log marker to
+  // still locate the enclosing function and report the precise insertion error.
+  const hint = markerIdx >= 0 ? markerIdx : source.indexOf('"load_failed"');
+  const offset = source.lastIndexOf('async function ', hint >= 0 ? hint : -1);
+  const limit = source.indexOf('async function ', offset + 15);
+  if (offset < 0 || limit < 0) {
     throw new Error('Original CN SDK reload function changed; reconcile the login reload patch before building.');
   }
   const loader = source.slice(offset, limit);
-  if (!loader.includes('t.dataset.kuroSdkRetry="true"') || loader.split(insertion).length !== 2) {
+  if (source.split(marker).length !== 2 || loader.split(insertion).length !== 2) {
     throw new Error('Original CN SDK script insertion changed; reconcile the login reload patch before building.');
   }
   const replacement = ',e&&([...document.scripts].filter(s=>s.src===t.src).forEach(s=>s.remove()),document.getElementById("KrSDK")?.remove())' + insertion;
