@@ -8,6 +8,9 @@ on:
         required: false
         type: string
         default: ''
+  # 平时只有同步工作流会调它，改了 Rust 或注入器却没有新版可跟的时候就没有验证入口。
+  # 补一个手动触发，与 build-windows.yml 对齐：dispatch 不带 ref 时按所选分支的 HEAD 构建。
+  workflow_dispatch:
 
 permissions:
   contents: read
