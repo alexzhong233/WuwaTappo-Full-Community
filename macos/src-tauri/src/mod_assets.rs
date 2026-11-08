@@ -82,7 +82,10 @@ impl Inner {
     }
 
     fn lookup(&self, target: &str) -> Option<PathBuf> {
-        let path = target.split(['?', '#']).next().unwrap_or_default();
+        let path = target
+            .split(|value| value == '?' || value == '#')
+            .next()
+            .unwrap_or_default();
         let decoded = percent_decode(path);
         let key = decoded.strip_prefix(&format!("/{}/", self.token))?;
         asset_path(&self.root, key)
@@ -202,7 +205,10 @@ fn random_token() -> String {
             bytes[index % 16] ^= (state >> ((index % 8) * 8)) as u8;
         }
     }
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 /// 启动取图服务；起不来只降级（`base` 为空，前端退回旧路径），不影响应用启动。
