@@ -166,6 +166,18 @@ function createLocalAtlasController(d) {
   }
   // 背包/图鉴里的 Mod 条目用专属稀有度 class 打标：样式只在本地模式挂到 html 上，
   // 切回官方后立刻失效，账号背包里不会留下任何 Mod 痕迹。
+  // 官方 useLoading() 每次 show 都新建 #my-loading、请求结束立刻 remove，而静默更新检查
+  // 用的也是同一套 loading：几百毫秒的往返落到屏幕上就是一帧闪光。把出圈压到 300ms 之后，
+  // 短请求全程不可见（visibility 一并延后，透明遮罩也不抢点击），真卡住时照旧出圈。
+  function installLoadingFade() {
+    const doc = d.window.document;
+    if (!doc || doc.getElementById('wuwa-loading-fade')) return;
+    const style = doc.createElement('style');
+    style.id = 'wuwa-loading-fade';
+    style.textContent = '#my-loading{animation:wuwa-loading-reveal 1ms linear 300ms both}'
+      + '@keyframes wuwa-loading-reveal{from{opacity:0;visibility:hidden}to{opacity:1;visibility:visible}}';
+    (doc.head || doc.documentElement).append(style);
+  }
   function installModBadge() {
     const doc = d.window.document;
     if (!doc || doc.getElementById('wuwa-mod-badge')) return;
@@ -326,6 +338,7 @@ function createLocalAtlasController(d) {
   const initial = read();
   enabled.value = initial.enabled === true;
   selection.value = initial.selection || {}; favorites.value = initial.favorites || {};
+  installLoadingFade();
   installModBadge();
   installNetworkGuards();
   d.window.addEventListener('securitypolicyviolation', event => reportDiagnostic('policy', {
