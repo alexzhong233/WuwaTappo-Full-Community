@@ -66,7 +66,9 @@ shared = replace(shared, 'function applyCatalog(e, t, n) {', '''function applyCa
 shared = replace(shared, 'function atlas() {', '''function atlas() {
  if (window.__WUWA_LOCAL_ATLAS__?.enabled.value) return Promise.resolve({code: 0, data: window.__WUWA_LOCAL_ATLAS__.offlineData.value.atlas});''')
 shared = replace(shared, 'this.instance.interceptors.request.use(t => {', '''this.instance.interceptors.request.use(t => {
- if (window.__WUWA_LOCAL_ATLAS__?.enabled.value && window.__WUWA_LOCAL_ATLAS__.restricted(t.url,t.method)) throw window.__WUWA_LOCAL_ATLAS__.offlineError();''')
+ if (window.__WUWA_LOCAL_ATLAS__?.enabled.value && window.__WUWA_LOCAL_ATLAS__.restricted(t.url,t.method)) throw window.__WUWA_LOCAL_ATLAS__.offlineError();
+ // 活动配置是后台刷新（挂机开箱、切页、重连都会触发），不该用全屏遮罩。
+ if (t && typeof t.url === 'string' && t.url.indexOf('api/common/activity-config') !== -1) t.loading = !1;''')
 controller = (PROJECT / 'src/local_atlas_controller.js').read_text(encoding='utf-8')
 init = controller + '\nconst localAtlasController = createLocalAtlasController({\n' + \
     'ref, window, storage: localStorage, origin: ' + json.dumps(f'http://127.0.0.1:{config["port"]}') + ',\n' + \

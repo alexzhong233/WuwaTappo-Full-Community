@@ -67,6 +67,17 @@ export function patchMacShortcutLabels(source) {
   return source.replace(original, original.replace('[1,"Alt"]', '[1,"Option"]').replace('[8,"Win"]', '[8,"Cmd"]'));
 }
 
+export function patchBackgroundLoading(source) {
+  // 官方把 activity-config（活动配置/静默更新检查）当成带 loading 的请求，走的是同一个
+  // 全屏遮罩 #my-loading。它是后台刷新，不该盖住界面：挂机时自动开箱、切页、重连都会
+  // 触发一次，用户看到的就是"圈频繁闪一下"。这里只摘掉这一个路径的遮罩，
+  // 图鉴首屏（api/common/atlas）与登录流程仍保留加载反馈。
+  const original = 't.loading&&useLoading().showLoading()';
+  const replacement = 't.loading&&!/api\\/common\\/activity-config/.test(t.url||"")&&useLoading().showLoading()';
+  if (source.split(original).length !== 2) throw new Error('Original loading gate changed; reconcile the background loading patch before building.');
+  return source.replace(original, replacement);
+}
+
 export function patchMacUpdater(source) {
   const resolver = 'async function resolveUpdaterLatestJsonUrl(){const e=resolveUpdaterLatestHostJsonUrl();if(!e)return null;';
   const recovery = 'async function resolveUpdaterLatestJsonUrl(){let e=resolveUpdaterLatestHostJsonUrl();if(!e){const config=unwrapApiData(await activityInfo());const host=typeof config?.assets_host==="string"?config.assets_host.trim():"";if(!host||host===LOCAL_ROLE_ASSETS_HOST)throw new Error("官方配置缺少更新资源地址");setUpdaterAssetsHost(host,{triggerSilentCheck:!1});e=resolveUpdaterLatestHostJsonUrl()}';

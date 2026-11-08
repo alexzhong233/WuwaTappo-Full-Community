@@ -4,7 +4,7 @@ import path from 'node:path';
 import { getRegionProfile } from './regions.mjs';
 import { integrateFullAtlas } from './fullatlas-frontend.mjs';
 import { prepareCatalog } from './fullatlas-catalog.mjs';
-import { patchSessionBarriers, patchLoginReady, patchDomesticSdkUrls, patchMacUpdateFeedback, patchMacUpdater, patchMacAbout, patchDomesticLoginReload, patchGlobalAuthListener, patchMacLayoutBarriers, patchMacShortcutLabels } from './patch-frontend.mjs';
+import { patchSessionBarriers, patchLoginReady, patchDomesticSdkUrls, patchMacUpdateFeedback, patchMacUpdater, patchMacAbout, patchDomesticLoginReload, patchGlobalAuthListener, patchMacLayoutBarriers, patchMacShortcutLabels, patchBackgroundLoading } from './patch-frontend.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const profile = getRegionProfile();
@@ -19,7 +19,7 @@ const files = new Map(await Promise.all((await readdir(path.join(source, 'assets
   .map(async name => [`assets/${name}`, await readFile(path.join(source, 'assets', name), 'utf8')])));
 const original = files.get(entry);
 if (!original?.includes(`const APP_REGION="${profile.region}"`)) throw new Error(`Expected official ${profile.region} frontend.`);
-let main = patchMacUpdater(original);
+let main = patchBackgroundLoading(patchMacUpdater(original));
 main = profile.region === 'CN' ? patchDomesticSdkUrls(main) : patchGlobalAuthListener(main);
 files.set(entry, patchSessionBarriers(patchMacShortcutLabels(main), profile.id === 'cn' ? 1 : 2));
 
