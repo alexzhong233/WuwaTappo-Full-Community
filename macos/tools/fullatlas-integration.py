@@ -4,47 +4,20 @@ Bindings and component locations come from parsed JavaScript, not guessed
 minified variable names. Unknown layouts fail before an installed file changes.
 """
 from pathlib import Path
-import hashlib, json, re, shutil, os
+import json, re, sys
 
 PROJECT = Path(__file__).resolve().parents[1]
-ROOT = Path(os.environ['WUWA_BUILD_ROOT'])
-BASE = Path((ROOT / 'current_base.txt').read_text(encoding='utf-8'))
-structure = json.loads((BASE / 'js_structure.json').read_text(encoding='utf-8'))
-config = json.loads((ROOT / 'local_config.json').read_text(encoding='utf-8'))
-shared_name = structure['shared']
-shared = (BASE / 'readable_js/assets' / shared_name).read_text(encoding='utf-8')
-route_region = shared[shared.index('const router = createRouter'):]
-routes = dict(re.findall(r'path:\s*"([^"]+)"[\s\S]*?import\("\./([^"]+)"\)', route_region)[:9])
-main_name, panel_name = routes['/'], routes['/panel']
-main = (BASE / 'readable_js/assets' / main_name).read_text(encoding='utf-8')
-panel = (BASE / 'readable_js/assets' / panel_name).read_text(encoding='utf-8')
-frontend = ROOT / 'frontend_v2'
-shutil.copytree(BASE / 'frontend', frontend, dirs_exist_ok=True)
-patch_log = []
+# 锚点工具与公共补丁放在仓库根的 shared/tools，两个平台共用同一份。
+sys.path.insert(0, str(PROJECT.parent / 'shared' / 'tools'))
+from inject_core import (apply_edits, function_for, load_build, named,
+                         patch_atlas_guards, patch_invoke_guard, patch_mod_asset_url,
+                         patch_mod_display_name, patch_online_services, replace)
 
-def replace(text, old, new, count=1):
-    actual = text.count(old)
-    assert actual == count, (old[:100], actual, count)
-    patch_log.append({'anchor': old[:100], 'matches': actual})
-    return text.replace(old, new)
-
-def apply_edits(text, edits):
-    last = len(text) + 1
-    for start, end, value in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
-        assert 0 <= start <= end <= last, (start, end, last)
-        text = text[:start] + value + text[end:]
-        last = start
-    return text
-
-def function_for(meta, text, needle):
-    found = [f for f in meta['functions'] if needle in text[f['start']:f['end']]]
-    assert found, needle
-    return min(found, key=lambda f: f['end'] - f['start'])
-
-def named(meta, name):
-    found = [f for f in meta['functions'] if f['name'] == name]
-    assert len(found) == 1, (name, found)
-    return found[0]
+build = load_build(PROJECT)
+ROOT, BASE, frontend = build['root'], build['base'], build['frontend']
+structure, config = build['structure'], build['config']
+shared_name, main_name, panel_name = build['shared_name'], build['main_name'], build['panel_name']
+shared, main, panel = build['shared'], build['main'], build['panel']
 
 # Preserve Tauri asset URLs for local Mod images in the official renderers.
 for name in ('resolveAppearanceAssetUrl', 'resolveAppearanceAssetDisplayUrl', 'resolveAppearanceAtlasUrl'):
@@ -56,62 +29,14 @@ for name in ('resolveAppearanceAssetUrl', 'resolveAppearanceAssetDisplayUrl', 'r
     assert updated != original, name
     shared = replace(shared, original, updated)
 
-# 本机 Mod 条目的名字要能显示：官方按 asset_name 查远端字典，Mod 名字不在字典里，
-# 这里在查不到时回退到条目自带的名称（名字集合由 local_atlas_controller 登记）。
-MOD_NAME_FALLBACK_OLD = '''function resolveAssetDisplayName(e, t) {
-  const n = t?.trim() ?? "";
-  if (!n) return "";
-  const s = String(e ?? "").trim().toLowerCase();
-  return s === "character_skin" || s === "character_skin_atlas" ? resolveCharacterSkinDisplayName(n) : s === "accessory" || s === "accessory_atlas" ? resolveAccessoryDisplayName(n) : s === "emote" || s === "emote_atlas" ? resolveEmoteDisplayName(n) : ""
-}'''
-MOD_NAME_FALLBACK_NEW = '''function resolveAssetDisplayName(e, t) {
-  const n = t?.trim() ?? "";
-  if (!n) return "";
-  const s = String(e ?? "").trim().toLowerCase();
-  const resolved = s === "character_skin" || s === "character_skin_atlas" ? resolveCharacterSkinDisplayName(n) : s === "accessory" || s === "accessory_atlas" ? resolveAccessoryDisplayName(n) : s === "emote" || s === "emote_atlas" ? resolveEmoteDisplayName(n) : "";
-  // 本机 Mod 的名字不在官方远端字典里：查不到就直接用条目名，否则图鉴/背包只剩空白或占位符。
-  const mods = typeof window !== "undefined" ? window.__WUWA_MOD_NAMES__ : null;
-  return resolved || (mods && mods.has(n) ? n : "")
-}'''
-shared = replace(shared, MOD_NAME_FALLBACK_OLD, MOD_NAME_FALLBACK_NEW)
+# 后面五段与 Windows 侧一字不差，收在 shared/tools/inject_core.py。
+shared = patch_mod_display_name(shared)
+shared = patch_mod_asset_url(shared)
+shared = patch_online_services(shared)
+# macOS 的 invoke 包装必须插上，插不上说明 Restrictions 会失效，直接让构建红。
+shared = patch_invoke_guard(shared, strict=True)
+shared = patch_atlas_guards(shared)
 
-# 背包「我的预设」左边的预览走的是另一条链路：按名字拼 CDN 地址（character/<名字>.png），
-# 不走 _atlas 目录查表，所以 Mod 条目在那里拼出一个必然 404 的官方地址，界面就剩一个「？」。
-# 地址拼接处先问一句本机 Mod 表（local_atlas_controller 登记的名字 → 本机路由），
-# 命中就返回本机地址，没命中照旧拼官方地址，官方素材的行为一字未改。
-_MOD_ASSET_URL = re.search(r'function buildAssetUrl\(([^)]*)\)\s*\{', shared)
-assert _MOD_ASSET_URL, 'official buildAssetUrl contract'
-_MOD_ASSET_URL_PARAMS = [part.strip() for part in _MOD_ASSET_URL.group(1).split(',')]
-assert len(_MOD_ASSET_URL_PARAMS) == 2, _MOD_ASSET_URL_PARAMS
-shared = replace(shared, _MOD_ASSET_URL.group(0), _MOD_ASSET_URL.group(0) + '''
-  const modAssetPath = (typeof window !== "undefined" && window.__WUWA_MOD_ASSET_PATH__) ? window.__WUWA_MOD_ASSET_PATH__(''' + _MOD_ASSET_URL_PARAMS[1] + ''') : "";
-  if (modAssetPath) return withAssetUrlCacheBust(modAssetPath);''')
-
-# Shared public functions retain readable names between these releases.
-shared = replace(shared, 'loaderModule.init(kurodataConfig);\nwindow.kurodata = loaderModule;\ninitTrackCommonProps();\ninitFrontendAlertReporting();', '''let localOnlineServicesStarted = false;
-function localStartOnlineServices() {
- if (localOnlineServicesStarted) return;
- localOnlineServicesStarted = true;
- loaderModule.init(kurodataConfig); window.kurodata = loaderModule;
- initTrackCommonProps(); initFrontendAlertReporting();
-}''')
-# Wrapper names drift per official build (1.0.2 had invoke$1; 1.0.3/1.0.4 ship invoke).
-# Detect which wrappers actually exist instead of branching on the version string.
-invoke_names = [name for name in ('invoke$1', 'invoke')
-                if f'async function {name}(e, t = {{}}, n) {{' in shared]
-assert invoke_names, 'tauri invoke wrapper contract'
-for name in invoke_names:
-    anchor = f'async function {name}(e, t = {{}}, n) {{'
-    shared = replace(shared, anchor, anchor + '\n window.__WUWA_LOCAL_ATLAS__?.checkInvoke(e, t);')
-for name in ['ensureAppearanceAssetCatalog(e)']:
-    anchor = 'async function ' + name + ' {'
-    shared = replace(shared, anchor, anchor + '\n if (window.__WUWA_LOCAL_ATLAS__?.enabled.value) return true;')
-shared = replace(shared, 'function applyCatalog(e, t, n) {', '''function applyCatalog(e, t, n) {
- if (window.__WUWA_LOCAL_ATLAS__?.enabled.value && t !== window.__WUWA_LOCAL_ATLAS__.assetsHost) return;''')
-shared = replace(shared, 'function atlas() {', '''function atlas() {
- if (window.__WUWA_LOCAL_ATLAS__?.enabled.value) return Promise.resolve({code: 0, data: window.__WUWA_LOCAL_ATLAS__.offlineData.value.atlas});''')
-shared = replace(shared, 'this.instance.interceptors.request.use(t => {', '''this.instance.interceptors.request.use(t => {
- if (window.__WUWA_LOCAL_ATLAS__?.enabled.value && window.__WUWA_LOCAL_ATLAS__.restricted(t.url,t.method)) throw window.__WUWA_LOCAL_ATLAS__.offlineError();''')
 controller = (PROJECT / 'fullatlas-source/local_atlas_controller.js').read_text(encoding='utf-8')
 init = controller + "\nconst localAtlasRoute = ['/', '/panel'].includes((window.location.hash || '#/').slice(1).split('?')[0]);\nconst localAtlasController = localAtlasRoute ? createLocalAtlasController({\n" + \
     "ref, window, storage: localStorage, origin: window.__WUWATAPPO_PROFILE__.assetHost,\n request: (route,payload) => window.__TAURI_INTERNALS__.invoke('fullatlas_request',{action:route.replace(/^\\//,''),payload:payload||{}}), token: null, customAssetUrl: (reference, file) => window.__TAURI_INTERNALS__.convertFileSrc(file)" + ''', normalizeAtlasList, resolvePetAssetIdFromAppearanceId, getAppearanceAssetById,

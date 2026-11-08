@@ -33,4 +33,8 @@ test('两个平台目录与跨平台入口都在位', () => {
   // 两平台共用的前端源码只有一份，放在 shared/frontend/；两侧目录里的是生成物。
   assert.ok(existsSync(path.join(repoRoot, 'shared/frontend/assistant_dashboard.js')), '缺少共用的前端源');
   assert.ok(existsSync(path.join(repoRoot, 'scripts/sync-frontend.mjs')), '缺少前端生成器');
+  // 注入器的公共核也只有一份：锚点工具与公共补丁在 inject_core，助手主流程在 assistant_core。
+  for (const name of ['shared/tools/inject_core.py', 'shared/tools/assistant_core.py']) {
+    assert.ok(existsSync(path.join(repoRoot, name)), `缺少注入器公共核 ${name}`);
+  }
 });
