@@ -229,8 +229,9 @@ test('only locked build workflow configures the explicit mirror and syncing publ
   const sync = await readFile(path.join(repoRoot, '.github/workflows/sync-upstream.yml'), 'utf8');
   assert.ok(build.includes('WUWA_INSTALLER_MIRROR_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/upstream-resources'));
   assert.ok(!sync.includes('WUWA_INSTALLER_MIRROR_BASE:'));
-  assert.match(sync, /Publish verified official installer as an immutable build input\n\s+id: mirror\n\s+if: always\(\) && !cancelled\(\) && steps\.extract\.outcome == 'success'\n\s+run: node macos\/scripts\/installer-mirror\.mjs/);
-  assert.ok(sync.indexOf('Publish verified official installer as an immutable build input') > sync.indexOf('Keep upstream review evidence'));
-  assert.ok(sync.indexOf('Publish verified official installer as an immutable build input') < sync.indexOf('Open validated update or draft requiring adaptation'));
-  assert.ok(sync.includes('MIRROR_OUTCOME: ${{ steps.mirror.outcome }}'));
+  // 镜像必须在锁更新之后发布，否则存进去的是旧版本安装包；
+  // 失败不阻断发版（安装包已在本地），只影响下次 CDN 抖动时的退路。
+  assert.ok(sync.indexOf('Publish verified installers to the build mirror') > sync.indexOf('node macos/scripts/sync-upstream.mjs --update-lock'));
+  assert.match(sync, /Publish verified installers to the build mirror[\s\S]{0,400}?continue-on-error: true/);
+  assert.ok(sync.includes('node macos/scripts/installer-mirror.mjs'));
 });

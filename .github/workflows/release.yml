@@ -58,9 +58,26 @@ jobs:
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
           const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
-          const cn = JSON.parse(readFileSync('macos/upstream-cn.json', 'utf8')).version;
-          const global = JSON.parse(readFileSync('macos/upstream-global.json', 'utf8')).version;
+          const cnLock = JSON.parse(readFileSync('macos/upstream-cn.json', 'utf8'));
+          const globalLock = JSON.parse(readFileSync('macos/upstream-global.json', 'utf8'));
+          const cn = cnLock.version;
+          const global = globalLock.version;
           if (process.env.TAG !== `v${version}`) throw new Error('Tag does not match integration version');
+          // 手工发版时最容易踩的坑：macOS 已经跟到新版、Windows 锁还停在上一版，
+          // 于是同一个 Release 里两个平台的客户端不是同一代（alpha.1 就是这样）。
+          // 同步工作流会一起改，这里再兜一层，宁可拒绝发版也不要发出半套基线。
+          const windowsLocks = [
+            ['国服', JSON.parse(readFileSync('windows/upstream-win.json', 'utf8')), cnLock],
+            ['国际服', JSON.parse(readFileSync('windows/upstream-win-global.json', 'utf8')), globalLock],
+          ];
+          for (const [label, win, mac] of windowsLocks) {
+            if (win.client_version !== mac.version) {
+              throw new Error(`Windows ${label}基线 ${win.client_version} 与 macOS ${mac.version} 不一致：先让同步工作流把两平台锁对齐再发版`);
+            }
+            if (win.installer_sha256 !== mac.installer.sha256) {
+              throw new Error(`Windows ${label}锁里的安装包哈希与 macOS 不是同一个官方包：镜像回退与完整性校验会各对各错`);
+            }
+          }
           // 四个产物缺一不可：两服 × 两平台，格式各自唯一（mac=dmg / win=exe）。
           const expected = [
             `WuwaTappo-Full-CN-Community-${version}-macOS-arm64.dmg`,

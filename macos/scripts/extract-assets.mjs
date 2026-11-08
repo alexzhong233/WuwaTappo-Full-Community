@@ -116,6 +116,33 @@ export function findEmbeddedNsis(bytes) {
   throw new Error('No structurally valid embedded NSIS installer found.');
 }
 
+// 从官方安装包里取出应用主程序本体（不做任何执行）。
+// 安装包是"自解压壳 + 内层 NSIS"两层结构，所以要先用 findEmbeddedNsis 切出内层，
+// 再让 7-Zip 列出条目 —— NSIS 1.0.3 起主程序名被改成变量，7-Zip 显示为 $_21_，
+// 由 selectApplicationPayload 按结构而不是文件名认出来。
+// Windows 基线锁里的 official_exe_sha256 / official_exe_size 就是这里的产物，
+// 所以 macOS 的同步工作流可以直接算出 Windows 侧的哈希，不必再等 Windows runner。
+export async function extractApplicationPayload(installerBytes, sevenzip) {
+  const bounds = findEmbeddedNsis(installerBytes);
+  const temporary = await mkdtemp(path.join(tmpdir(), 'wuwatappo-extract-'));
+  try {
+    const filename = path.join(temporary, 'setup.exe');
+    await writeFile(filename, installerBytes.subarray(bounds.start, bounds.end));
+    const listing = spawnSync(sevenzip, ['l', '-slt', '-ba', filename], {
+      encoding: 'utf8', maxBuffer: 1024 * 1024,
+    });
+    if (listing.error) throw listing.error;
+    if (listing.status !== 0) throw new Error(`7-Zip listing failed: ${listing.stderr || listing.stdout}`);
+    const payload = selectApplicationPayload(listing.stdout);
+    const result = spawnSync(sevenzip, ['e', '-y', '-bd', `-o${temporary}`, filename, payload], {
+      encoding: 'utf8', maxBuffer: 1024 * 1024,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`7-Zip extraction failed: ${result.stderr || result.stdout}`);
+    return { filename: payload, bytes: await readFile(path.join(temporary, payload)) };
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+}
+
 export async function extractAssets(bytes, output) {
   const entries = findAssetEntries(bytes);
   for (const entry of entries) {
@@ -183,26 +210,7 @@ async function main() {
   if (options.payload) bytes = await readFile(options.payload);
   else {
     if (!options.sevenzip) throw new Error('--installer requires --sevenzip; the installer is never executed.');
-    const installer = await readFile(options.installer);
-    const bounds = findEmbeddedNsis(installer);
-    const temporary = await mkdtemp(path.join(tmpdir(), 'wuwatappo-extract-'));
-    try {
-      const filename = path.join(temporary, 'setup.exe');
-      await writeFile(filename, installer.subarray(bounds.start, bounds.end));
-      const listing = spawnSync(options.sevenzip, ['l', '-slt', '-ba', filename], {
-        encoding: 'utf8', maxBuffer: 1024 * 1024,
-      });
-      if (listing.error) throw listing.error;
-      if (listing.status !== 0) throw new Error(`7-Zip listing failed: ${listing.stderr || listing.stdout}`);
-      // NSIS 1.0.3 uses a variable-backed filename, shown by 7-Zip as $_21_.
-      const payload = selectApplicationPayload(listing.stdout);
-      const result = spawnSync(options.sevenzip, ['e', '-y', '-bd', `-o${temporary}`, filename, payload], {
-        encoding: 'utf8', maxBuffer: 1024 * 1024,
-      });
-      if (result.error) throw result.error;
-      if (result.status !== 0) throw new Error(`7-Zip extraction failed: ${result.stderr || result.stdout}`);
-      bytes = await readFile(path.join(temporary, payload));
-    } finally { await rm(temporary, { recursive: true, force: true }); }
+    bytes = (await extractApplicationPayload(await readFile(options.installer), options.sevenzip)).bytes;
   }
   const entries = findAssetEntries(bytes);
   const references = inspectStaticReferences(entries);

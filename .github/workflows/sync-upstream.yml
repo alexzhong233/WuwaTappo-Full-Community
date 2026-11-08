@@ -1,8 +1,14 @@
-name: Sync official upstream
+name: Follow official upstream
+
+# 官方发新版就自动编译一遍：版本号不再是准入条件，注入器的结构断言才是。
+# 编过了就直接发预发布；编不过才开草稿 PR 等人改适配。
+# 发版用 GITHUB_TOKEN 推 tag，不会反过来触发 release.yml，避免同一份产物构建两次。
 
 on:
   schedule:
-    - cron: '17 2 * * *'
+    # 每 6 小时看一眼官方清单（北京时间 02:17 / 08:17 / 14:17 / 20:17）。
+    # 探测本身只读 JSON，不下载安装包；有新版才会往下走编译。
+    - cron: '17 */6 * * *'
   workflow_dispatch:
     inputs:
       region:
@@ -11,186 +17,204 @@ on:
         default: both
         type: choice
         options: [both, cn, global]
+      publish:
+        description: '编译通过后直接发预发布（关掉只编译不发）'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: sync-official-upstream
+  group: follow-official-upstream
   cancel-in-progress: false
 
-jobs:
-  plan:
-    name: plan
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.regions.outputs.matrix }}
-    steps:
-      - name: Select regions to check
-        id: regions
-        env:
-          TARGET: ${{ inputs.region || 'both' }}
-        run: |
-          case "$TARGET" in
-            cn) echo 'matrix={"include":[{"region":"cn","label":"国服"}]}' >> "$GITHUB_OUTPUT" ;;
-            global) echo 'matrix={"include":[{"region":"global","label":"国际服"}]}' >> "$GITHUB_OUTPUT" ;;
-            both) echo 'matrix={"include":[{"region":"cn","label":"国服"},{"region":"global","label":"国际服"}]}' >> "$GITHUB_OUTPUT" ;;
-            *) echo "未知服务区域：$TARGET" >&2; exit 2 ;;
-          esac
+env:
+  BASELINE_BRANCH: codex/official-baseline-${{ github.run_id }}
+  LOCK_FILES: macos/upstream-cn.json macos/upstream-global.json windows/upstream-win.json windows/upstream-win-global.json
+  VERSION_FILES: package.json package-lock.json macos/src-tauri/tauri.conf.json macos/src-tauri/tauri.global.conf.json macos/src-tauri/Cargo.toml macos/src-tauri/Cargo.lock macos/fullatlas-source/desktop_assistant.js
 
-  sync:
-    name: ${{ matrix.region }}
-    needs: plan
-    runs-on: macos-15
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-    env:
-      WUWA_REGION: ${{ matrix.region }}
-      REGION_LABEL: ${{ matrix.label }}
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      MACOSX_DEPLOYMENT_TARGET: '13.0'
-      CARGO_INCREMENTAL: '0'
+jobs:
+  detect:
+    name: 检查官方版本
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      need_update: ${{ steps.check.outputs.need_update }}
+      cn_changed: ${{ steps.check.outputs.cn_changed }}
+      cn_version: ${{ steps.check.outputs.cn_version }}
+      global_changed: ${{ steps.check.outputs.global_changed }}
+      global_version: ${{ steps.check.outputs.global_version }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
-          cache: npm
-      - name: Check official regional version
-        id: upstream
-        run: |
-          mkdir -p macos/.work
-          node macos/scripts/sync-upstream.mjs --check > macos/.work/upstream-check.json
-          node --input-type=module <<'NODE'
-          import { readFileSync, appendFileSync } from 'node:fs';
-          import { execFileSync } from 'node:child_process';
-          import { getRegionProfile } from './macos/scripts/regions.mjs';
-          const profile = getRegionProfile();
-          const result = JSON.parse(readFileSync('macos/.work/upstream-check.json', 'utf8'));
-          if (typeof result.changed !== 'boolean' || !/^\d+\.\d+\.\d+$/.test(result.latestVersion)) throw new Error('Invalid official version response');
-          const title = `同步${profile.label}官方资源 ${result.latestVersion}`;
-          const open = JSON.parse(execFileSync('gh', ['pr', 'list', '--state', 'open', '--search', `${title} in:title`, '--limit', '100', '--json', 'title'], { encoding: 'utf8' }));
-          const pending = open.some(pr => pr.title === title);
-          appendFileSync(process.env.GITHUB_OUTPUT, `changed=${result.changed && !pending}\nversion=${result.latestVersion}\nlock=${profile.upstreamLock}\n`);
-          NODE
-      - name: Install build tools
-        if: steps.upstream.outputs.changed == 'true'
-        run: |
-          test "$(uname -m)" = arm64
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
-          brew install sevenzip
-      - uses: actions/cache/restore@v4
-        id: cargo-cache
-        if: steps.upstream.outputs.changed == 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            macos/src-tauri/target
-          key: macos-arm64-${{ matrix.region }}-rust-1.97.1-${{ hashFiles('macos/src-tauri/Cargo.lock') }}
-      - name: Extract updated official resources
-        id: extract
-        if: steps.upstream.outputs.changed == 'true'
-        run: |
-          npm ci
-          set -o pipefail
-          node macos/scripts/sync-upstream.mjs --update-lock 2>&1 | tee macos/.work/upstream-extract.log
-      - name: Read verified candidate installer cache identity
-        id: installer
-        if: steps.extract.outcome == 'success'
-        run: node macos/scripts/installer-cache.mjs
-      - name: Save verified candidate official installer
-        if: steps.extract.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ steps.installer.outputs.path }}
-          key: ${{ steps.installer.outputs.key }}
-      - name: Record candidate contract changes without accepting them
-        id: inventory
-        if: steps.extract.outcome == 'success'
-        run: |
-          set -o pipefail
-          node macos/scripts/upstream-review.mjs inventory 2>&1 | tee macos/.work/upstream-inventory.log
-      - name: Validate frontend compatibility
-        id: frontend
-        if: steps.extract.outcome == 'success'
-        run: |
-          set -o pipefail
-          { npm run icons && npm run prepare:frontend && npm test && npm run test:fullatlas; } 2>&1 | tee macos/.work/upstream-frontend.log
-      - name: Test native backend
-        id: native-tests
-        if: steps.upstream.outputs.changed == 'true'
-        run: |
-          set -o pipefail
-          npm run test:rust 2>&1 | tee macos/.work/upstream-native.log
-      - name: Build native application
-        id: build
-        if: steps.upstream.outputs.changed == 'true'
-        run: |
-          set -o pipefail
-          npm run build -- -- --locked 2>&1 | tee macos/.work/upstream-build.log
-      - name: Package candidate
-        id: validate
-        if: steps.upstream.outputs.changed == 'true'
-        run: |
-          set -o pipefail
-          npm run package 2>&1 | tee macos/.work/package-macos.log
-      - name: Keep validated packages for review
-        if: steps.validate.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: official-${{ matrix.region }}-candidate
-          path: |
-            dist/*.zip
-            dist/*.dmg
-          if-no-files-found: error
-          retention-days: 14
-      - name: Save compiled Cargo dependencies
-        if: always() && steps.native-tests.outcome == 'success' && steps.cargo-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            macos/src-tauri/target
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
-      - name: Keep upstream review evidence
-        if: always() && steps.upstream.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: official-${{ matrix.region }}-review
-          path: |
-            macos/.work/upstream-check.json
-            macos/.work/upstream-*.log
-            macos/.work/upstream-review/*.json
-            macos/.work/package-macos.log
-            macos/upstream-${{ matrix.region }}.json
-          if-no-files-found: error
-          retention-days: 30
-          include-hidden-files: true
-      - name: Publish verified official installer as an immutable build input
-        id: mirror
-        if: always() && !cancelled() && steps.extract.outcome == 'success'
-        run: node macos/scripts/installer-mirror.mjs
-      - name: Open validated update or draft requiring adaptation
-        if: always() && !cancelled() && steps.extract.outcome == 'success'
+      - name: Compare locked baseline with the official manifest
+        id: check
         env:
-          INVENTORY_OUTCOME: ${{ steps.inventory.outcome }}
-          FRONTEND_OUTCOME: ${{ steps.frontend.outcome }}
-          NATIVE_OUTCOME: ${{ steps.native-tests.outcome }}
-          BUILD_OUTCOME: ${{ steps.build.outcome }}
-          PACKAGE_OUTCOME: ${{ steps.validate.outcome }}
-          MIRROR_OUTCOME: ${{ steps.mirror.outcome }}
-        run: node macos/scripts/upstream-review.mjs open-pr
-      - name: Report incompatible or unavailable upstream
+          TARGET: ${{ github.event.inputs.region || 'both' }}
+        run: node macos/scripts/upstream-detect.mjs
+
+  lock:
+    name: 更新基线锁
+    needs: detect
+    if: needs.detect.outputs.need_update == 'true'
+    runs-on: macos-15
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      cn_version: ${{ steps.versions.outputs.cn }}
+      global_version: ${{ steps.versions.outputs.global }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # 这一步要改锁、bump 版本再推分支，shallow clone 下 push 与 force-with-lease 都容易踩坑。
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install 7-Zip
+        run: brew install sevenzip
+      - name: Follow official resources for changed regions
+        env:
+          CN_CHANGED: ${{ needs.detect.outputs.cn_changed }}
+          GLOBAL_CHANGED: ${{ needs.detect.outputs.global_changed }}
+        run: |
+          set -euo pipefail
+          if [ "$CN_CHANGED" = "true" ]; then
+            WUWA_REGION=cn node macos/scripts/sync-upstream.mjs --update-lock
+            WUWA_REGION=cn node macos/scripts/upstream-windows-lock.mjs
+          fi
+          if [ "$GLOBAL_CHANGED" = "true" ]; then
+            WUWA_REGION=global node macos/scripts/sync-upstream.mjs --update-lock
+            WUWA_REGION=global node macos/scripts/upstream-windows-lock.mjs
+          fi
+      - name: Read resulting baseline versions
+        id: versions
+        run: |
+          {
+            echo "cn=$(node -p 'require("./macos/upstream-cn.json").version')"
+            echo "global=$(node -p 'require("./macos/upstream-global.json").version')"
+          } >> "$GITHUB_OUTPUT"
+      - name: Publish verified installers to the build mirror
+        # 官方 CDN 从 runner 侧会间歇性连不上（2026-11-08 那次发版就是被它打死），
+        # 所以把校验过的原始安装包按 sha256 命名存进 upstream-resources，
+        # 构建侧失败时可以按锁里的哈希回退。这一步失败不阻断发版，只影响下次的退路。
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CN_CHANGED: ${{ needs.detect.outputs.cn_changed }}
+          GLOBAL_CHANGED: ${{ needs.detect.outputs.global_changed }}
+        run: |
+          set -euo pipefail
+          if [ "$CN_CHANGED" = "true" ]; then WUWA_REGION=cn node macos/scripts/installer-mirror.mjs; fi
+          if [ "$GLOBAL_CHANGED" = "true" ]; then WUWA_REGION=global node macos/scripts/installer-mirror.mjs; fi
+      - name: Assert both platforms share one baseline
+        # 这条断言以前只在 CI 里跑，现在提前到"改锁的同一个地方"：
+        # 两平台锁对不上就没必要再花一小时去编译两个必然不一致的包。
+        run: node --test macos/tests/upstream-baseline.test.mjs
+      - name: Bump integration version for the new baseline
+        id: bump
+        run: |
+          set -euo pipefail
+          node scripts/bump-version.mjs > /tmp/bump.json
+          cat /tmp/bump.json
+          node -e "console.log('version=' + require('/tmp/bump.json').next)" >> "$GITHUB_OUTPUT"
+      - name: Publish baseline branch
+        run: |
+          set -euo pipefail
+          # 重跑同一次 run 时分支已经存在，从 main 重建，避免在旧提交上二次递增版本号。
+          git switch -c "$BASELINE_BRANCH" 2>/dev/null || git switch --force-create "$BASELINE_BRANCH" origin/main
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- $LOCK_FILES $VERSION_FILES
+          if git diff --cached --quiet; then
+            echo "基线没有实际变化，跳过提交"
+            exit 0
+          fi
+          git commit -m "chore(baseline): 官方基线跟到 国服 ${{ steps.versions.outputs.cn }} / 国际服 ${{ steps.versions.outputs.global }}"
+          git push --force-with-lease origin "$BASELINE_BRANCH"
+      - name: Preserve partial baseline work when a step fails
         if: failure()
-        run: node macos/scripts/upstream-review.mjs report
+        run: |
+          git switch -c "$BASELINE_BRANCH" 2>/dev/null || git switch --force-create "$BASELINE_BRANCH" origin/main 2>/dev/null || true
+          git add -- $LOCK_FILES $VERSION_FILES 2>/dev/null || true
+          git commit -m "wip(baseline): 官方基线跟新未完成" 2>/dev/null || true
+          git push --force-with-lease origin "$BASELINE_BRANCH" 2>/dev/null || true
+
+  build-macos:
+    name: macOS 编译
+    needs: lock
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: codex/official-baseline-${{ github.run_id }}
+
+  build-windows:
+    name: Windows 编译
+    needs: lock
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      ref: codex/official-baseline-${{ github.run_id }}
+
+  publish:
+    name: 发布预发布
+    needs: [detect, lock, build-macos, build-windows]
+    if: >-
+      needs.lock.result == 'success' &&
+      needs.build-macos.result == 'success' &&
+      needs.build-windows.result == 'success' &&
+      github.event.inputs.publish != 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.BASELINE_BRANCH }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: WuwaTappo-*
+          merge-multiple: true
+          path: dist
+      - name: Merge baseline, tag and publish pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.lock.outputs.version }}
+        run: node macos/scripts/upstream-release.mjs publish
+
+  report:
+    name: 上报需要改适配
+    needs: [detect, lock, build-macos, build-windows, publish]
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Open a draft PR describing what needs adaptation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.lock.outputs.version || needs.detect.outputs.cn_version || needs.detect.outputs.global_version || '未知' }}
+          BASELINE_BRANCH: ${{ env.BASELINE_BRANCH }}
+          STAGE_OUTCOMES: >-
+            {"lock":"${{ needs.lock.result }}","build-macos":"${{ needs.build-macos.result }}","build-windows":"${{ needs.build-windows.result }}","publish":"${{ needs.publish.result }}"}
+        run: node macos/scripts/upstream-release.mjs report

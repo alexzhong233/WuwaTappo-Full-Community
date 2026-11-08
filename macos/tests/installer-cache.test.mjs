@@ -108,9 +108,8 @@ test('restored installers avoid network but remain size and digest verified befo
   }
 });
 
-test('workflows restore exact pins before setup and save only verified installer files', async () => {
+test('build workflow restores the exact pin before setup and saves only verified installer files', async () => {
   const build = await readFile(path.join(repoRoot, '.github/workflows/build.yml'), 'utf8');
-  const sync = await readFile(path.join(repoRoot, '.github/workflows/sync-upstream.yml'), 'utf8');
   const restore = build.match(/      - name: Restore pinned official installer[\s\S]*?(?=      - )/)?.[0];
   assert.ok(restore);
   assert.ok(restore.includes('path: ${{ steps.installer.outputs.path }}'));
@@ -118,9 +117,4 @@ test('workflows restore exact pins before setup and save only verified installer
   assert.ok(!restore.includes('restore-keys'));
   assert.ok(build.indexOf('Restore pinned official installer') < build.indexOf('run: npm run setup'));
   assert.match(build, /Save verified official installer\n\s+if: steps\.prepare\.outcome == 'success' && steps\.installer-cache\.outputs\.cache-hit != 'true'/);
-  assert.match(sync, /Read verified candidate installer cache identity\n\s+id: installer\n\s+if: steps\.extract\.outcome == 'success'/);
-  assert.match(sync, /Save verified candidate official installer\n\s+if: steps\.extract\.outcome == 'success'/);
-  assert.ok(sync.indexOf('Save verified candidate official installer') > sync.indexOf('node macos/scripts/sync-upstream.mjs --update-lock'));
-  assert.ok(sync.includes('path: ${{ steps.installer.outputs.path }}'));
-  assert.ok(sync.includes('key: ${{ steps.installer.outputs.key }}'));
 });

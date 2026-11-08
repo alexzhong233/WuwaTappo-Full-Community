@@ -93,13 +93,13 @@ powershell -File tools\package-win.ps1 -NoRuntime
 
 ### 版本锁定
 
-`upstream-win.json` 记录注入适配的官方客户端版本、主程序 SHA-256 和安装包直链。构建默认按它取包，**不会**因为官方发新版就悄悄换成未适配的版本。要跟新版：
+`upstream-win.json` 记录的是**构建输入**：官方客户端版本、安装包直链与 SHA-256、解出的主程序 SHA-256。它由 [同步工作流](../.github/workflows/sync-upstream.yml) 跟随官方最新版自动更新，不再需要人工改。
 
-```powershell
-powershell -File tools\fetch-official.ps1 -Latest   # 取官方最新并校验哈希
-```
+- 官方发新版后工作流自动更新四份锁（macOS 两份 + Windows 两份）并立刻编译；编过就直接发预发布，编不过才开草稿 PR 等人改适配。
+- **版本号不是准入条件**：注入器不再维护"允许的版本清单"，兼容性由结构断言和注入结果判定。官方换了版本号但锚点没漂，就不需要改任何代码。
+- 想在本机手动跟随：`powershell -File tools\fetch-official.ps1 -Latest`，取官方最新并校验哈希。
 
-哈希与锁定值不符时脚本会告警——这意味着锚点可能已漂移，需要重新定位后再改 `upstream-win.json`。
+主程序哈希与锁定值不符时脚本会告警——那说明解出来的二进制和上次适配过的不是同一份，先跑一次注入确认锚点再继续。
 
 ## 目录
 

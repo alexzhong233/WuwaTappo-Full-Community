@@ -163,14 +163,20 @@ test('failure report execution creates CN issue instead of commenting on a fuzzy
   }
 });
 
-test('sync workflow retains failed validation and creates reviewable drafts only after successful extraction', async () => {
+// 语义从"验证通过就开 PR 等人合并"改成了"全绿自动发预发布、红了才开草稿 PR"：
+// 版本号不再是准入条件，所以编译本身就是兼容性判决。这条测试守住新语义的两个要点——
+// 发版必须等三个 stage 全绿，失败必须留得下可评审的现场。
+test('sync workflow publishes only when every stage is green and otherwise leaves a reviewable draft', async () => {
   const workflow = await readFile(path.join(repoRoot, '.github/workflows/sync-upstream.yml'), 'utf8');
-  assert.ok(!workflow.includes('continue-on-error'));
-  assert.match(workflow, /Open validated update or draft requiring adaptation\n\s+if: always\(\) && !cancelled\(\) && steps\.extract\.outcome == 'success'/);
-  assert.match(workflow, /Keep upstream review evidence\n\s+if: always\(\) && steps\.upstream\.outputs\.changed == 'true'/);
-  assert.match(workflow, /Report incompatible or unavailable upstream\n\s+if: failure\(\)/);
-  assert.ok(workflow.includes('node macos/scripts/upstream-review.mjs inventory'));
-  assert.ok(workflow.includes('.work/upstream-review/*.json'));
-  assert.match(workflow, /retention-days: 30\n\s+include-hidden-files: true/);
-  assert.ok(!workflow.includes('npm run inventory'));
+  assert.match(workflow, /needs\.lock\.result == 'success'/);
+  assert.match(workflow, /needs\.build-macos\.result == 'success'/);
+  assert.match(workflow, /needs\.build-windows\.result == 'success'/);
+  assert.ok(workflow.includes('node macos/scripts/upstream-release.mjs publish'));
+  assert.ok(workflow.includes('node macos/scripts/upstream-release.mjs report'));
+  assert.match(workflow, /上报需要改适配\n\s+needs:[\s\S]{0,200}?if: failure\(\)/);
+  // 失败时也要把分支推上去，否则没有地方可以改适配。
+  assert.match(workflow, /Preserve partial baseline work when a step fails\n\s+if: failure\(\)/);
+  // 只有镜像上传允许吞错：它影响的是"下次 CDN 抖动时的退路"，不是本次发版的必要条件。
+  assert.equal((workflow.match(/continue-on-error: true/g) || []).length, 1);
+  assert.ok(workflow.indexOf('continue-on-error: true') > workflow.indexOf('Publish verified installers to the build mirror'));
 });

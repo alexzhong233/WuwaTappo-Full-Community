@@ -56,7 +56,7 @@ npm run build:check -- --platform=win
 | push 到 `main` / `dev` | CI 同时跑 `build.yml`（macos-15）与 `build-windows.yml`（windows-2022），各自上传 artifact |
 | 打 tag `v*` | 两平台都构建成功才直接发布同一个 Release，四件产物缺一件就不发（`-alpha`/`-beta`/`-rc` 自动标 Pre-release） |
 
-Windows 侧版本由 `windows/upstream-win.json` 锁定，不会因为官方发新版就静默构建未适配的版本。
+Windows 侧版本记录在 `windows/upstream-win.json`，由同步工作流跟随官方最新版自动更新；四份锁始终指向同一个官方安装包，发版前还会再校验一次两平台基线是否对齐。
 
 ## 支持情况
 
@@ -139,10 +139,11 @@ npm run package
 官方客户端程序、公开图鉴数据、FullAtlas 功能代码分别维护：
 
 - `npm run upstream:check` 只检查官方客户端版本；`npm run upstream:update` 会下载候选版本并修改官方资源锁，需要在适配分支执行。
-- `npm run official:update` 是本地一键编排入口：默认只检测；`npm run official:update -- --apply` 才会下载并校验官方安装包、静态提取、注入 FullAtlas、运行测试、构建和打包 ZIP / DMG。失败会恢复更新前的资源锁和前端；未知前端结构会被版本门禁拦截。
+- `npm run official:update` 是本地一键编排入口：默认只检测；`npm run official:update -- --apply` 才会下载并校验官方安装包、静态提取、注入 FullAtlas、运行测试、构建和打包 ZIP / DMG。失败会恢复更新前的资源锁和前端；未知前端结构会让注入的结构断言直接失败，而不是靠版本号提前挡下。
 - 应用内的「更新本地图鉴」刷新目录数据，不升级程序或接口适配器。
-- `.github/workflows/sync-upstream.yml` 每日 **10:17（北京时间）** 检查国服与国际服更新（也支持手动触发并指定区域）。经静态提取、接口差异、测试、构建与打包验证后创建更新 PR：锁文件和**重新生成的契约快照**随 PR 提交，手写的 `tests/network-contract*.json` 只做提示不改动；不兼容候选保持草稿，不自动合并。
-- FullAtlas 集成器同时核对官方版本和安装包摘要。未知版本不会只靠修改版本号进入正式构建。
+- `.github/workflows/sync-upstream.yml` 每 6 小时（北京时间 02:17 / 08:17 / 14:17 / 20:17）检查国服与国际服更新（也支持手动触发并指定区域）。发现新版就自动更新四份基线锁、递增整合版本号并编译两平台四产物：**全部通过后自动合并、打 tag 并发预发布**；任一环节失败会保留分支并开草稿 PR，写明是哪个阶段红的、日志在哪。
+- FullAtlas 集成器不再用版本白名单做准入：兼容性由结构断言与注入结果判定，版本号只用于记录和产物命名。官方换了版本号但锚点没漂，就不需要改代码。
+- 发版前会校验 Windows 锁与 macOS 锁是同一版本、同一个安装包，避免一个 Release 里两个平台的客户端不是同一代。
 - `main` 和 `dev` 的 CI 按区域矩阵构建：macOS（`cn` / `global`）与 Windows（`cn` / `global`）各出一份产物。`dev` 的 CI 成功后会自动创建或更新 `dev` 滚动预发布版；版本标签触发的 Release 工作流只生成**草稿预发布**，需要维护者验收后手动发布.
 
 在你的仓库启用 Actions 后这些工作流才会运行。定时同步需要在仓库设置中允许 Actions 创建 Pull Request，首次发布步骤见 [GitHub 发布指南](macos/docs/PUBLISHING.md)。[官方更新流水线](macos/docs/OFFICIAL_UPDATE_PIPELINE.md) 和 [来源与更新记录](macos/docs/official-update-status-2026-10-30.md) 保留实现边界与核验信息。
