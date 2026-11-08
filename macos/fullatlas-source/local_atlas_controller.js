@@ -205,12 +205,35 @@ function createLocalAtlasController(d) {
   }
   // 官方名字来自远端字典（按 asset_name 查），本机 Mod 的名字不在字典里，
   // 图鉴/背包会渲染成空或被占位符顶掉。把 Mod 条目的名字登记出来，名字解析处直接回退。
+  // 背包「我的预设」左边的预览又是另一条链路：它按名字拼 CDN 地址（character/<名字>.png），
+  // Mod 的图只在本地，拼出来必然 404，界面上就是那个「？」。所以这里同时登记名字 → 本机地址，
+  // 共享块的 buildAssetUrl 命中后直接返回本机路由，拼不到的名字照旧走官方逻辑。
   function registerModNames(data) {
-    const names = new Set();
+    const names = new Set(), images = new Map();
+    const catalog = data.catalog || {};
     for (const entry of data.atlas || []) {
-      if (entry && entry.rarity === 'MOD' && entry.asset_name) names.add(String(entry.asset_name).trim());
+      // Mod 条目同时带 rarity: "MOD" 和 custom_pack_id；只认其中一个都不够稳，
+      // 素材清单换版本时这两个字段未必一起出现。
+      if (!entry || !entry.asset_name || (entry.rarity !== 'MOD' && !entry.custom_pack_id)) continue;
+      const name = String(entry.asset_name).trim();
+      if (!name) continue;
+      names.add(name);
+      const atlasKind = String(entry.asset_type || '');
+      const atlasEntry = catalog[atlasKind]?.[entry.asset_id];
+      const mapped = atlasEntry?.height_light_id;
+      const primary = mapped == null ? null : catalog[atlasKind.replace(/_atlas$/, '')]?.[mapped];
+      const atlasUrl = assetUrl(atlasEntry?.url);
+      images.set(name, {atlas: atlasUrl, preview: assetUrl(primary?.url) || atlasUrl});
     }
     d.window.__WUWA_MOD_NAMES__ = names;
+    d.window.__WUWA_MOD_ASSET_PATH__ = reference => {
+      const raw = String(reference || '').trim().replace(/\.png$/i, '');
+      const slash = raw.indexOf('/');
+      if (slash < 0) return '';
+      const row = images.get(raw.slice(slash + 1));
+      if (!row) return '';
+      return /_atlas$/.test(raw.slice(0, slash).toLowerCase()) ? row.atlas : row.preview;
+    };
   }
   function applyData(data) { registerModNames(data); d.applyOfflineCatalog(runtimeCatalog(data), origin); }
   async function applyMode(on) {

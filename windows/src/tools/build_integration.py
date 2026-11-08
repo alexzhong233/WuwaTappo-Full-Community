@@ -66,6 +66,18 @@ MOD_NAME_FALLBACK_NEW = '''function resolveAssetDisplayName(e, t) {
 }'''
 shared = replace(shared, MOD_NAME_FALLBACK_OLD, MOD_NAME_FALLBACK_NEW)
 
+# 背包「我的预设」左边的预览走的是另一条链路：按名字拼 CDN 地址（character/<名字>.png），
+# 不走 _atlas 目录查表，所以 Mod 条目在那里拼出一个必然 404 的官方地址，界面就剩一个「？」。
+# 地址拼接处先问一句本机 Mod 表（local_atlas_controller 登记的名字 → 本机路由），
+# 命中就返回本机地址，没命中照旧拼官方地址，官方素材的行为一字未改。
+_MOD_ASSET_URL = re.search(r'function buildAssetUrl\(([^)]*)\)\s*\{', shared)
+assert _MOD_ASSET_URL, 'official buildAssetUrl contract'
+_MOD_ASSET_URL_PARAMS = [part.strip() for part in _MOD_ASSET_URL.group(1).split(',')]
+assert len(_MOD_ASSET_URL_PARAMS) == 2, _MOD_ASSET_URL_PARAMS
+shared = replace(shared, _MOD_ASSET_URL.group(0), _MOD_ASSET_URL.group(0) + '''
+  const modAssetPath = (typeof window !== "undefined" && window.__WUWA_MOD_ASSET_PATH__) ? window.__WUWA_MOD_ASSET_PATH__(''' + _MOD_ASSET_URL_PARAMS[1] + ''') : "";
+  if (modAssetPath) return withAssetUrlCacheBust(modAssetPath);''')
+
 shared = replace(shared, 'loaderModule.init(kurodataConfig);\nwindow.kurodata = loaderModule;\ninitTrackCommonProps();\ninitFrontendAlertReporting();', '''let localOnlineServicesStarted = false;
 function localStartOnlineServices() {
  if (localOnlineServicesStarted) return;

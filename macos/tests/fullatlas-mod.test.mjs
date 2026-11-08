@@ -27,7 +27,7 @@ for (const platform of ['macos', 'windows']) {
         for (const [kind, id] of [['character_skin', 1000000001], ['accessory', 1000000003], ['emote', 1000000005]]) {
           catalog[kind][id] = { url: reference, game_role_id: 0, ...(kind === 'character_skin' ? { body1: { url: reference }, head1: { url: reference } } : {}) };
           catalog[kind + '_atlas'][id + 1] = { height_light_id: id, url: reference };
-          atlas.push({ asset_id: id + 1, asset_type: kind + '_atlas', asset_name: 'My Mod ' + kind });
+          atlas.push({ asset_id: id + 1, asset_type: kind + '_atlas', asset_name: 'My Mod ' + kind, rarity: 'MOD', custom_pack_id: 'mod-example', custom_item_id: kind });
         }
       }
       return { catalog, atlas, atlas_count: atlas.length, customAssetPaths: backend.installed ? { [reference]: localPath } : {} };
@@ -107,6 +107,14 @@ for (const platform of ['macos', 'windows']) {
     assert.equal(first.catalog().character_skin[1000000001].url, expectedURL);
     assert.equal(first.win.document.documentElement.hasAttribute('data-wuwa-mod'), true, '本地模式下才挂 Mod 标记');
     assert.equal(first.catalog().character_skin[1000000001].body1.url, expectedURL);
+    // 背包「我的预设」左边的预览按名字拼地址（character/<名字>.png），
+    // Mod 名字必须能落到本机路由，否则官方 CDN 那边只会回一个「？」。
+    const modAssetPath = first.win.__WUWA_MOD_ASSET_PATH__;
+    assert.equal(first.win.__WUWA_MOD_NAMES__.has('My Mod character_skin'), true);
+    assert.equal(modAssetPath('character/My Mod character_skin.png'), expectedURL);
+    assert.equal(modAssetPath('accessory/My Mod accessory'), expectedURL);
+    assert.equal(modAssetPath('character_atlas/My Mod emote'), expectedURL, '缩略图目录走 atlas 地址');
+    assert.equal(modAssetPath('character/官方角色.png'), '', '官方名字不能被改写到本机');
     assert.equal(first.catalog().character_skin[1].url, account.character_skin[1].url);
     assert.equal(first.controller.offlineData.value.catalog.character_skin[1000000001].url, reference, 'runtime conversion leaves raw data intact');
     first.controller.select({ asset_type: 'character_skin', asset_id: 1000000001, asset_name: 'Hero' }, officialUser, 8);
