@@ -264,6 +264,44 @@ row = f'''{h}('div',{{class:'setting-item','data-local-gallery-setting':'true'}}
 edits = [(0, 0, f'import {{zzLocalAtlas as __lg}} from "./{shared_name}";\n'),
          (settings['body'] + 1, settings['body'] + 1, setup),
          (container['array'] + 1, container['array'] + 1, row)]
+# 官方把面板导航写成固定数组（背包/图鉴/合成/联机/设置/收起）。这里在「设置」前
+# 插一个「控制台」页，位置与上游一致：联机下面、设置上面；图标用三段滑杆，沿用暖色。
+module_component = next(c for c in p['components'] if c['name'] == 'MainModulePanel')
+module_text = panel[module_component['start']:module_component['end']]
+nav_iter = re.search(r'([\w$]+)\(([\w$]+)\(([\w$]+)\), ([\w$]+) =>', module_text)
+assert nav_iter, 'navigation iterator changed'
+nav_render, nav_unref, nav_items, nav_item = nav_iter.groups()
+nav_state = re.search(r'([\w$]+)\.activeTab === "bag"', module_text)[1]
+nav_label = re.search(r'return ([\w$]+)\.key === "toggle"', module_text)[1]
+console_component = f'''
+const __ConsolePage={pi['defineComponent']}({{
+ __name:'WuwaNativeConsole',setup(){{
+  const target={pi['ref']}(null);
+  {pi['onMounted']}(()=>__lg.assistant.mountConsole(target.value));
+  {pi['onUnmounted']}(()=>__lg.assistant.closePanel());
+  return ()=>{h}('div',{{class:'module-block',style:{{height:'100%',minHeight:0,position:'relative',overflow:'hidden',paddingTop:'6px'}}}},[{h}('div',{{ref:target,style:{{height:'100%',minHeight:0,overflow:'auto'}}}})]);
+ }}
+}});
+const __consoleTabs={pi['computed']}(()=>{pi['unref']}({nav_items}).flatMap(item=>item.key==='setting'?[{{key:'console',labelKey:'console'}},item]:[item]));
+'''
+edits.append((module_component['body'] + 1, module_component['body'] + 1, console_component))
+icon_match = re.search(re.escape(h) + r'\("span", \{\s*class: [\w$]+\(\["tab-btn__icon", `tab-btn__icon--\$\{' + re.escape(nav_item) + r'.key\}`\]\)\s*\}, null, 2\)', module_text)
+assert icon_match, 'native navigation icon layout changed'
+console_icon = f'''{nav_item}.key==='console'?({pi['openBlock']}(),{pi['createElementBlock']}('svg',{{key:'console-icon',class:'tab-btn__icon tab-btn__icon--console',viewBox:'0 0 40 54','aria-hidden':'true','data-console-icon':'sliders',style:{{color:{nav_state}.activeTab==='console'?'#9c6541':'#f4d5a5'}}}},[
+ {h}('rect',{{x:7,y:15,width:26,height:25,rx:5,fill:'none',stroke:'currentColor','stroke-width':2.5}}),
+ {h}('path',{{d:'M14 21v13M20 21v13M26 21v13',fill:'none',stroke:'currentColor','stroke-width':2.2,'stroke-linecap':'round'}}),
+ {h}('circle',{{cx:14,cy:25,r:2.6,fill:'currentColor'}}),{h}('circle',{{cx:20,cy:30,r:2.6,fill:'currentColor'}}),{h}('circle',{{cx:26,cy:24,r:2.6,fill:'currentColor'}})
+],4)):{icon_match[0]}'''
+_icon_pos = module_component['start'] + icon_match.start()
+edits.append((_icon_pos, module_component['start'] + icon_match.end(), console_icon))
+for _old, _new in [
+        (f'return {nav_label}.key === "toggle"', f'return {nav_label}.key === "console" ? "控制台" : {nav_label}.key === "toggle"'),
+        (f'{nav_render}({nav_unref}({nav_items}),', f'{nav_render}(__consoleTabs.value,'),
+        (f'{nav_state}.activeTab === "bag" ?',
+         f'{nav_state}.activeTab === "console" ? ({pi["openBlock"]}(),{pi["createBlock"]}(__ConsolePage,{{key:"console"}})) : {nav_state}.activeTab === "bag" ?')]:
+    assert module_text.count(_old) == 1, ('native console anchor', _old)
+    _pos = module_component['start'] + module_text.index(_old)
+    edits.append((_pos, _pos + len(_old), _new))
 panel_root = next(c for c in p['components'] if c['name'] == 'index')
 root_source = panel[panel_root['body']:panel_root['bodyEnd']]
 state_ref = re.search(r'const ([\w$]+) = ' + re.escape(pi['ref']) + r'\(null\)', root_source)

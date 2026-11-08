@@ -80,3 +80,29 @@ FullAtlas 只合入与本项目双平台架构兼容的改动：
 | 程序内更新（下载 zip → 备份替换 → 自动重启） | **Windows 已做**，macOS 保持原样 | Windows 的 Release 现在多带一个 `…-win-x64-update.zip` + `SHA256SUMS.txt`：控制台「更新」里发现新版本即可一键下载、校验、备份、替换、重启，失败自动回滚。macOS 受签名与 app 包结构限制，仍跳 GitHub 下载安装包；两端弹窗都会写明「因系统原因跳转下载」 |
 | LZMA 压缩、依赖裁剪 | 不做 | 只服务上游自己的打包链；我们的体积大头是官方客户端本体，换独立 WebView2 运行时反而变大（上游 400 MB 就是这么来的）。升级包用 deflate，够用且解压快 |
 | 默认隐藏任务栏图标 | 不自己实现，改官方开关的默认值 | 桌宠原版设置里本来就有「显示任务栏图标」（默认勾选 = 显示）。整合版把默认值改成不勾选，并给存过设置的老用户做一次迁移；之后在官方设置里勾回来永久生效。macOS 侧同样走这个设置，程序坞图标由 `set_main_skip_taskbar` 一并处理 |
+
+## 2026-11-08 第三轮：控制台页签、右键菜单、更新页与开机自启
+
+上一轮遗留的三项这轮全部落地；同时补上「控制台」在官方面板里的独立页签。
+
+| 上游 | 内容 | 落地方式 |
+|---|---|---|
+| 1.3.4 / 1.3.6 | 控制台独立入口（联机下方、设置上方） | 官方 `MainModulePanel` 的导航数组在 `setting` 前插入 `console`，配三段滑杆 SVG 图标；`activeTab === "console"` 时渲染 `WuwaNativeConsole`，把控制台内嵌进面板，不再是浮层 |
+| 1.3.6 | 桌宠右键原生菜单 | 新增 `desktop_context_menu.js` + `native_context_menu.py`，替换官方 `popup_main_dock_context_menu`；菜单项含背包/图鉴/合成/联机、控制台、设置、禁用拖动、游戏模式、不透明度、大小、隐藏、重启、退出。点外部或按 Esc 收起，菜单打开时不把鼠标交给桌宠，自动点击同步暂停 |
+| 1.3.4 | 更新页三行版本与详情 | 「官方基底 / 当前安装 / GitHub 最新修改版」三行各自带状态；Release 正文压成纯文字放进「这次更新了什么」，暖色细滚动条，最高 210px |
+| 1.3.6 | 更新进度与阶段 | 下载按字节实时进度、校验/解压/准备/替换/等待退出/启动分阶段；进度写入 `.updates/<job>/progress.json`，重启后照样能读回；`.updates/install.lock` 跨进程独占，重复点击不会开两个任务 |
+| 1.3.5 | 开机自启托管 | 新增 `startup_manager.py`：注册计划任务跑 `launch.ps1`（先起本地服务再起桌宠），登录延迟 15 秒，自动迁移官方旧任务；设置页的开机自启开关改为问本机服务 `/startup` |
+| 1.3.4 | 控制台里的本地全图鉴开关 | 设置页多一张「本地图鉴」卡片，直接切官方/本机外观，不用再跑回官方面板 |
+
+**仍然不做的**
+
+| 上游项 | 原因 |
+|---|---|
+| 独立置顶更新窗口 + 桌宠退出后的进度窗口接续 | 那个窗口是上游自己 Tauri 壳里的 `open_update_window`，我们用的是官方 exe，窗口内容由官方 `AppUpdateOverlay` 渲染，塞不进自己的进度。进度改在控制台内显示；替换阶段桌宠已退出，界面会断，重新起来后直接显示「更新完成」 |
+| `ready_for_restart` / `stop_for_update`（独立 Upgrade.exe 请主程序保存退出） | 我们只有应用内触发，没有独立升级器，不存在「外部进程要求退出」的场景 |
+| `portable_bootstrap.py` / `process_launch.py` | 单 EXE 绿色版与它的进程隔离启动；不做绿色版就不需要 |
+| `ReleaseNotesParser`（抓 GitHub 公开页面的 markdown-body） | 我们直接读 API 的 release body，不需要 HTML 解析兜底 |
+
+**两端一致性**
+
+`assistant_dashboard.js` 两端只差品牌那一行；`desktop_assistant.js` 只差首行注释与 `VERSION` 两行（`macos/tests/platform-parity.test.mjs` 守着）。控制台页签与右键菜单只在 Windows 壳里生效：macOS 仍走菜单栏「控制台」+ 桌宠窗口内浮层，同一个 `openPanel` 通过 `window.__WUWA_OPEN_PANEL_TAB__` 探测，壳提供了才走页签。

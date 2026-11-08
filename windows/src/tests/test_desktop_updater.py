@@ -148,7 +148,8 @@ class UpdaterTests(unittest.TestCase):
     def test_helper_startup_timeout_restores_old_executable(self):
         target,folder,stage=self.helper_fixture()
         from unittest.mock import MagicMock
-        with patch('desktop_updater.processes',return_value=[]),patch('desktop_updater.launch') as launch,patch('desktop_updater.psutil',MagicMock()),patch('desktop_updater.time.monotonic',side_effect=[0,0,91]):
+        # 前五个 0 给「写进度/等退出/替换/启动」这几步，之后跳到 91 让启动检查超时。
+        with patch('desktop_updater.processes',return_value=[]),patch('desktop_updater.launch') as launch,patch('desktop_updater.psutil',MagicMock()),patch('desktop_updater.time.monotonic',side_effect=[0,0,0,0,0,91,91,91,91]):
             apply_update(target,stage)
         self.assertFalse(json.loads((folder/'result.json').read_text())['ok'])
         self.assertEqual((target/'WuwaTappo.Local.exe').read_bytes(),b'old-pet')

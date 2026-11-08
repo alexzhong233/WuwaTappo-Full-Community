@@ -1,5 +1,6 @@
 """Extend a structurally verified 1.0.2 frontend; fail on contract changes."""
 import re
+import sys
 
 
 def integrate(project, base, frontend, structure, shared, main, panel, main_name, panel_name):
@@ -91,10 +92,12 @@ def integrate(project, base, frontend, structure, shared, main, panel, main_name
                 handlers[0] + '(e.payload); __lg.assistant.physicalKey(e.payload)')
     main = once(main, handlers[1] + '(e.payload)',
                 handlers[1] + '(e.payload); __lg.assistant.physicalRelease(e.payload)')
-    factory = (project / 'src/assistant_dashboard.js').read_text(encoding='utf-8')+'\n'+(project / 'src/desktop_assistant.js').read_text(encoding='utf-8')
+    factory = (project / 'src/assistant_dashboard.js').read_text(encoding='utf-8')+'\n'+(project / 'src/desktop_assistant.js').read_text(encoding='utf-8')+'\n'+(project / 'src/desktop_context_menu.js').read_text(encoding='utf-8')
     shared = once(shared, 'window.__WUWA_LOCAL_ATLAS__ = localAtlasController;', factory + '''
 window.__WUWA_LOCAL_ATLAS__ = localAtlasController;
-localAtlasController.assistant=createDesktopAssistant({ref,window,atlas:localAtlasController,displayName:resolveAssetDisplayName});''')
+localAtlasController.assistant=createDesktopAssistant({ref,window,atlas:localAtlasController,displayName:resolveAssetDisplayName});
+localAtlasController.contextMenu=createDesktopContextMenu({invoke,request:(path,body)=>localAtlasController.request(path,body),settings:loadDesktopCatSettings,visible:()=>petDockVisibleForMenu,labels:async()=>{try{return await getNativeMenuLabels(formatShortcut((await getAppShortcuts()).togglePet));}catch(error){return {};}},report:details=>localAtlasController.request('/diagnostic',details)});
+window.__WUWA_OPEN_PANEL_TAB__=tab=>invoke('open_panel_window',{payload:{tab}}).then(()=>true).catch(()=>false);''')
     shared = once(shared, 'localAtlasController.ready.then(() => { localStartOnlineServices(); return bootstrap(); })',
                   'Promise.all([localAtlasController.ready,localAtlasController.assistant.ready]).then(() => { localStartOnlineServices(); return bootstrap(); })')
     # Record only the original successful server result, before its popup. The
@@ -111,11 +114,45 @@ localAtlasController.assistant=createDesktopAssistant({ref,window,atlas:localAtl
     quit_fn = re.search(r'"tray-quit", \(\) => \{\s*([\w$]+)\(\)', source)[1]
     persist_original = re.search(re.escape(mi['listenPersistClicksBeforeExit'])+r'\(async \(\) => \{\s*([\s\S]+?)\n\s*\}\)',source)[1]
     main = once(main, 'async function '+quit_fn+'() {', 'async function '+quit_fn+'() {\n try{await __lg.assistant.flush();}catch{}')
+    # 桌宠上右键：官方原本调原生 popup_main_dock_context_menu。换成我们自己弹的原生菜单
+    # （多了控制台入口，点外部或 Esc 会收起），并顺手释放拖拽状态，避免菜单卡住后拖不动。
+    popup = re.search(r'await ([\w$]+)\("popup_main_dock_context_menu", \{\s*x: ([\w$]+),\s*y: ([\w$]+)\s*\}\)', main)
+    assert popup, 'native dock menu anchor changed'
+    popup_function = min((fn for fn in structure['files'][main_name]['functions']
+                          if '"popup_main_dock_context_menu"' in source[fn['start']:fn['end']]),
+                         key=lambda fn: fn['end'] - fn['start'])
+    popup_source = source[popup_function['start']:popup_function['end']]
+    cancel_gesture = re.search(r'finally\s*\{[\s\S]*?,\s*([\w$]+)\(\),\s*[\w$]+ && window\.setTimeout', popup_source)
+    assert cancel_gesture, 'dock cleanup binding changed'
+    cancel_gesture = cancel_gesture.group(1)
+    assert cancel_gesture in re.findall(r'cancelDockPointerGesture:\s*([\w$]+)', source), 'dock cleanup binding changed'
+    swallow_function = min((fn for fn in structure['files'][main_name]['functions']
+                            if '"set_main_swallow_mouse"' in source[fn['start']:fn['end']]),
+                           key=lambda fn: fn['end'] - fn['start'])
+    swallow_header = re.search(r'function ([\w$]+)\(([\w$]+)\) \{',
+                               source[swallow_function['start']:swallow_function['end']])
+    assert swallow_header, 'mouse interception binding changed'
+    # 菜单开着时不要把鼠标事件交给桌宠，否则点菜单等于点桌宠。
+    main = once(main, swallow_header.group(0),
+                swallow_header.group(0) + '\n if(__lg.contextMenu?.isOpen()) ' + swallow_header.group(2) + '=false;')
+    native_invoke = mi.get('invoke$1', mi.get('invoke'))
+    context_actions = ('{openTab:' + open_tab + ',openConsole:async()=>{await __lg.assistant.openPanel();},'
+                       'before:async()=>{await ' + cancel_gesture + '();await ' + native_invoke + "('set_main_swallow_mouse',{enabled:false});},"
+                       'after:async()=>{await ' + native_invoke + "('set_main_swallow_mouse',{enabled:false});await " + cancel_gesture + '();}}')
+    main = once(main, popup.group(0), f'''try{{await __lg.contextMenu.popup({popup.group(2)},{popup.group(3)},{context_actions});}}
+            catch(error){{console.warn('[context-menu] native extension unavailable',error);{popup.group(0)};}}''')
+    # 「控制台」页不受更新锁拦截：更新卡住时用户仍要能进来点更新。
+    tab_guard = re.search(r'if \((' + re.escape(mi['globalStore']) + r'|[\w$]+)\(\)\) \{\s*' + re.escape(mi['showToast']) + r'\([\w$]+\(("update_force_lock_hint")\)\)', main)
+    if not tab_guard:
+        tab_guard = re.search(r'if \(([\w$]+)\(\)\) \{\s*' + re.escape(mi['showToast']) + r'\(', main)
+    assert tab_guard, 'panel update-lock guard changed'
+    main = main[:tab_guard.start()] + 'if (e !== "console" && ' + tab_guard.group(1) + '()) {' + main[tab_guard.start() + len('if (' + tab_guard.group(1) + '()) {'):]
     code = f'''
+{mi['onMounted']}(()=>{{window.setTimeout(()=>__lg.contextMenu.initialize({context_actions}).catch(error=>console.warn('[context-menu] initialize',error)),1500);}});
 {mi['onMounted']}(()=>{{window.setTimeout(()=>__lg.assistant.startMain({{
  total:()=>{store}.cumulativeClickCount,balance:()=>{store}.totalClickCount,
  account:()=>String({store}.userInfo?.cuid||{store}.userInfo?.user_id||{store}.userInfo?.uid||'guest'),
- loggedIn:()=>{store}.isLoggedIn,blocked:()=>__lg.assistant.updateRequired.value,
+ loggedIn:()=>{store}.isLoggedIn,blocked:()=>__lg.assistant.updateRequired.value||__lg.contextMenu.isOpen(),
  press:key=>{handlers[0]}(key,true),release:{handlers[1]},chestCost:{cost},
  chests:()=>({{left:{{remaining:Math.max(0,{left_rem}.value),ready:{left_ready}.value}},right:{{remaining:Math.max(0,{right_rem}.value),ready:{right_ready}.value}},cooldown:1800000,busy:{busy_open}.value||{blocked}.value}}),
  emotes:()=>({emote_items}.value||[]).map(item=>({{id:item.id,name:item.name,src:item.src||(window.__WUWA_MOD_ASSET_PATH__&&window.__WUWA_MOD_ASSET_PATH__('emote/'+item.name))||{emote_url}('emote/'+item.name)}})),
@@ -155,6 +192,33 @@ localAtlasController.assistant=createDesktopAssistant({ref,window,atlas:localAtl
     mon = re.search(r'async function ([\w$]+)\(\) \{\n  const e = await me\(\),\n    t = await H\(\);\n  return qe\(e, t\)', monitor)
     assert mon, 'display list contract'
     monitor += '\nexport{' + mon.group(1) + ' as __zzMonitors,' + switch_fn + ' as __zzSwitchMonitor};\n'
+    # 面板页签白名单：官方的折叠/切换逻辑只认背包/图鉴/合成/联机/设置四个页。
+    # 新加的「控制台」必须放行，否则点进去会被当成非法页签退回。
+    _tab_guard = 'return e === "bag" || e === "atlas" || e === "exchange" || e === "room" || e === "setting"'
+    if monitor.count(_tab_guard) == 1:
+        monitor = monitor.replace(_tab_guard, _tab_guard + ' || e === "console"', 1)
+    else:
+        print('warn: 面板页签白名单锚点变了，「控制台」页可能被官方逻辑拒掉', file=sys.stderr)
+    # 开机自启：官方在 Windows 上注册的是「直接拉桌宠 exe」的计划任务，开机后本地
+    # 服务没起，图鉴和控制台会 Failed to fetch。这里改成问本机服务，由它注册一个
+    # 跑 launch.ps1 的任务（先起宿主再起桌宠），并顺手迁移官方旧任务。
+    _auto_status = re.search(r'return Fe\(\) \? await [\w$]+\("is_elevated_autostart_enabled"\) : await [\w$]+\(\)', monitor)
+    if _auto_status:
+        monitor = monitor[:_auto_status.start()] + \
+            'return (await window.__WUWA_LOCAL_ATLAS__.request("/startup",{action:"status"})).enabled' + \
+            monitor[_auto_status.end():]
+    else:
+        print('warn: 官方开机自启状态查询锚点变了，设置里的开关仍走官方实现', file=sys.stderr)
+    _auto_set = re.search(r'(async function ([\w$]+)\(([\w$]+)\) \{)\s*try \{\s*if \(Fe\(\)\)', monitor)
+    if _auto_set:
+        # 只把一句 return 插到函数体开头，原实现留在后面当死代码：
+        # 这样花括号仍然配平，官方改内部逻辑也不会把这个文件搞坏。
+        monitor = monitor[:_auto_set.start(1)] + _auto_set.group(1) + \
+            ('\n return window.__WUWA_LOCAL_ATLAS__.request("/startup",{action:%s?"enable":"disable"});'
+             % _auto_set.group(3)) + \
+            monitor[_auto_set.end(1):]
+    else:
+        print('warn: 官方开机自启开关锚点变了，设置里的开关仍走官方实现', file=sys.stderr)
     (frontend/'assets'/monitor_name).write_text(monitor, encoding='utf-8')
     main = 'import {__zzMonitors as __assistantMonitors,__zzSwitchMonitor as __assistantRestoreMonitor} from "./'+monitor_name+'";\n'+main
     h=pi['createBaseVNode']

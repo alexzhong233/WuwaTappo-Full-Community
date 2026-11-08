@@ -37,6 +37,78 @@ def release_prefix(config):
     return 'WuwaTappo-Full-Global-Community' if config.get('region') == 'global' else 'WuwaTappo-Full-CN-Community'
 
 
+def release_notes_text(body, limit=40):
+    """把 Release 正文压成几行纯文字：去掉图片、表格和下载链接那一堆。
+
+    前端只用来展示「这次更新了什么」，所以宁可少一行，也不要把 Markdown
+    表格或裸 URL 塞进去。
+    """
+    if not isinstance(body, str):
+        return ''
+    lines = []
+    for raw in body[:20000].splitlines():
+        line = raw.strip()
+        if not line or line.startswith(('|', '![', '<img', '```', '>')):
+            continue
+        line = re.sub(r'\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)', '', line)
+        line = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1', line)
+        line = re.sub(r'https?://\S+', '', line)
+        line = re.sub(r'[*`#]+', '', line).strip(' -*')
+        if not line or line.startswith('下载文件'):
+            continue
+        lines.append(line)
+        if len(lines) >= limit:
+            break
+    return '\n'.join(lines)
+
+
+def write_progress(folder, phase, percent, message):
+    """更新进度写盘：桌宠退出后由升级助手接着写，前端重启后照样能读。"""
+    folder = Path(folder)
+    value = {'phase': phase, 'percent': round(max(0.0, min(100.0, float(percent))), 1),
+             'message': message, 'updated_at': time.time()}
+    temporary = folder / ('progress.' + uuid.uuid4().hex + '.tmp')
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                os.replace(temporary, folder / 'progress.json')
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return value
+
+
+def read_progress(root):
+    """当前这次更新的进度；没有指针或指针坏了都当「没有在更新」。"""
+    try:
+        updates = Path(root) / '.updates'
+        pointer = json.loads((updates / 'install-current.json').read_text(encoding='utf-8'))
+        job = pointer['job']
+        if not isinstance(job, str) or len(job) != 32 or any(c not in '0123456789abcdef' for c in job):
+            return {}
+        value = json.loads((updates / job / 'progress.json').read_text(encoding='utf-8'))
+        value.update(job=job, version=str(pointer.get('version') or ''))
+        result_file = updates / job / 'result.json'
+        if result_file.exists():
+            result = json.loads(result_file.read_text(encoding='utf-8'))
+            if result.get('ok'):
+                value.update(phase='complete', percent=100.0, message='更新完成，新版本已启动。')
+            else:
+                value.update(phase='failed', message='更新失败：' + str(result.get('error') or '请重试'))
+        # 超过一刻钟没有动静的进度按过期处理，免得卡住的旧记录一直挂在更新页上。
+        if value.get('phase') not in ('complete', 'failed') and time.time() - float(value.get('updated_at') or 0) > 900:
+            return {}
+        return value
+    except Exception:
+        return {}
+
+
 def release_asset_name(config, version):
     return release_prefix(config) + '-' + version + '-win-x64-update.zip'
 
@@ -200,6 +272,8 @@ class Updater:
         self.last_error = None
         self.checked_at = 0
         self.latest = None
+        self.github_version = ''
+        self.latest_notes = ''
         self.release_url = None
         if self.policy_file.exists():
             try:
@@ -220,11 +294,23 @@ class Updater:
                 re.fullmatch('[0-9a-f]{64}', value['sha256']) and
                 type(value['size']) is int and 0 < value['size'] <= 500*1024*1024)
 
-    def fetch(self, url, max_size=2*1024*1024):
-        req = urllib.request.Request(url, headers={'User-Agent':'WuwaTappo-FullAtlas-Updater','Accept':'application/vnd.github+json'})
+    def fetch(self, url, max_size=2*1024*1024, progress=None):
+        req = urllib.request.Request(url, headers={'User-Agent':'WuwaTappo-Full-Community-Updater','Accept':'application/vnd.github+json'})
         with urllib.request.urlopen(req, timeout=45) as response:
-            data = response.read(max_size+1)
-        if len(data)>max_size:
+            total = int(response.headers.get('Content-Length') or 0)
+            chunks, done = [], 0
+            while True:
+                block = response.read(256*1024)
+                if not block:
+                    break
+                done += len(block)
+                if done > max_size:
+                    raise ValueError('Download exceeds limit')
+                chunks.append(block)
+                if progress:
+                    progress(done, total)
+            data = b''.join(chunks)
+        if len(data) > max_size:
             raise ValueError('Download exceeds limit')
         return data
 
@@ -281,6 +367,8 @@ class Updater:
                     'message':'当前整合版 '+self.version+'，已是最新发布版本。'}
         version, release = best
         self.latest = version
+        self.github_version = version
+        self.latest_notes = release_notes_text(release.get('body', ''))
         self.release_url = str(release.get('html_url') or ('https://github.com/'+REPO+'/releases'))
         asset = next((a for a in release.get('assets') or [] if a.get('name') == release_asset_name(self.config, version)), None)
         sums = next((a for a in release.get('assets') or [] if a.get('name') == 'SHA256SUMS.txt'), None)
@@ -336,31 +424,70 @@ class Updater:
         except OSError as error:
             self.last_error = '无法启动升级助手：%s' % error
 
+    def _install_stream(self):
+        """跨进程独占：同一台机器上只允许一个更新任务在跑。"""
+        path = self.root/'.updates'/'install.lock'
+        path.parent.mkdir(exist_ok=True)
+        stream = path.open('a+b')
+        stream.seek(0)
+        stream.write(b'0')
+        stream.flush()
+        stream.seek(0)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            stream.close()
+            raise ValueError('已有更新任务正在运行，请等它完成')
+        return stream
+
     def prepare(self):
         if not self.lock.acquire(blocking=False):
             raise ValueError('更新已在准备中')
+        stream = None
         try:
             if not self.available:
                 self.check()
             if not self.available:
                 raise ValueError('没有可用的程序内升级包；请到 GitHub 下载安装包')
+            stream = self._install_stream()
             updates = self.root/'.updates'
             updates.mkdir(exist_ok=True)
             folder = updates/uuid.uuid4().hex
             folder.mkdir()
+            job = folder.name
+            atomic_json(updates/'install-current.json', {'job':job,'version':self.available['version']})
             archive = folder/'download.zip'
-            data = self.fetch(self.available['url'],self.available['size'])
+            write_progress(folder, 'download', 0, '正在连接下载服务器…')
+            last = {'pct': -5.0}
+            def on_progress(done, total):
+                size = total or self.available['size']
+                pct = min(99.0, done*100.0/max(1, size))
+                # 每 5% 或者每 1 MB 写一次，别把磁盘刷满。
+                if pct - last['pct'] < 5 and done % (1024*1024) > 262144:
+                    return
+                last['pct'] = pct
+                write_progress(folder, 'download', pct, '正在下载升级包 %.1f / %.1f MB' % (done/1048576.0, size/1048576.0))
+            data = self.fetch(self.available['url'], self.available['size'], progress=on_progress)
+            write_progress(folder, 'verify', 100, '正在校验升级包 SHA256…')
             if len(data)!=self.available['size'] or hashlib.sha256(data).hexdigest()!=self.available['sha256']:
                 raise ValueError('升级包校验失败，原程序未变动')
             archive.write_bytes(data)
+            write_progress(folder, 'extract', 30, '正在解压升级包…')
             manifest = unpack(archive,folder/'stage')
             if manifest['version'] != self.available['version']:
                 raise ValueError('Release version mismatch')
+            write_progress(folder, 'prepare', 80, '正在准备升级助手…')
             helper = folder/'helper'
             helper.mkdir()
             shutil.copy2(self.root/'LocalGalleryHost.exe',helper/'LocalGalleryHost.exe')
             shutil.copytree(self.root/'_internal',helper/'_internal')
             atomic_json(folder/'pending.json',{'version':manifest['version'],'id':folder.name})
+            write_progress(folder, 'replace', 100, '正在退出桌宠并替换文件…')
             # 先把响应交回前端，再拉起助手：助手第一步就是结束本宿主，
             # 同一轮里 Popen 会让「正在升级」这句提示永远发不出去。
             timer = threading.Timer(1.2, self._spawn_helper, (helper, folder))
@@ -368,17 +495,28 @@ class Updater:
             timer.start()
             return {'restarting':True,'message':'升级包已校验。正在退出桌宠、备份并原地升级…'}
         finally:
+            if stream is not None:
+                try:
+                    stream.seek(0)
+                    if os.name == 'nt':
+                        import msvcrt
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+                stream.close()
             self.lock.release()
 
     def status(self):
+        common = {'required': False, 'current': self.version, 'repository': REPO,
+                  'checked_at': self.checked_at, 'error': self.last_error,
+                  'github_version': self.github_version or self.latest or self.version,
+                  'release_notes': self.latest_notes,
+                  'installation': read_progress(self.root),
+                  'release_url': 'https://github.com/'+REPO+'/releases'}
         if self.available:
-            return {'available':True,'required':False,'installable':True,'version':self.available['version'],
-                    'current':self.version,'repository':REPO,'checked_at':self.checked_at,'error':self.last_error,
-                    'release_url':'https://github.com/'+REPO+'/releases',
+            return {**common, 'available':True, 'installable':True, 'version':self.available['version'],
                     'message':'可更新至 '+self.available['version']+'。升级保留账号、图鉴缓存与设置。'}
-        return {'available':False,'required':False,'installable':False,'current':self.version,
-                'repository':REPO,'checked_at':self.checked_at,'error':self.last_error,
-                'release_url':'https://github.com/'+REPO+'/releases',
+        return {**common, 'available':False, 'installable':False,
                 'message':'当前整合版 '+self.version}
 
     def healthy(self, version=None):
@@ -427,6 +565,7 @@ def apply_update(root_arg, stage_arg):
     folder = stage.parent
     transaction = FileTransaction(root, stage)
     try:
+        write_progress(folder, 'stop', 10, '等待旧桌宠保存退出…')
         # Original exit flow persists counters. Never force-close the old app.
         deadline = time.monotonic()+60
         while processes(root):
@@ -440,7 +579,9 @@ def apply_update(root_arg, stage_arg):
             if time.monotonic()>deadline:
                 raise TimeoutError('旧桌宠仍在运行，升级取消；原文件未替换。')
             time.sleep(.5)
+        write_progress(folder, 'replace', 45, '正在备份并替换程序文件…')
         transaction.apply()
+        write_progress(folder, 'start', 85, '正在启动新版本…')
         launch(root)
         deadline = time.monotonic()+90
         while not (folder/'healthy').exists():
@@ -454,6 +595,7 @@ def apply_update(root_arg, stage_arg):
             shutil.rmtree(stage)
         (folder/'download.zip').unlink(missing_ok=True)
         (folder/'pending.json').unlink(missing_ok=True)
+        write_progress(folder, 'complete', 100, '更新完成，新版本已启动。')
         atomic_json(folder/'result.json',{'ok':True,'version':transaction.manifest['version']})
     except Exception as error:
         if transaction.changed:
@@ -467,3 +609,4 @@ def apply_update(root_arg, stage_arg):
             # The old application may still be open, but its host already exited.
             launch(root)
         atomic_json(folder/'result.json',{'ok':False,'error':str(error)})
+        write_progress(folder, 'failed', 0, '更新失败：' + str(error))

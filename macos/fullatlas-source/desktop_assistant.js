@@ -161,12 +161,37 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     await d.listenJoin(async code=>{if(atlas.enabled.value){d.toast('本地全图鉴开启时无法进入联机');return;}if(!updateRequired.value)await d.join(code);});
     window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);});
   }
-  function closePanel(){dashboard?.close();dashboard=null;}
+  let dashGen=0,requestedTab='overview';
+  function closePanel(){dashGen++;dashboard?.close();dashboard=null;}
   async function deleteRoom(code){await ready;return (await request('delete-room',{code})).rooms||[];}
+  // 「控制台」在支持面板页签的壳里是面板的一页（联机下方、设置上方）；
+  // 壳没提供就退回桌宠窗口内的浮层，两种都拿到同一套界面。
   async function openPanel(initialTab='overview'){
-    if(dashboard){dashboard.showTab(initialTab);dashboard.focus();return;}
+    requestedTab=initialTab;
+    closePanel();
     await ready;
+    const openTab=window.__WUWA_OPEN_PANEL_TAB__;
+    if(openTab){
+      try{if(await openTab('console')!==false)return;}
+      catch(error){console.warn('[console] panel tab unavailable',error);}
+    }
+    openFloating(initialTab);
+  }
+  function openFloating(initialTab){
+    if(dashboard){dashboard.showTab(initialTab);dashboard.focus();return;}
     dashboard=createAssistantDashboard({window,version:VERSION,atlas,initialTab,
+      getState:async()=>{const v=await request('state');state.value=v;return v;},
+      configure:async changes=>{state.value=await request('configure',{settings:changes});return state.value;},
+      reset:()=>request('reset'),join:code=>window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'local-assistant-join',payload:code}),
+      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,onClose:()=>{dashboard=null;}});
+  }
+  // 面板「控制台」页挂载点：把同一套界面内嵌进去，不再叠一层浮层。
+  async function mountConsole(mount){
+    closePanel();
+    const generation=dashGen;
+    await ready;
+    if(generation!==dashGen||!mount?.isConnected)return;
+    dashboard=createAssistantDashboard({window,version:VERSION,atlas,mount,initialTab:requestedTab,
       getState:async()=>{const v=await request('state');state.value=v;return v;},
       configure:async changes=>{state.value=await request('configure',{settings:changes});return state.value;},
       reset:()=>request('reset'),join:code=>window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'local-assistant-join',payload:code}),
@@ -179,6 +204,6 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   }
   ready.then(pollPolicy).catch(()=>{});
   window.addEventListener('pagehide',()=>{disposed=true;closePanel();});
-  return {ready,state,updateRequired,startMain,openPanel,closePanel,flush,flushBeforeSwitch,beginChest,chestSucceeded,
+  return {ready,state,updateRequired,startMain,openPanel,mountConsole,closePanel,flush,flushBeforeSwitch,beginChest,chestSucceeded,
     physicalKey,physicalRelease,emoteStats};
 }

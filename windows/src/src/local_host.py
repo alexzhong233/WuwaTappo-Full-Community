@@ -9,6 +9,10 @@ from sync_cache import sync as sync_public_cache
 from desktop_assistant import Assistant, PhysicalInput
 from desktop_updater import Updater, apply_update, release_asset_name
 from custom_resources import install_archive, list_details, list_packs, merge_official, remove_pack
+try:
+    from native_context_menu import popup as popup_context_menu
+except Exception:      # 非 Windows 或 Win32 结构不可用时不影响其他功能
+    popup_context_menu = None
 
 if '--apply-update' in sys.argv:
     pos = sys.argv.index('--apply-update')
@@ -27,6 +31,11 @@ PORT = CONFIG['port']
 TOKEN = CONFIG['token']
 ASSISTANT = Assistant(ROOT, physical=PhysicalInput())
 UPDATER = Updater(ROOT, CONFIG, allow_prerelease=ASSISTANT.prerelease_updates)
+try:
+    from startup_manager import StartupManager
+    STARTUP = StartupManager(ROOT)
+except Exception:      # 非 Windows 或计划任务模块不可用时，设置里会退回官方开关
+    STARTUP = None
 
 def monitor_releases():
     """盯官方 Kuro 版本，每 8 小时一次。
@@ -707,6 +716,31 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(409, {'error': str(error), 'installable': False,
                                               'release_url': COMMUNITY_RELEASES_URL})
             return self.respond(404, {'error': 'Unknown update action'})
+        if path == '/startup':
+            # 开机自启改由本机服务托管：计划任务跑 launch.ps1，先起本地服务再起桌宠。
+            # 官方原来的自启项直接拉桌宠 exe，开机后图鉴和控制台会连不上服务。
+            if STARTUP is None:
+                return self.respond(501, {'error': 'Startup manager unavailable'})
+            try:
+                body = json.loads(self.read_body() or b'{}')
+                action = body.get('action', 'status')
+                if action not in ('status', 'enable', 'disable', 'migrate'):
+                    raise ValueError('Unknown startup action')
+                return self.respond(200, STARTUP.run(action))
+            except Exception as error:
+                return self.respond(409, {'error': str(error), 'enabled': False})
+        if path == '/assistant/context-menu':
+            # 原生菜单是阻塞调用（要等用户点完或收起），所以单开一条路由：
+            # 它不该占着 Assistant 的锁，否则菜单开着时看板读不到状态。
+            if popup_context_menu is None:
+                return self.respond(501, {'action': None, 'error': 'Native menu unavailable'})
+            try:
+                if int(self.headers.get('Content-Length', '0')) > 16384:
+                    raise ValueError('Request too large')
+                body = json.loads(self.read_body() or b'{}')
+                return self.respond(200, popup_context_menu(body.get('items')))
+            except Exception as error:
+                return self.respond(400, {'action': None, 'error': str(error)})
         if path.startswith('/assistant/'):
             try:
                 length = int(self.headers.get('Content-Length', '0'))
