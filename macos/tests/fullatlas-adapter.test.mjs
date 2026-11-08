@@ -114,3 +114,14 @@ test('prepared appearance renderers preserve local Mod image URLs', async () => 
   assert.equal(renderers.resolveAppearanceAtlasUrl({ assetId: 1 }), url);
   assert.equal(renderers.resolveAppearanceAtlasUrl({}), url);
 });
+
+test('a bare HTTP 403 no longer clears the account login', async () => {
+  const structure = JSON.parse(await readFile(new URL('base/js_structure.json', stage), 'utf8'));
+  const source = await readFile(new URL(structure.shared, assets), 'utf8');
+  // 官方 1.0.4 的响应拦截器把 403 也算作登出信号：撞上就 clearAuthTokens + logoutAccount，
+  // 一次网关策略或版本门禁就能把人踹下线。上游 1.3.7 收紧到只认业务码与 401，这里守住这个语义。
+  assert.match(source, /c\s*===\s*10002\s*\|\|\s*c\s*===\s*10003\s*\|\|\s*r\s*===\s*401[\s,)]/,
+    '业务码 10002/10003 与 401 仍必须触发登出');
+  assert.doesNotMatch(source, /r\s*===\s*401\s*\|\|\s*r\s*===\s*403/,
+    '裸 403 不能当成凭证失效，否则网关策略会把人踹下线');
+});

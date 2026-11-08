@@ -57,6 +57,11 @@ def integrate(project, base, frontend, structure, shared, main, panel, main_name
     assert busy_guard, 'chest busy guard contract'
     busy_open, blocked = busy_guard.group(1), busy_guard.group(2)
     # Counters, native persistence and logout remain byte-for-byte original.
+    # 但官方把裸 403 也当成「凭证失效」：响应拦截器里 403 会走 handleApiCode ->
+    # clearAuthTokens + logoutAccount，一次网关策略或版本门禁就能把人踹下线。
+    # 上游 FullAtlas 1.3.7 收紧为只认业务码 10002/10003 与 HTTP 401，这里跟上。
+    shared = once(shared, 'c === 10002 || c === 10003 || r === 401 || r === 403',
+                  'c === 10002 || c === 10003 || r === 401')
     # The official installer would replace this executable and lose integrations.
     shared = once(shared, 'function isAppUpdaterEnabled() {', 'function isAppUpdaterEnabled() {\n return false;')
     shared = once(shared, 'function isForceUpdateLocked() {', 'function isForceUpdateLocked() {\n return window.__WUWA_LOCAL_ATLAS__?.assistant?.updateRequired.value === true;')
