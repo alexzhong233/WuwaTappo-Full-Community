@@ -118,7 +118,7 @@ if(localAtlasController)localAtlasController.assistant=createDesktopAssistant({r
  loggedIn:()=>{store}.isLoggedIn,blocked:()=>__lg.assistant.updateRequired.value,
  press:key=>{handlers[0]}(key,true),release:{handlers[1]},chestCost:{cost},
  chests:()=>({{left:{{remaining:Math.max(0,{left_rem}.value),ready:{left_ready}.value}},right:{{remaining:Math.max(0,{right_rem}.value),ready:{right_ready}.value}},cooldown:1800000,busy:{busy_open}.value||{blocked}.value}}),
- emotes:()=>({emote_items}.value||[]).map(item=>({{id:item.id,name:item.name,src:item.src||{emote_url}('emote/'+item.name)}})),
+ emotes:()=>({emote_items}.value||[]).map(item=>({{id:item.id,name:item.name,src:item.src||(window.__WUWA_MOD_ASSET_PATH__&&window.__WUWA_MOD_ASSET_PATH__('emote/'+item.name))||{emote_url}('emote/'+item.name)}})),
  sendEmote:item=>{emote_fn['name']}(item),
  monitors:__assistantMonitors,restoreMonitor:__assistantRestoreMonitor,
  currentMonitor:{mi['currentMonitor']},toast:{mi['showToast']},
