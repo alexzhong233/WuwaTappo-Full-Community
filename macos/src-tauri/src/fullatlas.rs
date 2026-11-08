@@ -307,6 +307,35 @@ fn pick_latest_release(
 /// 不用 `/releases/latest`：GitHub 会跳过 prerelease，而本项目的 alpha 正是以 prerelease
 /// 发布，用它会永远查不到新版本。所以这里自己扫列表，并由 `include_prerelease`
 /// 决定要不要把 alpha/beta 算进候选——默认不算，用户可在设置里打开。
+/// 把 Release 正文压成几行纯文字，给面板的「这次更新了什么」用。
+///
+/// 规则与 Windows 侧 `desktop_updater.release_notes_text` 对齐：丢掉表格行、图片、
+/// 代码块、引用和裸 URL，去掉 Markdown 记号，最多 40 行。这里不做链接语法解析
+/// （`[文字](地址)` 会原样留下文字和括号里的地址），因为 Rust 侧没有正则依赖，
+/// 而这段文本只是提示语气，不值得为它引一个库。
+fn release_notes_text(body: &str) -> String {
+    body.lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with('|')
+                && !line.starts_with("![")
+                && !line.starts_with("<img")
+                && !line.starts_with("```")
+                && !line.starts_with('>')
+                && !line.starts_with("http://")
+                && !line.starts_with("https://")
+        })
+        .map(|line| line.trim_start_matches('#').trim())
+        .map(|line| line.trim_start_matches("- ").trim())
+        .map(|line| line.replace("**", "").replace('`', ""))
+        .map(|line| line.trim_matches(|c| c == ' ' || c == '-').to_string())
+        .filter(|line| !line.is_empty())
+        .take(40)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn community_update_status(include_prerelease: bool) -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -328,6 +357,22 @@ fn community_update_status(include_prerelease: bool) -> Result<Value, String> {
     let (latest, release_url, published_at) = best.unwrap_or_default();
     let update_available = !latest.is_empty()
         && compare_semver(&latest, current) == std::cmp::Ordering::Greater;
+    // 说明正文跟着选中的那个 release 走：GitHub 的列表响应本来就带 body，
+    // 不用再单独发一次请求。拿不到就是空串，前端会隐藏那一块。
+    let release_notes = if latest.is_empty() {
+        String::new()
+    } else {
+        list.as_array()
+            .and_then(|items| items.iter().find(|item| {
+                item.get("tag_name")
+                    .and_then(Value::as_str)
+                    .map(|tag| tag.trim().trim_start_matches('v') == latest.as_str())
+                    .unwrap_or(false)
+            }))
+            .and_then(|item| item.get("body").and_then(Value::as_str))
+            .map(release_notes_text)
+            .unwrap_or_default()
+    };
     Ok(json!({
         "current": current,
         "latest": latest,
@@ -335,6 +380,7 @@ fn community_update_status(include_prerelease: bool) -> Result<Value, String> {
         "releaseUrl": release_url,
         "pageUrl": COMMUNITY_RELEASES_PAGE,
         "publishedAt": published_at,
+        "releaseNotes": release_notes,
         "prereleaseIncluded": include_prerelease,
         "skippedPrerelease": skipped_prerelease,
         "message": if update_available {
@@ -1220,6 +1266,28 @@ mod tests {
         assert_eq!(compare_semver("1.3.0", "1.3.0"), std::cmp::Ordering::Equal);
         // tag 前缀 v 和空格都要能吃掉。
         assert_eq!(compare_semver(" v1.3.1 ", "1.3.0"), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn release_notes_drop_tables_images_and_markdown_noise() {
+        // 与 Windows 侧 desktop_updater.release_notes_text 对齐：只留人话。
+        let body = [
+            "## v1.3.1",
+            "| 文件 | 大小 |",
+            "| --- | --- |",
+            "![preview](https://example.invalid/a.png)",
+            "- 控制台改成页签",
+            "https://example.invalid/raw",
+            "**修复** 右键菜单不响应",
+        ]
+        .join("\n");
+        let notes = release_notes_text(&body);
+        assert_eq!(notes, "v1.3.1\n控制台改成页签\n修复 右键菜单不响应");
+        assert!(!notes.contains('|'));
+        assert!(!notes.contains("!["));
+        // 超长正文只截前 40 行，免得整页正文灌进面板。
+        let long: String = (0..60).map(|i| format!("第{i}行\n")).collect();
+        assert_eq!(release_notes_text(&long).lines().count(), 40);
     }
 
     #[test]

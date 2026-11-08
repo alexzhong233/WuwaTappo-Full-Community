@@ -259,6 +259,9 @@ function createAssistantDashboard(d){
           if(r.latest)remoteValue.textContent=r.latest;
           if(r.updateAvailable){updates.textContent='发现新版本 '+r.latest+'（当前 '+r.current+'）。';confirmUpdate(r);}
           else updates.textContent=r.latest?'已是最新版本 '+r.current:'GitHub 上还没有已发布的安装包。';
+          // 检查更新的响应里也带说明正文（Windows 是 /update/status，macOS 与社区检查走 update-check），
+          // 两种命名都认，免得两端各写一套字段名。
+          paintNotes(r.release_notes||r.releaseNotes);
         }catch(e){updates.textContent='检查更新失败：'+e.message;}
         finally{check.disabled=false;}
       }

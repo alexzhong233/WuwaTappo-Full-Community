@@ -1,5 +1,6 @@
 """Validated mod-release updates with a reversible file transaction."""
 from pathlib import Path, PurePosixPath
+from html.parser import HTMLParser
 import hashlib
 import json
 import os
@@ -60,6 +61,106 @@ def release_notes_text(body, limit=40):
         if len(lines) >= limit:
             break
     return '\n'.join(lines)
+
+
+class ReleaseNotesParser(HTMLParser):
+    """只从 release 页面里取说明正文，不取导航栏、侧边栏和页脚。
+
+    GitHub 的匿名配额是按出口 IP 算的，学校/公司/云主机共用出口时很容易 403，
+    这时 API 拿不到 body，只能抓 release 页面。页面上说明正文固定在
+    `<div class="markdown-body">` 里，所以这里只认这一块：等到它的开标签，
+    按 div 深度把整块收完（`complete`），中途被截断就当作没读到。
+    """
+
+    BLOCK_TAGS = ('p', 'li', 'h1', 'h2', 'h3', 'h4', 'br', 'tr', 'div')
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.complete = False
+        self.parts = []
+        self.table_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        # 发布说明里的表格基本是「文件 / 大小 / 校验和」清单，对用户没用；
+        # 整块丢掉，比事后按行过滤更干净（HTML 没有 `|` 可以当锚点）。
+        if tag == 'table':
+            self.table_depth += 1
+            return
+        if self.table_depth:
+            return
+        if self.depth and tag in self.BLOCK_TAGS:
+            self.parts.append('\n' + ('• ' if tag == 'li' else ''))
+        if tag != 'div':
+            return
+        if self.depth:
+            self.depth += 1
+        elif not self.complete and 'markdown-body' in dict(attrs).get('class', '').split():
+            self.depth = 1
+
+    def handle_endtag(self, tag):
+        if tag == 'table':
+            self.table_depth = max(0, self.table_depth - 1)
+            return
+        if self.table_depth:
+            return
+        if self.depth and tag in self.BLOCK_TAGS:
+            self.parts.append('\n')
+        if tag == 'div' and self.depth:
+            self.depth -= 1
+            if not self.depth:
+                self.complete = True
+
+    def handle_data(self, data):
+        if self.depth and not self.table_depth:
+            self.parts.append(data)
+
+    def text(self):
+        return ''.join(self.parts) if self.complete else ''
+
+
+def release_notes_from_html(page, limit=40):
+    """把 release 页面 HTML 压成和 Markdown 正文同一套纯文字。"""
+    if not isinstance(page, str) or not page:
+        return ''
+    parser = ReleaseNotesParser()
+    try:
+        parser.feed(page)
+        parser.close()
+    except Exception:      # 页面被截断或标签错乱时当作读不到，不要让检查更新整条失败
+        return ''
+    return release_notes_text(parser.text(), limit)
+
+
+def fetch_release_page(url, limit=2 * 1024 * 1024):
+    """只允许抓 github.com 的发布页，且限制体积。"""
+    if not isinstance(url, str) or not url.startswith('https://github.com/'):
+        raise ValueError('只支持 GitHub 发布页')
+    request = urllib.request.Request(url, headers={'User-Agent': 'WuwaTappo-Full-Community-Updater'})
+    # 这条兜底路径挂在 /community/update-check 的请求线程里，等太久面板会一直转圈；
+    # 15 秒拿不到就当作没读到，更新检查本身照常返回。
+    with urllib.request.urlopen(request, timeout=15) as response:
+        page = response.read(limit + 1)
+    if len(page) > limit:
+        raise ValueError('发布页体积超出上限')
+    return page.decode('utf-8', errors='replace')
+
+
+def notes_for_release(release, limit=40):
+    """先读 API 的 body，读不到再抓一次发布页 HTML。
+
+    API 被限流时 `release` 往往只带 tag 和 html_url（`public_release` 那条路），
+    body 是空的；此时只有 HTML 兜底能救回「这次更新了什么」。
+    """
+    if not isinstance(release, dict):
+        return ''
+    notes = release_notes_text(release.get('body', ''), limit)
+    if notes:
+        return notes
+    try:
+        return release_notes_from_html(fetch_release_page(str(release.get('html_url') or '')), limit)
+    except Exception:
+        return ''
 
 
 def write_progress(folder, phase, percent, message):
@@ -368,7 +469,7 @@ class Updater:
         version, release = best
         self.latest = version
         self.github_version = version
-        self.latest_notes = release_notes_text(release.get('body', ''))
+        self.latest_notes = notes_for_release(release)
         self.release_url = str(release.get('html_url') or ('https://github.com/'+REPO+'/releases'))
         asset = next((a for a in release.get('assets') or [] if a.get('name') == release_asset_name(self.config, version)), None)
         sums = next((a for a in release.get('assets') or [] if a.get('name') == 'SHA256SUMS.txt'), None)
@@ -395,6 +496,10 @@ class Updater:
         request = urllib.request.Request('https://github.com/'+REPO+'/releases/latest',headers={'User-Agent':'WuwaTappo-Full-Community-Updater'})
         with urllib.request.urlopen(request,timeout=45) as response:
             final = response.geturl()
+            # API 被限流时这是唯一还能拿到说明的路：页面正文就在这一份 HTML 里。
+            page = response.read(2*1024*1024+1)
+        if len(page)>2*1024*1024:
+            raise ValueError('发布页体积超出上限')
         prefix = 'https://github.com/'+REPO+'/releases/tag/'
         if not final.startswith(prefix):
             raise ValueError('无法确定整合版发布版本')
@@ -404,6 +509,7 @@ class Updater:
         result = {'tag_name':tag,'assets':[],'html_url':final}
         if version_tuple(version) <= version_tuple(self.version):
             return result
+        result['body'] = release_notes_from_html(page.decode('utf-8', errors='replace'))
         if is_prerelease(version) and not self.allow_pre():
             return result
         base = 'https://github.com/'+REPO+'/releases/download/'+tag+'/'

@@ -1,10 +1,10 @@
 # 上游功能「没搬过来」的详情备份
 
 对照快照：`Averionx/WuwaTappo-FullAtlas` @ `98f5ded`（1.3.8，2026-11-06 快照）。
-本地基线：本仓库 `main`（控制台页签 / 右键菜单 / 更新进度 / 自启托管已落地）。
+本地基线：本仓库 `main`（控制台页签 / 右键菜单 / 更新进度 / 自启托管 / 更新说明兜底已落地）。
 用途：以后有人问「上游那个功能我们怎么没有」，先看这份，别再重扫一遍源码。
 
-结论先说：**上游有、我们既没有也没等价实现的，是 0 项。** 下面 8 条都是「单 exe 架构的产物」或「代码拆法不同」。
+结论先说：**上游有、我们既没有也没等价实现的，是 0 项。** 下面 8 条都是「单 exe 架构的产物」或「代码拆法不同」——其中第 3 条（更新说明 HTML 兜底）已于 2026-11-08 补齐，剩 7 条维持不搬。
 
 ---
 
@@ -65,26 +65,35 @@ Rust 侧加 `open_update_window` 命令（always-on-top、无装饰、固定尺�
 
 ---
 
-## 3. 官方公告 HTML 解析
+## 3. 更新说明的 HTML 兜底解析 —— ✅ 已落地（2026-11-08）
 
 **上游位置**
 - `src/desktop_updater.py:27-58` `class ReleaseNotesParser(HTMLParser)`
-- `src/desktop_updater.py:346` 调用点（拿不到纯文本时回退）
+- `src/desktop_updater.py:346` 调用点
+
+**上游实际在解析什么**
+不是库洛官网，是**我们自己仓库的 GitHub Release 页面 HTML**（`https://github.com/<repo>/releases/tag/<tag>`）。上游这一步是 `/update/check` 的主路径：请求发布页、从页面里抠出说明正文，抠不到就抛「暂时无法读取 GitHub 更新说明」。原因很实际——GitHub REST API 匿名配额是 60 次/小时，按 IP 共享，被限流时 `api.github.com` 直接 403，而发布页 HTML 不受这个限制。
 
 **上游行为（细节）**
-- 只吃 `class` 含 `markdown-body` 的 `<div>` 子树，用 `depth` 计数进出，`complete` 标记要求标签闭合完整才返回文本（防止截断的半截页面）。
-- `p / li / h1-h4 / br / tr` 转成换行，`li` 额外加 `• `。
+- 只吃 `class` 含 `markdown-body` 的 `<div>` 子树，用 `depth` 计数进出，`complete` 标记要求标签闭合完整才返回文本（防止 CDN 截断的半截页面）。
+- `p / li / h1-h4 / br / tr` 转成换行，`li` 额外加 `• `；`table` 整块丢弃。
 - 正文超 32000 字符截断。
-- 解析失败或没有 `markdown-body` 就回退到 Markdown 版 `release_notes_text(body)`。
+- 抠不到正文直接报错，不静默降级。
 
-**我们现在**
-`desktop_updater.release_notes_text(body, limit=40)`：剥掉 Markdown 表格、图片、链接、裸 URL，压成纯文字，最多 40 行。
+**我们的实现（已落地）**
+- Windows `desktop_updater.py`：新增 `class _MarkdownBodyParser(HTMLParser)` + `release_notes_from_html(page)`，同一套 `markdown-body` 子树 / `complete` 闭合判定 / `li` 加 `• / table` 丢弃；另加 **2 MiB 页面体积上限**（上游没有，防超大页面吃内存）。
+- `notes_for_release(release)`：有 `body` 就用 `release_notes_text` 清洗，**不联网**；`body` 为空才抓 `html_url` 页面走 HTML 解析；只允许 `github.com/<本仓库>` 的地址，抓取失败吞掉异常返回空串（更新检查本身不能因为说明读不到而失败）。
+- `Updater.public_release()`：`releases/latest` 那条重定向路径也读了页面正文，被 API 限流时仍有说明可显示。
+- `local_host.check_community()`：`/community/update-check` 响应里加 `release_notes`。
+- macOS `fullatlas.rs`：列表接口本来就带 `body`，新增 `release_notes_text()`（与 Windows 同规则：丢表格/图片/代码块/引用/裸 URL，去 `#`/`- `/`**`/`` ` ``，最多 40 行），响应字段 `releaseNotes`。
+- 面板 `assistant_dashboard.js`：`paintNotes(r.release_notes || r.releaseNotes)`，两种命名都认，检查更新和打开更新页两条路径都会刷新说明块。
 
-**为什么不搬**
-我们发 Release 的 body 一直是 Markdown。上游要解析官方公告页，是因为它跟库洛版本同步发布说明，说明来自官网 HTML。
+**与上游的取舍差异**
+上游把 HTML 当主路径、失败就报错；我们反过来，**API 的 Markdown 是主路径，HTML 只是兜底**，且兜底失败不阻断更新。因为我们发 Release 的 body 一直是 Markdown，没必要为每一次检查多抓一个 HTML 页面。
 
-**将来要搬的话**
-那 57 行可以直接抄进 `desktop_updater.py`，在 `release_notes_text` 开头加一个分支：`body` 里出现 `<div class="markdown-body">` 就走 HTML 解析。
+**测试**
+- Python `windows/src/tests/test_community_update.py`：新增 `ReleaseNotesTests` 8 例（Markdown 清洗、只读 markdown-body、截断页面返回空、无 markdown-body 返回空、有 body 时不联网、空 body 回退抓页面、非本仓库地址拒绝、抓取失败不影响检查）。
+- Rust `fullatlas.rs`：新增 `release_notes_drop_tables_images_and_markdown_noise`（含 40 行截断断言）。
 
 ---
 
@@ -193,7 +202,7 @@ Inno Setup 安装到固定目录，`launch.ps1` + `WuwaTappoLauncher.exe` 负责
 
 ---
 
-## 附录 A：本轮已落地的四项（防止以后重复搬）
+## 附录 A：已落地清单（防止以后重复搬）
 
 | 功能 | 落点 |
 | --- | --- |
@@ -201,6 +210,7 @@ Inno Setup 安装到固定目录，`launch.ps1` + `WuwaTappoLauncher.exe` 负责
 | 桌宠右键原生菜单 | `windows/src/src/desktop_context_menu.js`、`native_context_menu.py`、`local_host.py` 的 `/assistant/context-menu` |
 | 更新页版本三行 + 进度 + 更新说明 | `desktop_updater.py`（`release_notes_text` / `write_progress` / `read_progress` / `_install_stream`）、`assistant_dashboard.js`（进度条 + notes + 2 秒轮询） |
 | 开机自启托管 | `windows/src/src/startup_manager.py`、`local_host.py` 的 `/startup` |
+| 更新说明 HTML 兜底（第 3 条） | `desktop_updater.py`（`_MarkdownBodyParser` / `release_notes_from_html` / `notes_for_release`）、`local_host.py` 的 `/community/update-check`、`macos/src-tauri/src/fullatlas.rs`（`release_notes_text` → `releaseNotes`）、`assistant_dashboard.js`（`paintNotes` 认两种字段名） |
 
 打包注意：`native_context_menu` 与 `startup_manager` 是在 `try/except` 里导入的，`windows/src/build.py` 必须保留对应的 `--hidden-import`，否则发行包里会静默退化成「没菜单 / 退回官方自启开关」。
 

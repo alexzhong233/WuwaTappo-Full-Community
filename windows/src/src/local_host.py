@@ -7,7 +7,7 @@ import argparse, base64, ctypes, hashlib, json, mimetypes, os, subprocess, threa
 import urllib.request
 from sync_cache import sync as sync_public_cache
 from desktop_assistant import Assistant, PhysicalInput
-from desktop_updater import Updater, apply_update, release_asset_name
+from desktop_updater import Updater, apply_update, notes_for_release, release_asset_name
 from custom_resources import install_archive, list_details, list_packs, merge_official, remove_pack
 try:
     from native_context_menu import popup as popup_context_menu
@@ -298,6 +298,8 @@ def check_community(include_prerelease=False):
         if best:
             result['latest'], result['releaseUrl'], result['publishedAt'], best_release = best
             result['updateAvailable'] = bool(current) and _compare_semver(best[0], current) > 0
+            # 说明正文：API 有 body 就直接清洗；匿名配额被打满时退回抓发布页 HTML。
+            result['release_notes'] = notes_for_release(best_release)
             # 有没有能直接装的原地升级包（zip）。没有这条路时前端只剩「跳 GitHub 下载」。
             wanted = release_asset_name(CONFIG, best[0])
             result['installable'] = bool(result['updateAvailable']) and any(

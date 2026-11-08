@@ -174,5 +174,88 @@ class CommunityCheckTests(unittest.TestCase):
         self.assertEqual(data, {'current': '1.3.0-alpha.1'})
 
 
+class PageResponse:
+    """发布页 HTML 的假响应：read() 返回字节。"""
+
+    def __init__(self, page):
+        self.page = page.encode('utf-8') if isinstance(page, str) else page
+
+    def read(self, size=-1):
+        return self.page
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class ReleaseNotesTests(unittest.TestCase):
+    """更新说明的两种来源：Release 正文（Markdown）与发布页 HTML。"""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+        from desktop_updater import notes_for_release, release_notes_from_html, release_notes_text
+        self.text = release_notes_text
+        self.html = release_notes_from_html
+        self.notes = notes_for_release
+
+    def test_markdown_body_drops_tables_images_and_urls(self):
+        body = '\n'.join([
+            '## v1.3.1',
+            '| 文件 | 大小 |',
+            '| --- | --- |',
+            '![preview](https://example.invalid/a.png)',
+            '- 控制台改成页签，见 [说明](https://example.invalid/doc)',
+            'https://example.invalid/raw',
+            '**修复** 右键菜单不响应',
+        ])
+        self.assertEqual(self.text(body), 'v1.3.1\n控制台改成页签，见 说明\n修复 右键菜单不响应')
+
+    def test_html_parser_reads_only_the_markdown_body(self):
+        page = ('<html><body><nav>导航</nav>'
+                '<div class="markdown-body"><h1>v1.3.1</h1>'
+                '<p>修复了<strong>控制台</strong>页签</p>'
+                '<ul><li>右键菜单</li><li>自启托管</li></ul>'
+                '<table><tr><td>升级包</td><td>86MB</td></tr></table>'
+                '<p>末尾一句</p></div>'
+                '<footer>页脚不该出现</footer></body></html>')
+        out = self.html(page)
+        self.assertEqual(out, 'v1.3.1\n修复了控制台页签\n• 右键菜单\n• 自启托管\n末尾一句')
+        self.assertNotIn('导航', out)
+        self.assertNotIn('页脚', out)
+        self.assertNotIn('86MB', out)
+
+    def test_truncated_page_is_treated_as_no_notes(self):
+        # 页面被 CDN 截断时 markdown-body 没有闭合，宁可显示"读不到"也不要贴半段。
+        self.assertEqual(self.html('<div class="markdown-body"><p>半截'), '')
+
+    def test_page_without_markdown_body_returns_nothing(self):
+        self.assertEqual(self.html('<html><body><div class="release-header">v1.3.1</div></body></html>'), '')
+
+    def test_release_body_wins_without_touching_the_network(self):
+        with patch('urllib.request.urlopen') as opened:
+            out = self.notes({'body': '- 直接来自 API', 'html_url': 'https://github.com/x/releases/tag/v1'})
+        self.assertEqual(out, '直接来自 API')
+        opened.assert_not_called()
+
+    def test_empty_body_falls_back_to_the_release_page(self):
+        page = '<div class="markdown-body"><p>来自页面</p></div>'
+        with patch('urllib.request.urlopen', return_value=PageResponse(page)) as opened:
+            out = self.notes({'body': '', 'html_url': 'https://github.com/x/releases/tag/v1'})
+        self.assertEqual(out, '来自页面')
+        self.assertEqual(opened.call_count, 1)
+
+    def test_non_github_page_is_refused(self):
+        with patch('urllib.request.urlopen') as opened:
+            out = self.notes({'body': '', 'html_url': 'https://evil.invalid/releases/tag/v1'})
+        self.assertEqual(out, '')
+        opened.assert_not_called()
+
+    def test_page_fetch_failure_keeps_the_check_alive(self):
+        with patch('urllib.request.urlopen', side_effect=OSError('offline')):
+            self.assertEqual(self.notes({'body': '', 'html_url': 'https://github.com/x/releases/tag/v1'}), '')
+
+
 if __name__ == '__main__':
     unittest.main()
