@@ -8,7 +8,7 @@ import { patchMacShortcutLabels } from '../scripts/patch-frontend.mjs';
 import { contract, profile, root, findSource } from './frontend-context.mjs';
 
 const main = findSource(source => source.includes('const DEFAULT_APP_SHORTCUTS='));
-const view = findSource(source => source.includes('function Ch(e)'));
+const view = findSource(source => source.includes('e==="togglePet"'));
 const settings = findSource(source => source.includes('__name:"ShortcutInput"'));
 
 function nodes(source) {
@@ -63,25 +63,30 @@ test('official shortcut bindings retain VK values while macOS displays Option an
 });
 
 test('official settings save the complete shortcut map and retain actionable native errors', async () => {
-  const save = declaration(settings.source, 'T', node => settings.source.slice(node.start, node.end).includes('set_app_shortcuts'));
+  // 压缩名漂移（1.0.3: T/qs/ms/B/Oe…，1.0.4: O/Ys/gs/N/Ne…），按 set_app_shortcuts 定位保存函数。
+  const saveNodes = nodes(settings.source).filter(node => node.type === 'FunctionDeclaration'
+    && settings.source.slice(node.start, node.end).includes('set_app_shortcuts'));
+  assert.equal(saveNodes.length, 1, 'Expected one official set_app_shortcuts function');
+  const saveName = saveNodes[0].id.name;
+  const save = settings.source.slice(saveNodes[0].start, saveNodes[0].end);
   for (const error of [null, 'duplicate', 'occupied', 'unavailable']) {
     const events = [], warnings = [], calls = [];
     const old = { gameMode: { modifiers: 0, key: 118 }, switchScreen: { modifiers: 0, key: 119 }, togglePet: { modifiers: 0, key: 120 } };
     const env = vm.createContext({
-      A: { value: false }, O: { value: 'recording' }, t: { action: 'togglePet' },
-      qs: operation => operation(), ps: async () => structuredClone(old),
-      ms: async (command, payload) => { calls.push({ command, payload: structuredClone(payload) }); if (error) throw error; },
-      B: (type, payload) => events.push({ type, payload: structuredClone(payload) }),
-      g: key => key, Oe: key => warnings.push(key),
+      E: { value: false }, s: { action: 'togglePet' },
+      Ys: operation => operation(), ps: async () => structuredClone(old),
+      gs: async (command, payload) => { calls.push({ command, payload: structuredClone(payload) }); if (error) throw error; },
+      N: (type, payload) => events.push({ type, payload: structuredClone(payload) }),
+      m: key => key, Ne: key => warnings.push(key), D: { value: 'kept' },
     });
     vm.runInContext(save, env);
-    await env.T({ modifiers: 8, key: 75 });
-    assert.equal(env.A.value, false);
+    await env[saveName]({ modifiers: 8, key: 75 });
+    assert.equal(env.E.value, false);
     assert.deepEqual(calls, [{ command: 'set_app_shortcuts', payload: { config: { ...old, togglePet: { modifiers: 8, key: 75 } } } }]);
     if (error) {
       assert.deepEqual(events, []);
       assert.deepEqual(warnings, [`setting_shortcut_${error}`]);
-      assert.equal(env.O.value, '');
+      assert.equal(env.D.value, '');
     } else {
       assert.deepEqual(events, [{ type: 'change', payload: calls[0].payload.config }]);
       assert.deepEqual(warnings, []);
@@ -90,60 +95,75 @@ test('official settings save the complete shortcut map and retain actionable nat
 });
 
 test('official shortcut capture does not reactivate a blurred field after a delayed native reply', async () => {
-  const focus = declaration(settings.source, 'M', node => settings.source.slice(node.start, node.end).includes('Gt(!0)'));
-  const blur = declaration(settings.source, 'P', node => settings.source.slice(node.start, node.end).includes('Gt(!1)'));
+  // 焦点/失焦对共享同一个原生锁调用（1.0.3: M/P/Gt，1.0.4: h/T/zt），按锁调用形态解析。
+  const decls = nodes(settings.source).filter(node => node.type === 'FunctionDeclaration');
+  const slice = node => settings.source.slice(node.start, node.end);
+  const focusNodes = decls.filter(node => /await \w+\(!0\)/.test(slice(node)));
+  const blurNodes = decls.filter(node => /\w+\(!1\)\.catch\(\(\)=>\{\}\)/.test(slice(node)));
+  assert.equal(focusNodes.length, 1, 'Expected one official capture-focus function');
+  assert.equal(blurNodes.length, 1, 'Expected one official capture-blur function');
+  const lock = /await (\w+)\(!0\)/.exec(slice(focusNodes[0]))[1];
+  const focus = slice(focusNodes[0]);
+  const blur = slice(blurNodes[0]);
   let finish;
   const calls = [];
   const env = vm.createContext({
-    z: 0, C: { value: false }, f: { value: false }, O: { value: '' }, V: null,
-    Gt: active => { calls.push(active); return active ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(); },
-    Oe: () => assert.fail('Unexpected capture error'), g: key => key, v: { value: { blur() {} } },
+    U: 0, M: { value: false }, p: { value: false }, D: { value: '' }, H: null,
+    [lock]: active => { calls.push(active); return active ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(); },
+    Ne: () => assert.fail('Unexpected capture error'), m: key => key, d: { value: { blur() {} } },
   });
   vm.runInContext(focus + blur, env);
-  const pending = env.M();
-  assert.equal(env.C.value, true);
-  assert.equal(env.f.value, false);
-  env.P();
+  const pending = env[focusNodes[0].id.name]();
+  assert.equal(env.M.value, true);
+  assert.equal(env.p.value, false);
+  env[blurNodes[0].id.name]();
   finish();
   await pending;
   assert.deepEqual(calls, [true, false]);
-  assert.equal(env.C.value, false);
-  assert.equal(env.f.value, false);
+  assert.equal(env.M.value, false);
+  assert.equal(env.p.value, false);
 });
 
 test('official app-shortcut consumer dispatches exactly one enabled action and honors the lock', () => {
-  const handler = declaration(view.source, 'Ch');
+  // 压缩名每次官方重建都会漂移（1.0.3: Ch/Ie/ly/mc…，1.0.4: Ip/Pe/py/wc…），按分派形状解析。
+  const match = /function ([\w$]+)\(e\)\{([\w$]+)\(\)\|\|\(e==="togglePet"&&([\w$]+)\(\)&&([\w$]+)\(\),e==="gameMode"&&([\w$]+)\(\)&&([\w$]+)\(\),e==="switchScreen"&&([\w$]+)\(\)&&([\w$]+)\(\)\)\}/.exec(view.source);
+  assert.ok(match, 'app-shortcut dispatch contract');
+  const [, name, guard, petEnabled, petAction, modeEnabled, modeAction, screenEnabled, screenAction] = match;
   for (const locked of [false, true]) for (const enabled of [false, true]) {
     const effects = [];
     const env = vm.createContext({
-      Ie: () => locked, ly: () => enabled, uy: () => enabled,
-      mc: () => effects.push('togglePet'), Th: () => effects.push('gameMode'),
-      [profile.id === 'cn' ? 'Pv' : 'Dv']: () => enabled,
-      [profile.id === 'cn' ? 'Tv' : 'Lv']: () => effects.push('switchScreen'),
+      [guard]: () => locked,
+      [petEnabled]: () => enabled, [modeEnabled]: () => enabled, [screenEnabled]: () => enabled,
+      [petAction]: () => effects.push('togglePet'),
+      [modeAction]: () => effects.push('gameMode'),
+      [screenAction]: () => effects.push('switchScreen'),
     });
-    vm.runInContext(handler, env);
-    for (const action of ['togglePet', 'gameMode', 'switchScreen', 'unknown']) env.Ch(action);
+    vm.runInContext(declaration(view.source, name), env);
+    for (const action of ['togglePet', 'gameMode', 'switchScreen', 'unknown']) env[name](action);
     assert.deepEqual(effects, !locked && enabled ? ['togglePet', 'gameMode', 'switchScreen'] : []);
   }
   assert.deepEqual(contract.events.find(event => event.name === 'app-shortcut').payload.enum, ['gameMode', 'switchScreen', 'togglePet']);
 });
 
 test('official fullscreen automation follows transitions without clearing a manually enabled mode when disabled', () => {
-  const handler = declaration(view.source, 'Ph');
+  // 1.0.3: Ph/xt/ma/Qt/Ga + 内联通知；1.0.4: Op/Et/_a/tn/$a，通知下沉到 $a 内部。
+  const match = /function ([\w$]+)\(e\)\{if\(!([\w$]+)\(\)\.autoGameModeOnFullscreen\)\{([\w$]+)=!1;return\}e!==\3&&\(\3=e,([\w$]+)\.value!==e&&([\w$]+)\(e\)\)\}/.exec(view.source);
+  assert.ok(match, 'fullscreen automation contract');
+  const [, name, settingsFn, state, ref, apply] = match;
   const settings = { autoGameModeOnFullscreen: true };
-  const effects = [], notices = [];
+  const effects = [];
   const env = vm.createContext({
-    ma: false, Qt: { value: false }, xt: () => settings,
-    Ga: value => { env.Qt.value = value; effects.push(value); }, mt: key => notices.push(key), $: key => key,
+    [state]: false, [ref]: { value: false }, [settingsFn]: () => settings,
+    [apply]: value => { env[ref].value = value; effects.push(value); },
   });
+  const handler = declaration(view.source, name);
   vm.runInContext(handler, env);
-  for (const fullscreen of [false, true, true, false, false]) env.Ph(fullscreen);
+  for (const fullscreen of [false, true, true, false, false]) env[name](fullscreen);
   assert.deepEqual(effects, [true, false]);
-  assert.deepEqual(notices, ['game_mode_entered', 'game_mode_exited']);
   settings.autoGameModeOnFullscreen = false;
-  env.Qt.value = true;
-  env.Ph(false);
-  assert.equal(env.Qt.value, true);
+  env[ref].value = true;
+  env[name](false);
+  assert.equal(env[ref].value, true);
   assert.deepEqual(effects, [true, false]);
 });
 

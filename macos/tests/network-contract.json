@@ -1,12 +1,12 @@
 {
   "schemaVersion": 2,
-  "application": "WuwaTappo-cn 1.0.3",
+  "application": "WuwaTappo-cn 1.0.4",
   "region": "CN",
   "source": {
-    "main": "index-CuzHFfJW.js",
-    "room": "index-pp8VWaUF.js",
-    "login": "useLogin-pKgL9g9U.js",
-    "loginView": "login-B1hThJN-.js"
+    "main": "index-CM6qA69G.js",
+    "room": "index-BFg5ADH5.js",
+    "login": "useLogin-DsKO81zl.js",
+    "loginView": "login-6yi5hIzI.js"
   },
   "http": {
     "baseUrl": "https://api-mc-wuwatappo.kurogames-global.com",
@@ -327,9 +327,9 @@
       "installerUrl",
       "requiresManualDownload"
     ],
-    "windowsInstallerFilename": "WuwaTappo-cn_1.0.3_x64-setup.exe",
-    "windowsInstallerUrl": "https://mc-wuwatappo.kurogames-global.com/app/0ad48bb0-55bf-49f0-b57d-2b9f3edc0c73/WuwaTappo-cn_1.0.3_x64-setup.exe",
-    "updateVersion": "1.0.3"
+    "windowsInstallerFilename": "WuwaTappo-cn_1.0.4_x64-setup.exe",
+    "windowsInstallerUrl": "https://mc-wuwatappo.kurogames-global.com/app/b1975d6f-8c84-4412-9692-f1022d620a04/WuwaTappo-cn_1.0.4_x64-setup.exe",
+    "updateVersion": "1.0.4"
   },
   "nativeNetwork": {
     "event": "cat-native-network-status-changed",

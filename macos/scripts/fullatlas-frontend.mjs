@@ -11,6 +11,7 @@ export function verifiedAdapterVersion(lock) {
   const reviewed = {
     '1.0.2': '152d8ac4847f1b4641a750c45b680091c5a7cf92cb6059cd6d97e803f6eb5487',
     '1.0.3': '29b6f4aaeb0ad4db5a8002e3686435692fa0ddb88ea9389e89b53fb93932136e',
+    '1.0.4': 'eb4e6d2103c222297508837a5ca92eeaa058891c9f1e2e7bf034c23f37668e26',
   };
   if (lock.region !== 'CN' || !Object.hasOwn(reviewed, lock.version) || lock.installer?.sha256 !== reviewed[lock.version]) {
     throw new Error('FullAtlas: official version or installer digest has no verified Mac adapter; review upstream changes before building');

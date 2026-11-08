@@ -13,7 +13,7 @@ const integratedOnly = profile.id === 'cn' ? {} : { skip: `FullAtlas 集成不�
 
 test('FullAtlas accepts only the reviewed official version and exact installer digest', async () => {
   const lock = JSON.parse(await readFile(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
-  assert.equal(verifiedAdapterVersion(lock), '1.0.3');
+  assert.equal(verifiedAdapterVersion(lock), '1.0.4');
   assert.throws(() => verifiedAdapterVersion({ ...lock, version: '1.0.99' }), /no verified Mac adapter/);
   assert.throws(() => verifiedAdapterVersion({ ...lock, installer: { ...lock.installer, sha256: 'f'.repeat(64) } }), /no verified Mac adapter/);
   assert.throws(() => verifiedAdapterVersion({ ...lock, region: 'GLOBAL' }), /no verified Mac adapter/);

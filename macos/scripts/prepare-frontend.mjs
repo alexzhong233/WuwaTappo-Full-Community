@@ -21,7 +21,7 @@ const original = files.get(entry);
 if (!original?.includes(`const APP_REGION="${profile.region}"`)) throw new Error(`Expected official ${profile.region} frontend.`);
 let main = patchMacUpdater(original);
 main = profile.region === 'CN' ? patchDomesticSdkUrls(main) : patchGlobalAuthListener(main);
-files.set(entry, patchSessionBarriers(patchMacShortcutLabels(main), profile.id === 'cn' && lock.version === '1.0.3' ? 1 : 2));
+files.set(entry, patchSessionBarriers(patchMacShortcutLabels(main), profile.id === 'cn' ? 1 : 2));
 
 function patchOne(description, matches, patch) {
   const selected = [...files].filter(([name, content]) => matches(name, content));

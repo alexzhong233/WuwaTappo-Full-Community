@@ -6,11 +6,11 @@ import { patchDomesticLoginReload } from '../scripts/patch-frontend.mjs';
 import { profile, findSource } from './frontend-context.mjs';
 
 const original = profile.region === 'CN'
-  ? findSource(source => source.includes('async function we(e=!1)')).source
+  ? findSource(source => source.includes('async function ge(e=!1)')).source
   : await readFile(new URL('./fixtures/domestic-sdk-loader.js', import.meta.url), 'utf8');
 const renderer = await readFile(new URL('./fixtures/kuro-sdk-preact.js', import.meta.url), 'utf8');
 const patched = patchDomesticLoginReload(original);
-const loader = patched.slice(patched.indexOf('async function we(e=!1)'), patched.indexOf('async function me()'));
+const loader = patched.slice(patched.indexOf('async function ge(e=!1)'), patched.indexOf('async function Se()'));
 
 function setup({ loaded = true, root = { childNodes: [], firstChild: null } } = {}) {
   const actions = [];
@@ -29,12 +29,12 @@ function setup({ loaded = true, root = { childNodes: [], firstChild: null } } = 
   const context = vm.createContext({
     document, console,
     window: { setTimeout() { return 1; }, clearTimeout() {} },
-    E: null, S: null, b: null, P: null, R: null, x: 0, u: 'ready', te: null, W: 0, We: 8000,
-    $: () => loaded, re: () => actions.push('existing-sdk-initialized'),
-    tn: () => oldScript.src, l() {}, c() {},
+    y: null, b: () => loaded, W: () => actions.push('existing-sdk-initialized'),
+    Ze: () => oldScript.src, a() {}, l() {}, Be: 8000,
+    f: null, D: null, U: 0, c: 'idle', Q: null, q: -1,
   });
   vm.runInContext(loader, context);
-  return { actions, outer, appended, document, context, reload: force => context.we(force) };
+  return { actions, outer, appended, document, context, reload: force => context.ge(force) };
 }
 
 test('only forced reload removes the exact old SDK script and SDK root before insertion', async () => {

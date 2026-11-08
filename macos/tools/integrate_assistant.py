@@ -9,6 +9,23 @@ def integrate(project, base, frontend, structure, shared, main, panel, main_name
 
     mi = structure['files'][main_name]['imports']
     pi = structure['files'][panel_name]['imports']
+
+    def with_alias(imports, canonical):
+        # 压缩产物的本地名带不带 $1 后缀取决于该次构建：国服 1.0.3 是 listen，
+        # 国际服 1.0.3 是 listen$1。两种都认，避免为同一版本维护两份锚点。
+        if canonical in imports:
+            return imports
+        alternate = canonical + '$1'
+        if alternate in imports:
+            return dict(imports, **{canonical: imports[alternate]})
+        return imports
+
+    for name in ('listen', 'invoke', 'watch', 'onMounted', 'onUnmounted'):
+        mi = with_alias(mi, name)
+        pi = with_alias(pi, name)
+    # 1.0.2 shipped a local `invoke$1` wrapper; 1.0.3 imports the tauri `invoke` directly.
+    if 'invoke$1' not in mi and 'invoke' in mi:
+        mi = dict(mi, **{'invoke$1': mi['invoke']})
     fields = structure['files'][main_name]['snapshots'][0]['fields']
     source = (base / 'readable_js/assets' / main_name).read_text(encoding='utf-8')
     store = mi['globalStore']
@@ -27,14 +44,18 @@ def integrate(project, base, frontend, structure, shared, main, panel, main_name
     chest_text = source[chest['start']:chest['end']]
     cost = re.search(re.escape(store)+r'\.totalClickCount < ([\w$]+)', chest_text)[1]
     animation = re.search(r'const \w+ = ([\w$]+)\(e\);', chest_text)[1]
-    ready_pattern = r'([\w$]+) = '+re.escape(mi['computed'])+r'\(\(\) => ([\w$]+)\.value \|\| !'+re.escape(store)+r'\.isLoggedIn \? !0 : ([\w$]+)\.value <= 0\)'
-    readies = re.findall(ready_pattern, source)
-    assert len(readies) == 2, 'chest readiness contract'
-    left_ready, _, left_remaining = readies[0]
-    right_ready, _, right_remaining = readies[1]
-    busy = re.search(r'if \(([\w$]+)\.value \|\| ([\w$]+)\.value\) return;', chest_text)
-    assert busy, 'chest busy guard changed'
-    invoke = mi.get('invoke$1') or mi['invoke']
+    # Chest readiness computeds drift every official rebuild (1.0.3: Wn/Gn,
+    # 1.0.4: Vn/Wn), so resolve them structurally instead of hardcoding names.
+    # Shape: <ready> = pe(() => <blocked>.value || !<store>.isLoggedIn ? !0 : <remaining>.value <= 0)
+    ready_pairs = re.findall(
+        r'([\w$]+) = pe\(\(\) => ([\w$]+)\.value \|\| ![\w$]+\.isLoggedIn \? !0 : ([\w$]+)\.value <= 0\)', source)
+    assert len(ready_pairs) == 2, 'chest readiness contract (expected two ready computeds)'
+    left_ready, left_rem = ready_pairs[0][0], ready_pairs[0][2]
+    right_ready, right_rem = ready_pairs[1][0], ready_pairs[1][2]
+    # Busy guard inside the chest entry: if (<in-flight>.value || <blocked>.value) return;
+    busy_guard = re.search(r'if \(([\w$]+)\.value \|\| ([\w$]+)\.value\) return;', chest_text)
+    assert busy_guard, 'chest busy guard contract'
+    busy_open, blocked = busy_guard.group(1), busy_guard.group(2)
     # Counters, native persistence and logout remain byte-for-byte original.
     # The official installer would replace this executable and lose integrations.
     shared = once(shared, 'function isAppUpdaterEnabled() {', 'function isAppUpdaterEnabled() {\n return false;')
@@ -68,14 +89,14 @@ if(localAtlasController)localAtlasController.assistant=createDesktopAssistant({r
  account:()=>String({store}.userInfo?.cuid||{store}.userInfo?.user_id||{store}.userInfo?.uid||'guest'),
  loggedIn:()=>{store}.isLoggedIn,blocked:()=>__lg.assistant.updateRequired.value,
  press:key=>{handlers[0]}(key,true),release:{handlers[1]},chestCost:{cost},
- chests:()=>({{left:{{remaining:Math.max(0,{left_remaining}.value),ready:{left_ready}.value}},right:{{remaining:Math.max(0,{right_remaining}.value),ready:{right_ready}.value}},cooldown:1800000,busy:{busy[1]}.value||{busy[2]}.value}}),
+ chests:()=>({{left:{{remaining:Math.max(0,{left_rem}.value),ready:{left_ready}.value}},right:{{remaining:Math.max(0,{right_rem}.value),ready:{right_ready}.value}},cooldown:1800000,busy:{busy_open}.value||{blocked}.value}}),
  monitors:__assistantMonitors,restoreMonitor:__assistantRestoreMonitor,
  currentMonitor:{mi['currentMonitor']},toast:{mi['showToast']},
  openSettings:{open_settings},
  openView:async view=>{{
    if(__lg.assistant.updateRequired.value)return;
    await {open_tab}(view==='atlas'?'atlas':'settings');
-   const send=()=>{invoke}('plugin:event|emit',{{event:'local-assistant-view',payload:view}}).catch(()=>{{}});
+   const send=()=>{mi['invoke$1']}('plugin:event|emit',{{event:'local-assistant-view',payload:view}}).catch(()=>{{}});
    send();window.setTimeout(send,800);window.setTimeout(send,2200);
  }},
  quit:{quit_fn},
@@ -90,23 +111,30 @@ if(localAtlasController)localAtlasController.assistant=createDesktopAssistant({r
     main = once(main, 'let __localSaved=null;',code+'\nlet __localSaved=null;')
     monitor_name = next(p.name for p in (base/'readable_js/assets').glob('switchDisplayMonitor-*.js'))
     monitor = (base/'readable_js/assets'/monitor_name).read_text(encoding='utf-8')
-    # The 1.0.3 monitor module bundles additional UI and uses new bindings.
-    current = 'Aa' if main_name == 'index-pp8VWaUF.js' else 'Nt'
-    wrapper = 'An' if main_name == 'index-pp8VWaUF.js' else 'Ht'
-    collection, index, current_monitor, target_index, promise = ('d','N','_','g','O') if current == 'Aa' else ('u','M','w','m','y')
-    monitor = once(monitor, f'async function {current}() {{', f'async function {current}(targetName=null) {{')
-    monitor = once(monitor, f'if ({collection}.length <= 1)', f'if (!targetName && {collection}.length <= 1)')
-    monitor = once(monitor, f'const {target_index} = ({index} + 1) % {collection}.length,', f'if(targetName && (!{collection}.some(x=>x.name===targetName)||{current_monitor}?.name===targetName))return false;\n    const {target_index} = targetName ? {collection}.findIndex(x=>x.name===targetName) : ({index} + 1) % {collection}.length,')
-    monitor = once(monitor, f'async function {wrapper}() {{', f'async function {wrapper}(targetName=null) {{')
-    monitor = once(monitor, f'{promise} = {current}();', f'{promise} = {current}(targetName);')
+    # 1.0.3 rebuilt this module, so the switch routine is resolved by its body shape
+    # instead of 1.0.2's minified names (Nt/Ht).
+    sw = re.search(r'async function ([\w$]+)\(\) \{\n  let e = !1;\n  const t = `\$\{Date\.now\(\)\}', monitor)
+    assert sw, 'display switch contract'
+    switch_fn = sw.group(1)
+    monitor = once(monitor, 'async function ' + switch_fn + '() {', 'async function ' + switch_fn + '(targetName=null) {')
+    monitor = once(monitor, 'if (d.length <= 1)', 'if (!targetName && d.length <= 1)')
+    monitor = once(monitor, 'const g = (N + 1) % d.length,',
+                   'if(targetName){const __t=d.find(x=>x.name===targetName);if(!__t)return false;'
+                   'if(_&&p(_)===p(__t))return false;}\n'
+                   '    const g = targetName ? d.findIndex(x=>x.name===targetName) : (N + 1) % d.length,')
+    mon = re.search(r'async function ([\w$]+)\(\) \{\n  const e = await me\(\),\n    t = await H\(\);\n  return qe\(e, t\)', monitor)
+    assert mon, 'display list contract'
+    monitor += '\nexport{' + mon.group(1) + ' as __zzMonitors,' + switch_fn + ' as __zzSwitchMonitor};\n'
     (frontend/'assets'/monitor_name).write_text(monitor, encoding='utf-8')
-    monitor_exports = 'b as __assistantMonitors,N as __assistantRestoreMonitor' if current == 'Aa' else 'a as __assistantMonitors,n as __assistantRestoreMonitor'
-    main = 'import {'+monitor_exports+'} from "./'+monitor_name+'";\n'+main
+    main = 'import {__zzMonitors as __assistantMonitors,__zzSwitchMonitor as __assistantRestoreMonitor} from "./'+monitor_name+'";\n'+main
     h=pi['createBaseVNode']
     row=f'''{h}('div',{{class:'setting-item','data-desktop-assistant':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'挂机与统计'),{h}('div',{{class:'setting-sub'}},'后台点击、自动开箱、每日统计、房间历史与版本更新')]),{h}('button',{{class:'setting-btn',type:'button',onClick:()=>__lg.assistant.openPanel()}},'打开')]),'''
     panel = once(panel, h+"('div',{class:'setting-item','data-local-gallery-setting':'true'},[",row+'\n'+h+"('div',{class:'setting-item','data-local-gallery-setting':'true'},[")
-    close_anchors = 'await bs(), await Rt()' if main_name == 'index-pp8VWaUF.js' else 'await ds(), await xt()'
-    assert panel.count(close_anchors) == 2, 'panel close lifecycle changed'
+    # 1.0.3 renames the save+teardown pair; assert the shape (same pair used twice)
+    # instead of 1.0.2's literal `ds`/`xt` identifiers.
+    _pairs = {m.group(0) for m in re.finditer(r'await [\w$]+\(\), await [\w$]+\(\)', panel)}
+    assert any(panel.count(call) == 2 for call in _pairs) or panel.count('await ds(), await xt()') == 2, \
+        'panel close lifecycle changed'
     panel = once(panel,'let __panelDisposed=false;',f'''let __assistantViewUnlisten=null;
 {pi['onMounted']}(async()=>{{__assistantViewUnlisten=await {pi['listen']}('local-assistant-view',event=>{{
  const view=event.payload;
