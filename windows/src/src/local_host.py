@@ -103,7 +103,7 @@ def check_official():
     """查询 Kuro 官方桌宠最新版本。失败时回退上次成功结果，不抛异常。"""
     local = str(CONFIG.get('client_version') or '')
     can_adapt, adapt_reason = _local_adaptation_capability()
-    result = {'local': local, 'remote': '', 'newer': False, 'url': '', 'pub': '',
+    result = {'local': local, 'remote': '', 'newer': False, 'remoteOlder': False, 'url': '', 'pub': '',
               'currentVersion': local, 'latestVersion': '', 'updateAvailable': False,
               'checked_at': int(time.time()), 'error': '', 'message': '',
               'community_releases_url': COMMUNITY_RELEASES_URL,
@@ -117,9 +117,13 @@ def check_official():
               'local_adaptation_reason': adapt_reason}
     result['localAdaptationReason'] = adapt_reason
     try:
-        entry = _http_json(CDN_HOST + '/app/json-host/' + UPDATER_HOST_FILE)
+        # 两个地址都带一次性时间戳：CDN 的 max-age 只有两分钟，但边缘节点仍可能
+        # 拿旧对象，表现就是官方清单长期停在上一版（例如我们已跟进 1.0.4 却读到 1.0.3）。
+        stamp = str(int(time.time() * 1000))
+        entry = _http_json(CDN_HOST + '/app/json-host/' + UPDATER_HOST_FILE + '?_=' + stamp)
         # 必须用清单里带 ?t= 的地址，否则命中 CDN 旧缓存
         manifest_url = _official_url(entry.get('url'))
+        manifest_url += ('&' if '?' in manifest_url else '?') + '_=' + stamp
         manifest = _http_json(manifest_url)
         remote = str(manifest.get('version') or '')
         if not remote:
@@ -137,12 +141,19 @@ def check_official():
         result['officialInstallerPlatform'] = 'windows-x86_64'
         result['pub'] = str(manifest.get('pub_date') or '')
         result['newer'] = _vtup(remote) > _vtup(local)
+        # 官方清单落后于我们已整合的基底时不能说「已是最新（旧号）」
+        result['remoteOlder'] = _vtup(local) > _vtup(remote)
         result['updateAvailable'] = result['newer']
         result['download_available'] = bool(result['newer'])
         result['canDownloadOfficial'] = result['download_available']
-        result['message'] = ('官方已发布 %s，当前基底 %s —— %s'
-                             % (remote, local, '可尝试本地全图鉴适配。' if can_adapt else '可下载官方原包；全图鉴包需由维护环境重新构建。')) if result['newer'] else \
-                            ('官方最新 %s，当前基底 %s —— 已是最新。' % (remote, local))
+        if result['newer']:
+            result['message'] = '官方已发布 %s，当前基底 %s —— %s' % (
+                remote, local, '可尝试本地全图鉴适配。' if can_adapt
+                else '可下载官方原包；全图鉴包需由维护环境重新构建。')
+        elif result['remoteOlder']:
+            result['message'] = '官方清单当前是 %s，本包基底已跟进到 %s。' % (remote, local)
+        else:
+            result['message'] = '官方最新 %s，当前基底 %s —— 已是最新。' % (remote, local)
         try:
             OFFICIAL_STATE.write_text(json.dumps(result, ensure_ascii=False, indent=2),
                                       encoding='utf-8')

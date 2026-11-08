@@ -47,6 +47,25 @@ def named(meta, name):
     return found[0]
 
 # Shared public functions retain readable names between these releases.
+# 本机 Mod 条目的名字要能显示：官方按 asset_name 查远端字典，Mod 名字不在字典里，
+# 这里在查不到时回退到条目自带的名称（名字集合由 local_atlas_controller 登记）。
+MOD_NAME_FALLBACK_OLD = '''function resolveAssetDisplayName(e, t) {
+  const n = t?.trim() ?? "";
+  if (!n) return "";
+  const s = String(e ?? "").trim().toLowerCase();
+  return s === "character_skin" || s === "character_skin_atlas" ? resolveCharacterSkinDisplayName(n) : s === "accessory" || s === "accessory_atlas" ? resolveAccessoryDisplayName(n) : s === "emote" || s === "emote_atlas" ? resolveEmoteDisplayName(n) : ""
+}'''
+MOD_NAME_FALLBACK_NEW = '''function resolveAssetDisplayName(e, t) {
+  const n = t?.trim() ?? "";
+  if (!n) return "";
+  const s = String(e ?? "").trim().toLowerCase();
+  const resolved = s === "character_skin" || s === "character_skin_atlas" ? resolveCharacterSkinDisplayName(n) : s === "accessory" || s === "accessory_atlas" ? resolveAccessoryDisplayName(n) : s === "emote" || s === "emote_atlas" ? resolveEmoteDisplayName(n) : "";
+  // 本机 Mod 的名字不在官方远端字典里：查不到就直接用条目名，否则图鉴/背包只剩空白或占位符。
+  const mods = typeof window !== "undefined" ? window.__WUWA_MOD_NAMES__ : null;
+  return resolved || (mods && mods.has(n) ? n : "")
+}'''
+shared = replace(shared, MOD_NAME_FALLBACK_OLD, MOD_NAME_FALLBACK_NEW)
+
 shared = replace(shared, 'loaderModule.init(kurodataConfig);\nwindow.kurodata = loaderModule;\ninitTrackCommonProps();\ninitFrontendAlertReporting();', '''let localOnlineServicesStarted = false;
 function localStartOnlineServices() {
  if (localOnlineServicesStarted) return;
@@ -176,10 +195,11 @@ setup = f'''
 const __localEnabled=__lg.enabled,__localBusy=__lg.busy,__localSync=__lg.syncStatus,__localCache=__lg.cacheReady;
 async function __toggleLocal(event){{try{{await __lg.setEnabled(event.target.checked);}}catch(error){{{pi['showToast']}(error.message);}}event.target.checked=__localEnabled.value;}}
 async function __syncLocal(){{try{{const status=await __lg.syncCache(true);{pi['showToast']}('本地图鉴已同步：'+(status.result?.atlas_count||'')+'项');}}catch(error){{{pi['showToast']}(error.message);}}}}
+function __openCommunityUpdate(event){{try{{event&&event.stopPropagation&&event.stopPropagation();__lg.assistant.openPanel('update');}}catch(error){{console.error('[assistant]',error);}}}}
 '''
 row = f'''{h}('div',{{class:'setting-item','data-local-gallery-setting':'true'}},[
  {h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'外观模式'),{h}('div',{{class:'setting-sub'}},__localBusy.value?'正在切换本地显示模式…':!__localCache.value?(__localSync.value.status==='running'?'正在下载本地素材 '+__localSync.value.done+'/'+__localSync.value.total+'，完成后自动可用':__localSync.value.status==='failed'?'本地素材下载失败，点下方「检查并同步」重试':'本地素材还没准备好，点下方「检查并同步」开始下载'):__localEnabled.value?'当前：全图鉴 + Mod · 联机不可用，其他网络功能正常':'当前：官方 · 开启后使用全图鉴和已导入 Mod',1)]),
- {h}('div',{{class:'setting-content'}},[{h}('label',{{class:'setting-switch'}},[{h}('input',{{type:'checkbox',role:'switch','aria-label':'全图鉴 + Mod',style:'display:block;position:absolute;width:1px;height:1px;opacity:0',checked:__localEnabled.value,disabled:__localBusy.value||!__localCache.value||__localSync.value.status==='running',onChange:__toggleLocal,onMousedown:{with_modifiers}(()=>{{}},['stop'])}},null,40,['checked','disabled']),{h}('span',{{class:'setting-slider'}})])])]),
+ {h}('div',{{class:'setting-content'}},[{h}('label',{{class:'setting-switch'}},[{h}('input',{{type:'checkbox',role:'switch','aria-label':'全图鉴 + Mod',style:'display:block;position:absolute;width:1px;height:1px;opacity:0',checked:__localEnabled.value,disabled:__localBusy.value||!__localCache.value||__localSync.value.status==='running',onChange:__toggleLocal,onMousedown:{with_modifiers}(()=>{{}},['stop'])}},null,40,['checked','disabled']),{h}('span',{{class:'setting-slider'}})])]),{h}('button',{{class:'setting-btn',type:'button',style:'margin-left:10px;white-space:nowrap',onMousedown:{with_modifiers}(()=>{{}},['stop']),onClick:()=>__lg.assistant.openPanel('mods')}},'Mod 管理')])]),
  {h}('div',{{class:'setting-item','data-local-gallery-sync':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'更新本地图鉴'),{h}('div',{{class:'setting-sub'}},__localSync.value.status==='running'?'正在同步 '+__localSync.value.done+'/'+__localSync.value.total:!__localCache.value?'首次启动要联网补齐本地素材（后台进行，不耽误玩）':'联网检查新增图鉴，本地全图鉴开启时也可同步',1)]),{h}('button',{{class:'setting-btn',type:'button',disabled:__localSync.value.status==='running',onClick:__syncLocal}},'检查并同步',8,['disabled'])]),
 '''
 edits = [(0, 0, f'import {{zzLocalAtlas as __lg}} from "./{shared_name}";\n'),
@@ -213,6 +233,21 @@ for condition in p['roomConditions']:
         message = pi['openBlock'] + '(), ' + pi['createElementBlock'] + "('div',{class:'module-block',style:'padding:24px'},'本地全图鉴已开启，无法进入联机。请先关闭开关。')"
         edits.append((condition['start'], condition['start'], '__lg.enabled.value && ' + text + ' ? (' + message + ') : '))
 panel = apply_edits(panel, edits)
+
+# 官方的「检查更新」改成打开本机控制台的「更新」页：官方自更新会把整合包替换回原版，
+# 而且它读的清单与我们自己的版本检查不是同一个来源。按钮的处理函数名随官方构建漂移，
+# 所以按「类名 → 紧随其后的 onClick」定位，而不是匹配函数名。
+# 只认类名本身，前后空白与引号风格交给 index 定位，避免锚在压缩差异上。
+_update_marker = '"setting-btn btn-check-update"'
+assert panel.count(_update_marker) == 1, 'official update button contract'
+_call_at = panel.index('onClick:', panel.index(_update_marker))
+_handler_at = panel.index('R(', _call_at) + len('R(')
+_handler_end = panel.index(',', _handler_at)
+_raw = panel[_handler_at:_handler_end]
+_handler = _raw.strip()
+assert re.fullmatch(r'[\w$]+', _handler), _handler
+_handler_at += _raw.index(_handler)
+panel = panel[:_handler_at] + '__openCommunityUpdate' + panel[_handler_at + len(_handler):]
 pattern = r'([\w$]+)\.value \? await ([\w$]+)\(await ' + re.escape(pi['unfavoriteAsset']) + r'\(([\w$]+)\.item.asset_id\)\) : await \2\(await ' + re.escape(pi['favoriteAsset']) + r'\(\3\.item.asset_id\)\)'
 match = re.search(pattern, panel)
 assert match, 'Favorite toggle layout changed'

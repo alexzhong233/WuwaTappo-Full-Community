@@ -364,18 +364,32 @@ fn official_update_status(region: crate::profile::Region) -> Result<Value, Strin
         .ok_or("官方版本检查缺少资源源")?
         .trim_end_matches('/');
     let host = trusted_asset_url(region, host)?;
+    // 两个地址都带一次性时间戳：CDN 边缘节点会保留旧对象，表现为官方清单长期
+    // 停在上一版（我们已跟进 1.0.4，检查结果却还是 1.0.3）。
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
     let pointer = get_json(
         &client,
         trusted_asset_url(
             region,
-            &format!("{}/app/json-host/{}", host, region.updater_host_file()),
+            &format!(
+                "{}/app/json-host/{}?_={}",
+                host,
+                region.updater_host_file(),
+                stamp
+            ),
         )?,
     )?;
     let manifest_url = pointer
         .get("url")
         .and_then(Value::as_str)
         .ok_or("官方版本检查缺少版本清单")?;
-    let manifest_url = trusted_asset_url(region, manifest_url)?;
+    let mut manifest_url = trusted_asset_url(region, manifest_url)?;
+    manifest_url
+        .query_pairs_mut()
+        .append_pair("_", &stamp.to_string());
     let manifest = get_json(&client, manifest_url)?;
     let latest = manifest
         .get("version")
@@ -383,11 +397,14 @@ fn official_update_status(region: crate::profile::Region) -> Result<Value, Strin
         .ok_or("官方版本清单无效")?;
     let current = env!("WUWA_OFFICIAL_VERSION");
     let changed = official_is_newer(latest, current);
+    // 官方清单落后于已整合基底时，界面不能再说「已是最新（旧号）」。
+    let remote_older = official_is_newer(current, latest);
     let (installer_url, installer_name) = official_installer(region, &manifest, latest)?;
     Ok(json!({
         "currentVersion": current,
         "latestVersion": latest,
         "updateAvailable": changed,
+        "remoteOlder": remote_older,
         "officialInstallerUrl": installer_url.as_str(),
         "officialInstallerFileName": installer_name,
         "officialInstallerPlatform": "windows-x86_64",
@@ -395,7 +412,13 @@ fn official_update_status(region: crate::profile::Region) -> Result<Value, Strin
         "canDownloadOfficial": true,
         "supportsLocalAdaptation": false,
         "localAdaptationReason": "已安装的 Mac 应用没有源码、Node、Rust、Xcode 和 7-Zip，不能在应用内安全重打包。",
-        "message": if changed { format!("检测到官方 {latest}，可下载官方 Windows 原包；Mac 全图鉴包需由本项目构建后从 Releases 更新。") } else { format!("官方基底已是 {current}。") },
+        "message": if changed {
+            format!("检测到官方 {latest}，可下载官方 Windows 原包；Mac 全图鉴包需由本项目构建后从 Releases 更新。")
+        } else if remote_older {
+            format!("官方清单当前是 {latest}，本包基底已跟进到 {current}。")
+        } else {
+            format!("官方基底已是 {current}。")
+        },
     }))
 }
 

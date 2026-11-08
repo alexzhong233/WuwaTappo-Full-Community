@@ -187,14 +187,9 @@ function createLocalAtlasController(d) {
     style.id = 'wuwa-mod-badge';
     style.textContent = 'html[data-wuwa-mod] .atlas-thumb--mod{background-image:none;outline:2px dashed #7f77dd;outline-offset:-2px}'
       + 'html[data-wuwa-mod] .atlas-thumb--mod::after{content:"MOD";position:absolute;left:3px;bottom:3px;z-index:2;font:600 9px/1 -apple-system,"Segoe UI",sans-serif;letter-spacing:.3px;padding:2px 4px;border-radius:4px;background:#534ab7;color:#fff}'
-      // 官方排序把未知稀有度固定排在最后，数据层没有位置可调，只能在渲染后靠 flex order 挪：
-      // 平铺网格（背包「全部」）与分组列表（背包/图鉴的稀有度分组）都是 flex 容器，
-      // 用 :has() 认出装着 Mod 条目那一组，把它提到最前。:has() 不支持时只是保持原顺序。
-      + 'html[data-wuwa-mod] .atlas-list>.atlas-item:has(>.atlas-thumb--mod){order:-1}'
-      + 'html[data-wuwa-mod] .atlas-group-list>.atlas-section:has(.atlas-thumb--mod){order:-1}'
-      + 'html[data-wuwa-mod] .atlas-section:has(>.atlas-group){display:flex;flex-direction:column}'
-      + 'html[data-wuwa-mod] .atlas-section:has(>.atlas-group)>.atlas-group{flex:0 0 auto}'
-      + 'html[data-wuwa-mod] .atlas-section:has(>.atlas-group)>.atlas-group:has(.atlas-thumb--mod){order:-1}';
+      // 排序保持官方原样：之前用 flex order 把 Mod 提到最前，等于在筛选之外又造了一个
+      // 官方没有的「MOD 稀有度分组」，和背包的稀有度下拉框对不上，这里撤回。
+      ;
     doc.head.append(style);
   }
   function paintModFlag() {
@@ -208,7 +203,16 @@ function createLocalAtlasController(d) {
     // 面板缩略图不依赖 offline-data，只要有本机前缀就能按相对键取图。
     return path || customBase() ? customAssetUrl(reference, path || '') : '';
   }
-  function applyData(data) { d.applyOfflineCatalog(runtimeCatalog(data), origin); }
+  // 官方名字来自远端字典（按 asset_name 查），本机 Mod 的名字不在字典里，
+  // 图鉴/背包会渲染成空或被占位符顶掉。把 Mod 条目的名字登记出来，名字解析处直接回退。
+  function registerModNames(data) {
+    const names = new Set();
+    for (const entry of data.atlas || []) {
+      if (entry && entry.rarity === 'MOD' && entry.asset_name) names.add(String(entry.asset_name).trim());
+    }
+    d.window.__WUWA_MOD_NAMES__ = names;
+  }
+  function applyData(data) { registerModNames(data); d.applyOfflineCatalog(runtimeCatalog(data), origin); }
   async function applyMode(on) {
     if (on) {
       enabled.value = true;

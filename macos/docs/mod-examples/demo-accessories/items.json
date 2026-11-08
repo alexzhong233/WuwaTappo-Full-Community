@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "name": "猫耳",
+      "type": "accessory",
+      "assets": {
+        "image": "assets/accessory-ears.png",
+        "icon": "assets/accessory-ears-icon.png"
+      }
+    },
+    {
+      "name": "蝴蝶结",
+      "type": "accessory",
+      "assets": {
+        "image": "assets/accessory-bow.png",
+        "icon": "assets/accessory-bow-icon.png"
+      }
+    },
+    {
+      "name": "围巾",
+      "type": "accessory",
+      "assets": {
+        "image": "assets/accessory-scarf.png",
+        "icon": "assets/accessory-scarf-icon.png"
+      }
+    }
+  ]
+}

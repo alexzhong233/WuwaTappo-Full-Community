@@ -128,7 +128,7 @@ if(localAtlasController)localAtlasController.assistant=createDesktopAssistant({r
     (frontend/'assets'/monitor_name).write_text(monitor, encoding='utf-8')
     main = 'import {__zzMonitors as __assistantMonitors,__zzSwitchMonitor as __assistantRestoreMonitor} from "./'+monitor_name+'";\n'+main
     h=pi['createBaseVNode']
-    row=f'''{h}('div',{{class:'setting-item','data-desktop-assistant':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'挂机与统计'),{h}('div',{{class:'setting-sub'}},'后台点击、自动开箱、每日统计、房间历史与版本更新')]),{h}('button',{{class:'setting-btn',type:'button',onClick:()=>__lg.assistant.openPanel()}},'打开')]),'''
+    row=f'''{h}('div',{{class:'setting-item','data-desktop-assistant':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'桌宠助手'),{h}('div',{{class:'setting-sub'}},'自动点击与开箱、每日统计、Mod 管理与版本更新')]),{h}('button',{{class:'setting-btn',type:'button',onClick:()=>__lg.assistant.openPanel()}},'打开控制台')]),'''
     panel = once(panel, h+"('div',{class:'setting-item','data-local-gallery-setting':'true'},[",row+'\n'+h+"('div',{class:'setting-item','data-local-gallery-setting':'true'},[")
     # 1.0.3 renames the save+teardown pair; assert the shape (same pair used twice)
     # instead of 1.0.2's literal `ds`/`xt` identifiers.

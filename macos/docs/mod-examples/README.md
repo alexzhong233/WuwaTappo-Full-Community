@@ -7,7 +7,10 @@
 | `demo-animated-pet.zip` | 直接丢进「Mod 管理 → 导入 Mod ZIP」 |
 | `demo-pet/` | 解压后的包源，`manifest.json` / `items.json` / `assets/` 都在，改完重打即可 |
 | `frames.png` | 逐帧预览：每一帧长什么样、标签对应哪个字段 |
-| `make_demo_pack.py` | 生成脚本，纯标准库，不需要 Pillow |
+| `make_demo_pack.py` | 角色包生成脚本，纯标准库，不需要 Pillow |
+| `demo-accessories.zip` / `demo-emotes.zip` | 只含挂饰（猫耳、蝴蝶结、围巾）和只含表情（开心、眨眼、生气）的包 |
+| `packs-preview.png` | 挂饰与表情的逐项预览 |
+| `make_accessory_emote_packs.py` | 挂饰包与表情包生成脚本 |
 
 包名「演示 · 会动的小家伙」，1 个角色、5 个动作帧 + 1 张图标，画布 560×560、透明 PNG。
 
@@ -70,3 +73,12 @@ cd windows/src && python -m unittest discover -s tests -p "test_custom*.py"
 ```
 
 导入时的 ZIP 校验（路径逃逸、符号链接、Windows 保留名、图片魔数、压缩比、大小上限）在 `windows/src/src/custom_resources.py`，两侧行为一致。包的格式规范见 [Mod 制作说明](../MODS.md)。
+
+## 挂饰包与表情包
+
+角色包只解决「角色」这一类，挂饰和表情要单独给 `image`（以及可选的 `icon`），所以另配了两个包：
+
+- `demo-accessories.zip`：猫耳、蝴蝶结、围巾，都是 560×560 透明画布，画在头部/颈部的实际位置，导入后戴上就能对齐。
+- `demo-emotes.zip`：开心、眨眼、生气，一张圆脸换眉眼和嘴。
+
+两者的 `icon` 是同一形状放大居中后的版本，背包缩略图里才看得清。重画：`python make_accessory_emote_packs.py`。

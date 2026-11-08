@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "name": "开心",
+      "type": "emote",
+      "assets": {
+        "image": "assets/emote-happy.png",
+        "icon": "assets/emote-happy-icon.png"
+      }
+    },
+    {
+      "name": "眨眼",
+      "type": "emote",
+      "assets": {
+        "image": "assets/emote-wink.png",
+        "icon": "assets/emote-wink-icon.png"
+      }
+    },
+    {
+      "name": "生气",
+      "type": "emote",
+      "assets": {
+        "image": "assets/emote-angry.png",
+        "icon": "assets/emote-angry-icon.png"
+      }
+    }
+  ]
+}

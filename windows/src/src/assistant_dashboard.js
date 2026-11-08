@@ -76,16 +76,16 @@ function createAssistantDashboard(d){
   button('×',eyebrow,close,'wt-close').setAttribute('aria-label','关闭控制台，后台继续运行');
   const heading=el('div',undefined,header,'wt-row wt-between');el('h2','桌宠控制台',heading);const badge=el('span','读取中',heading,'wt-badge paused');
   const nav=el('nav',undefined,root),content=el('main',undefined,root,'wt-content'),footer=el('footer',undefined,root);
-  el('span','关闭面板后，后台任务继续运行',footer);const version=button('v'+d.version+' · 检查更新',footer,()=>showTab('settings'));
+  el('span','关闭面板后，后台任务继续运行',footer);const version=button('v'+d.version+' · 检查更新',footer,()=>showTab('update'));
   // 底栏版本号统一取本仓库发布号：Windows 侧的 d.version 是上游 MOD 版本（1.2），
   // 和设置页「全图鉴版本」不是同一个号，直接显示会和 Mac 对不上。
   d.atlas.request('/community/version',{}).then(r=>{if(r&&r.current)version.textContent='v'+r.current+' · 检查更新';}).catch(()=>{});
   const notice=el('div','',header,'wt-notice');
-  const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['mods','Mod 管理'],['settings','设置与更新']],navButtons={};
+  const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['mods','Mod 管理'],['update','更新'],['settings','设置']],navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
   const fmt=n=>Number(n||0).toLocaleString('zh-CN');
   function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);root.remove();d.onClose?.();}
-  function checkOfficialNotice(){d.atlas.request('/official/update-check',{}).then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「设置与更新」查看更新，或到官方桌宠页下载原版。';}).catch(()=>{});}
+  function checkOfficialNotice(){d.atlas.request('/official/update-check',{}).then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「更新」查看，或到官方桌宠页下载原版。';}).catch(()=>{});}
   async function change(changes){
     pending++;
     saveQueue=saveQueue.catch(()=>{}).then(async()=>{try{value=await d.configure(changes);notice.textContent='设置已保存';}catch(e){notice.textContent='保存失败：'+e.message;}finally{pending--;if(!closed)paint();}});
@@ -190,12 +190,7 @@ function createAssistantDashboard(d){
       }
       paintMode();refreshPacks();
       renderView=paintMode;
-    }else{
-      const c=card();el('h3','自动化设置',c);const fields={};
-      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
-        const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
-      }
-      const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
+    }else if(key==='update'){
       const u=card();el('h3','版本与更新',u);
       const versions=el('div',undefined,u,'wt-versions');
       const baseRow=el('div',undefined,versions,'wt-version'),baseText=el('div',undefined,baseRow);
@@ -214,12 +209,19 @@ function createAssistantDashboard(d){
       button('打开官方桌宠下载页',actions,openPetSite,'wt-primary');
       d.atlas.request('/community/version',{}).then(r=>{if(r.current)modValue.textContent=r.current;}).catch(()=>{modValue.textContent=d.version||'未知';});
       d.atlas.request('/official/update-check',{}).then(paintOfficial).catch(()=>{baseValue.textContent='未知';updates.textContent='无法读取官方基底版本；不影响全图鉴版本检查。';});
+      // 官方清单偶尔会落后于我们已整合的基底（CDN 缓存或发布节奏差），
+      // 这时说「已是最新（旧号）」会让人以为检查坏了，改成把两个号都摆出来。
+      function versionParts(value){return String(value||'').split(/[.+-]/).map(n=>parseInt(n,10)||0).slice(0,3);}
+      function compareVersion(a,b){const x=versionParts(a),y=versionParts(b);for(let i=0;i<3;i++){if(x[i]!==y[i])return x[i]-y[i];}return 0;}
       function paintOfficial(r){
-        const remote=r.latestVersion||r.remote;
-        baseValue.textContent=r.currentVersion||r.local||'未知';
+        const remote=r.latestVersion||r.remote||'';
+        const current=r.currentVersion||r.local||'未知';
+        baseValue.textContent=current;
         const newer=r.updateAvailable===undefined?!!r.newer:!!r.updateAvailable;
-        if(newer)updates.textContent='官方已发布 '+remote+'，当前基底 '+baseValue.textContent+'。';
-        else updates.textContent=remote?'官方基底已是最新（'+remote+'）。':'暂时无法确认官方最新版本。';
+        const older=r.remoteOlder===undefined?(!!remote&&compareVersion(remote,current)<0):!!r.remoteOlder;
+        if(newer)updates.textContent='官方已发布 '+remote+'，当前基底 '+current+'。';
+        else if(older)updates.textContent='官方清单当前是 '+remote+'，本包基底已跟进到 '+current+'。';
+        else updates.textContent=remote?('官方基底已是最新（'+current+'）。'):'暂时无法确认官方最新版本。';
       }
       async function openReleases(){
         try{const r=await d.atlas.request('/official/releases',{});if(r&&r.ok===false)throw new Error(r.error||'打开失败');}
@@ -250,10 +252,13 @@ function createAssistantDashboard(d){
         button('稍后',row,()=>gate.remove());
       }
       const sync=card();el('h3','本地图鉴资源',sync);el('p','本地开关只影响物品展示与本机装扮，登录、点数、开箱和版本检查仍使用原账号。',sync,'wt-muted');button('检查并同步官方图鉴',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'官方图鉴资源正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});
-      const custom=card();el('h3','外观模式与 Mod',custom);
-      el('p','「全图鉴 + Mod」使用完整离线图鉴并叠加本机导入的角色、挂饰和表情；官方模式只用账号背包，不会显示任何本机资源。',custom,'wt-muted');
-      el('p','导入、移除与缩略图预览都在「Mod 管理」里。ZIP 只需名称、类型和图片路径，ID 由应用管理。',custom,'wt-muted');
-      button('打开 Mod 管理',custom,()=>showTab('mods'));
+      renderView=()=>{};
+    }else{
+      const c=card();el('h3','自动化设置',c);const fields={};
+      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
+        const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
+      }
+      const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
       renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox')input.checked=!!value.settings[k];else input.value=value.settings[k];}};
     }
     if(value)paint();
