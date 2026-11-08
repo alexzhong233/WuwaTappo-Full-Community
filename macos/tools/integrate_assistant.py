@@ -68,6 +68,29 @@ def integrate(project, base, frontend, structure, shared, main, panel, main_name
     shared = once(shared, 'function schedulePreloadAppUiImages() {', '''function schedulePreloadAppUiImages() {
  const route=(window.location.hash||'#/').slice(1).split('?')[0];
  if(!['/','/panel'].includes(route))return;''')
+    # 打字自动表情要「替用户按一下」已装备的表情：官方手动发表情走的是同一个函数，
+    # 直接复用，不另造一条渲染路径，联机房间里的表现和手点完全一致。
+    emote_fn = min((fn for fn in structure['files'][main_name]['functions']
+                    if mi['reportSendSticker'] + '({' in source[fn['start']:fn['end']]),
+                   key=lambda fn: fn['end'] - fn['start'])
+    emote_text = source[emote_fn['start']:emote_fn['end']]
+    assert 'e.src' in emote_text and '.push({' in emote_text, 'manual emote rendering contract'
+    emote_items = re.search(r'"emote-items": ([\w$]+)\.value,\s*onSelect: ' + re.escape(emote_fn['name']), source)
+    assert emote_items, 'emote selection binding changed'
+    emote_items = emote_items.group(1)
+    emote_url = re.search(r'"asset-url": ([\w$]+),\s*"emote-items": ' + re.escape(emote_items), source)
+    assert emote_url, 'emote asset url binding changed'
+    emote_url = emote_url.group(1)
+    sync_call = re.search(re.escape(store) + r'\.isLoggedIn && ([\w$]+)\(e\.id\);', emote_text)
+    assert sync_call, 'original room emote send contract'
+    # 本地图鉴里的表情不属于账号素材，别当成账号道具回传给联机房间。
+    main = once(main, sync_call.group(0),
+                store + '.isLoggedIn && !__lg.enabled.value && ' + sync_call.group(1) + '(e.id);')
+    # 只监听「真实的」物理按键：自动点击用的虚拟 F24 走的是 handler 直调，不会到这里。
+    main = once(main, handlers[0] + '(e.payload)',
+                handlers[0] + '(e.payload); __lg.assistant.physicalKey(e.payload)')
+    main = once(main, handlers[1] + '(e.payload)',
+                handlers[1] + '(e.payload); __lg.assistant.physicalRelease(e.payload)')
     factory = (project / 'fullatlas-source/assistant_dashboard.js').read_text(encoding='utf-8')+'\n'+(project / 'fullatlas-source/desktop_assistant.js').read_text(encoding='utf-8')
     shared = once(shared, 'window.__WUWA_LOCAL_ATLAS__ = localAtlasController;', factory + '''
 window.__WUWA_LOCAL_ATLAS__ = localAtlasController;
@@ -95,6 +118,8 @@ if(localAtlasController)localAtlasController.assistant=createDesktopAssistant({r
  loggedIn:()=>{store}.isLoggedIn,blocked:()=>__lg.assistant.updateRequired.value,
  press:key=>{handlers[0]}(key,true),release:{handlers[1]},chestCost:{cost},
  chests:()=>({{left:{{remaining:Math.max(0,{left_rem}.value),ready:{left_ready}.value}},right:{{remaining:Math.max(0,{right_rem}.value),ready:{right_ready}.value}},cooldown:1800000,busy:{busy_open}.value||{blocked}.value}}),
+ emotes:()=>({emote_items}.value||[]).map(item=>({{id:item.id,name:item.name,src:item.src||{emote_url}('emote/'+item.name)}})),
+ sendEmote:item=>{emote_fn['name']}(item),
  monitors:__assistantMonitors,restoreMonitor:__assistantRestoreMonitor,
  currentMonitor:{mi['currentMonitor']},toast:{mi['showToast']},
  openSettings:{open_settings},

@@ -82,7 +82,11 @@ for (const platform of ['macos', 'windows']) {
           : reference => 'http://127.0.0.1:43229/' + reference.split('/').map(encodeURIComponent).join('/')),
         normalizeAtlasList: value => value,
         resolvePetAssetIdFromAppearanceId: id => Object.values(applied).find(group => group[id]?.height_light_id)?.[id].height_light_id ?? id,
-        getAppearanceAssetById: id => ['character_skin', 'accessory', 'emote'].map(kind => applied[kind][id]).find(Boolean),
+        getAppearanceAssetById: id => {
+          // 真实目录项带 asset_type；预设校验靠它区分「这是不是同类素材」。
+          const kind = ['character_skin', 'accessory', 'emote'].find(kind => applied[kind][id]);
+          return kind ? { asset_type: kind, ...applied[kind][id] } : undefined;
+        },
         snapshotCatalog: () => structuredClone(applied),
         applyOfflineCatalog: catalog => { applied = catalog; }, restoreCatalog: catalog => { applied = catalog; },
         onError: error => { throw error; },
@@ -152,6 +156,57 @@ for (const platform of ['macos', 'windows']) {
     assert.equal(JSON.stringify(controller.offlineData.value), before);
     assert.equal(controller.inventory([], []).length, officialAtlas.length);
     controller.dispose();
+  });
+
+  test(platform + ': 本地预设落本机，切回官方后自动让位给账号预设', async () => {
+    const app = harness(), opened = app.open();
+    await opened.controller.ready;
+    app.backend.installed = true;
+    await opened.controller.setEnabled(true);
+    const controller = opened.controller;
+    const officialUser = { character: { id: 1 }, accessory: null, emote: [] };
+    assert.equal(controller.presetList().length, 0);
+    controller.select({ asset_type: 'character_skin', asset_id: 1000000001, asset_name: 'Hero' }, officialUser, 8);
+    controller.select({ asset_type: 'accessory', asset_id: 1000000003, asset_name: 'Ears' }, officialUser, 8);
+    controller.select({ asset_type: 'emote', asset_id: 1000000005, asset_name: 'Happy' }, officialUser, 8);
+    const row = controller.createLocalPreset(officialUser, 5);
+    assert.equal(row.character_asset_id, 1000000001);
+    assert.equal(row.accessory_asset_id, 1000000003);
+    assert.equal(row.emotes.length, 1);
+    assert.equal(controller.presetList().length, 1);
+    // 换回官方角色后再套用预设，必须能回到 Mod 那套搭配。
+    controller.select({ asset_type: 'character_skin', asset_id: 1, asset_name: 'Official' }, officialUser, 8);
+    controller.applyLocalPreset(row.preset_id);
+    const user = controller.viewUser(officialUser);
+    assert.equal(user.character.id, 1000000001);
+    assert.equal(user.accessory.id, 1000000003);
+    assert.equal(user.emote[0].id, 1000000005);
+    // 重启（新窗口读同一份 storage）后预设还在。
+    const restarted = app.open();
+    await restarted.controller.ready;
+    assert.equal(restarted.controller.presetList().length, 1);
+    controller.deleteLocalPreset(row.preset_id);
+    assert.equal(controller.presetList().length, 0);
+    assert.throws(() => controller.applyLocalPreset(row.preset_id), /不存在/);
+    // 官方模式下这些接口一律拒绝，不能把本机预设当账号预设用。
+    await controller.setEnabled(false);
+    assert.throws(() => controller.presetList && controller.createLocalPreset(officialUser), /尚未开启/);
+    controller.dispose(); restarted.controller.dispose();
+  });
+
+  test(platform + ': 图鉴分类进度只数真实账号已拥有的条目', () => {
+    const app = harness(), opened = app.open();
+    const rows = [
+      { asset_type: 'character_skin', asset_id: 1, owned: true },
+      { asset_type: 'character_skin', asset_id: 2, owned: true },
+      { asset_type: 'character_skin', asset_id: 3, owned: false },
+      { asset_type: 'emote', asset_id: 0, owned: true },
+    ];
+    const progress = opened.controller.collectionProgress(rows);
+    assert.deepEqual({ collected: progress.collected, total: progress.total }, { collected: 2, total: 3 });
+    assert.equal(progress.percent.toFixed(1), '66.7');
+    assert.equal(opened.controller.collectionProgress(rows, true).total, 0, '加载中不提前给出 0/N 的假进度');
+    opened.controller.dispose();
   });
 
   test(platform + ': 宿主没给本机路由时不拼出必然 404 的地址', async () => {

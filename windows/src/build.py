@@ -61,6 +61,20 @@ def main():
     psutil_dist=importlib.metadata.distribution('psutil')
     psutil_license=next(p for p in psutil_dist.files if p.name=='LICENSE')
     shutil.copy2(psutil_dist.locate_file(psutil_license),licenses/'PSUTIL_LICENSE.txt')
+    # 打字自动表情要读「当前焦点是不是输入框」，用的是 UIAutomation 的只读焦点查询。
+    # comtypes 的类型库模块不会被打包器自动收，先让 comtypes 生成 UIAutomationClient
+    # 再用 --hidden-import 钉进去；本机没装 comtypes 时不阻断打包，
+    # 运行期探测会退化成「不可编辑」，只是这个功能不触发。
+    uia=[]; uia_error=None
+    try:
+        from comtypes.client import GetModule
+        GetModule('UIAutomationCore.dll')
+        comtypes_dist=importlib.metadata.distribution('comtypes')
+        comtypes_license=next(p for p in comtypes_dist.files if p.name=='LICENSE.txt')
+        shutil.copy2(comtypes_dist.locate_file(comtypes_license),licenses/'COMTYPES_LICENSE.txt')
+        uia=['--hidden-import','comtypes.gen.UIAutomationClient']
+    except Exception as error:
+        uia_error=error
     for script in (PROJECT/'installer').glob('*.ps1'):
         # Windows PowerShell 5.1 requires a BOM for Chinese labels.
         (payload/script.name).write_text(script.read_text(encoding='utf-8-sig'),encoding='utf-8-sig')
@@ -69,9 +83,11 @@ def main():
     import ssl
     ssl_policy=Path(ssl.__file__).with_name('codex-rejected-cas.pem')
     if ssl_policy.is_file():ssl_data=['--add-data',str(ssl_policy)+os.pathsep+'.']
-    run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--console',*ssl_data,
+    run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--console',*ssl_data,*uia,
          '--name','LocalGalleryHost','--distpath',build/'frozen','--workpath',build/'pyinstaller',
          '--specpath',build,'--paths',PROJECT/'src',PROJECT/'src/local_host.py'])
+    if uia_error is not None:
+        print('warn: comtypes 不可用，打字自动表情的焦点探测不会打包进去：%s' % uia_error, file=sys.stderr)
     run([build/'frozen/LocalGalleryHost/LocalGalleryHost.exe','--self-check'])
     shutil.copytree(build/'frozen/LocalGalleryHost',payload/'host',dirs_exist_ok=True)
     # Keep the frozen service adjacent to the app; its Python DLLs stay in _internal.

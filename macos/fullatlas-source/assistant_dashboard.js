@@ -107,7 +107,7 @@ function createAssistantDashboard(d){
     tab=key;content.replaceChildren();notice.textContent='';for(const[k,n]of Object.entries(navButtons))n.className=k===key?'active':'';
     if(key==='overview'){
       const hero=card(content,'warm');el('h3','后台陪伴，安心打字',hero);const description=el('p','',hero,'wt-muted');
-      const controls=el('div',undefined,hero,'wt-controls');button('启动后台',controls,()=>change({enabled:true}),'wt-primary');button('暂停点击',controls,()=>change({enabled:false}));button('停止全部自动任务',controls,()=>change({enabled:false,auto_chest:false}));
+      const controls=el('div',undefined,hero,'wt-controls');button('启动后台',controls,()=>change({enabled:true}),'wt-primary');button('暂停点击',controls,()=>change({enabled:false}));button('停止全部自动任务',controls,()=>change({enabled:false,auto_chest:false,auto_emote:false}));
       const stats=el('div',undefined,content,'wt-stats'),numbers=[];
       for(const label of ['可用点数','累计点数','本次发送','本次开箱']){const c=card(stats,'wt-stat');el('div',label,c,'wt-label');numbers.push(el('div','—',c,'wt-number'));el('div',label==='可用点数'?'原版账号余额':label==='累计点数'?'原版累计数据':label==='本次发送'?'关闭窗口不会清零':'真实成功领取',c,'wt-label');}
       const chests=card();el('h3','宝箱进度',chests);const grid=el('div',undefined,chests,'wt-progress-grid'),progress={};
@@ -255,11 +255,19 @@ function createAssistantDashboard(d){
       renderView=()=>{};
     }else{
       const c=card();el('h3','自动化设置',c);const fields={};
-      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
+      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；真实文字输入时偶尔随机弹出，联机沿用手动发送，后台连点不触发'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
         const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
       }
       const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
-      renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox')input.checked=!!value.settings[k];else input.value=value.settings[k];}};
+      const emoteHint=el('p','',c,'wt-muted');emoteHint.setAttribute('data-emote-hint','true');
+      renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox')input.checked=!!value.settings[k];else input.value=value.settings[k];}
+        const stats=d.atlas?.assistant?.emoteStats||{};
+        emoteHint.textContent=!value.settings.auto_emote?'打字自动表情已关闭'
+          :stats.reason==='no-selection'?'请先在背包装备至少一个表情'
+          :stats.reason==='no-access'?'需要「系统设置 → 隐私与安全性 → 辅助功能」里允许本应用'
+          :stats.reason==='not-editable'?'尚未识别到文字输入框（当前焦点不在输入框）'
+          :stats.sent?'本次已触发 '+stats.sent+' 次 · 持续打字间隔 2～4 秒'
+          :'待命中：真实文字输入时会随机弹出，走路/组合键不触发';};
     }
     if(value)paint();
   }

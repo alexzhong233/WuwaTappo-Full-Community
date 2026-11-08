@@ -1037,6 +1037,12 @@ unsafe extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
+    fn AXUIElementCreateSystemWide() -> *mut c_void;
+    fn AXUIElementCopyAttributeValue(
+        element: *mut c_void,
+        attribute: *const c_void,
+        value: *mut *mut c_void,
+    ) -> i32;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -1088,6 +1094,107 @@ unsafe extern "C" {
     fn CFRunLoopRunInMode(mode: *mut c_void, seconds: f64, return_after_source_handled: u8) -> i32;
     fn CFRunLoopStop(run_loop: *mut c_void);
     fn CFRunLoopWakeUp(run_loop: *mut c_void);
+    fn CFStringCreateWithBytes(
+        allocator: *mut c_void,
+        bytes: *const u8,
+        length: isize,
+        encoding: u32,
+        is_external: bool,
+    ) -> *mut c_void;
+    fn CFStringGetLength(text: *mut c_void) -> isize;
+    fn CFStringGetMaximumSizeForEncoding(length: isize, encoding: u32) -> isize;
+    fn CFStringGetCString(text: *mut c_void, buffer: *mut i8, size: isize, encoding: u32) -> bool;
+}
+
+const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+/// kAXErrorAPIDisabled：没有「辅助功能」授权时 AX 调用一律返回它。
+const AX_ERROR_API_DISABLED: i32 = -25211;
+
+fn cf_string(value: &str) -> *mut c_void {
+    unsafe {
+        CFStringCreateWithBytes(
+            std::ptr::null_mut(),
+            value.as_ptr(),
+            value.len() as isize,
+            CF_STRING_ENCODING_UTF8,
+            false,
+        )
+    }
+}
+
+fn cf_to_string(value: *mut c_void) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    unsafe {
+        let length = CFStringGetLength(value);
+        if length <= 0 {
+            return String::new();
+        }
+        let size = CFStringGetMaximumSizeForEncoding(length, CF_STRING_ENCODING_UTF8) + 1;
+        if size <= 1 {
+            return String::new();
+        }
+        let mut buffer = vec![0i8; size as usize];
+        if !CFStringGetCString(value, buffer.as_mut_ptr(), size, CF_STRING_ENCODING_UTF8) {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(buffer.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// 系统当前焦点是不是落在「能输入文字」的控件上。
+///
+/// 打字自动表情的全部判据就在这里：只在真的往输入框里打字时才弹，
+/// 用 WASD 走路、按快捷键、点按钮都不算。AX 查询失败（没授权 / 没有焦点）
+/// 一律返回不可编辑——宁可少弹一次，也不要在用户操作角色时乱弹。
+pub fn focused_text_context() -> serde_json::Value {
+    use serde_json::json;
+    if !unsafe { AXIsProcessTrusted() } {
+        return json!({"editable": false, "reason": "accessibility-denied"});
+    }
+    unsafe {
+        let system = AXUIElementCreateSystemWide();
+        if system.is_null() {
+            return json!({"editable": false, "reason": "no-system-element"});
+        }
+        let focused_attribute = cf_string("AXFocusedUIElement");
+        let mut focused: *mut c_void = std::ptr::null_mut();
+        let status = AXUIElementCopyAttributeValue(system, focused_attribute, &mut focused);
+        if !focused_attribute.is_null() {
+            CFRelease(focused_attribute);
+        }
+        CFRelease(system);
+        if status != 0 || focused.is_null() {
+            return json!({
+                "editable": false,
+                "reason": if status == AX_ERROR_API_DISABLED { "accessibility-denied" } else { "no-focus" }
+            });
+        }
+        let role_attribute = cf_string("AXRole");
+        let mut role_value: *mut c_void = std::ptr::null_mut();
+        let role_status = AXUIElementCopyAttributeValue(focused, role_attribute, &mut role_value);
+        if !role_attribute.is_null() {
+            CFRelease(role_attribute);
+        }
+        CFRelease(focused);
+        let role = if role_status == 0 {
+            let text = cf_to_string(role_value);
+            if !role_value.is_null() {
+                CFRelease(role_value);
+            }
+            text
+        } else {
+            String::new()
+        };
+        let editable = matches!(
+            role.as_str(),
+            "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField" | "AXEditableText"
+        );
+        json!({"editable": editable, "role": role, "reason": if editable { "editable" } else { "not-editable" }})
+    }
 }
 
 #[cfg(test)]

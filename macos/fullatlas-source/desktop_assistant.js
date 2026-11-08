@@ -1,12 +1,56 @@
 /* Main-renderer driver. No signal enters the macOS input queue. */
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
   const VERSION='1.3.0-alpha.3', updateRequired=ref(false);
-  const state=ref({settings:{enabled:false,speed:5,auto_chest:false,threshold:1000,remember_monitor:true,prerelease_updates:false}});
+  const state=ref({settings:{enabled:false,speed:5,auto_chest:false,threshold:1000,remember_monitor:true,prerelease_updates:false,auto_emote:false}});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
   const ready=atlas.ready.then(()=>request('state')).then(v=>{state.value=v;updateRequired.value=!!v.update_required;});
   let started=false,disposed=false,timer=null,mainDependencies=null,sent=0,confirmed=0,lastObserve=0;
   let dashboard=null,updateDialog=null,autoSide=null,autoUntil=0,flushing=null;
   const readyButtons=new Map(),retryAfter=new Map();
+  // 打字自动表情（跟上游 1.3.4）：只认真实物理按键，虚拟补点（F24）不会触发。
+  // 焦点判定放在宿主侧 —— Win 看前台窗口的输入焦点，mac 走 AX 焦点 ——
+  // 这样用 WASD 走路不会弹表情，只有真的在输入文字才弹。
+  const emoteStats={physical:0,eligible:0,sent:0,reason:'waiting-input'};
+  const physicalHeld=new Set();
+  let emoteBusy=false,nextEmoteAt=0,typedKeys=0,lastTypedAt=0;
+  const TYPING_KEYS=new Set(['Space','Spacebar',' ','Comma','Dot','Period','Semicolon','Quote','Slash',
+    'Backslash','Minus','Equal','LeftBracket','RightBracket',',','.',';',"'",'/','\\','-','=','[',']','`']);
+  const MODIFIER=/control|ctrl|alt|option|meta|win|super|command|shift/i;
+  function physicalRelease(key){physicalHeld.delete(String(key));}
+  function typingKey(key){
+    // mac 的键名是小写字母/单个符号，Windows 给的是 KeyA/Digit1 这类码名，两边都收。
+    return /^[a-z0-9]$/i.test(key) || /^Key[A-Z]$/i.test(key) || /^Digit[0-9]$/.test(key) || TYPING_KEYS.has(key);
+  }
+  async function physicalKey(raw){
+    const key=String(raw),now=Date.now();
+    if(physicalHeld.has(key))return;
+    physicalHeld.add(key);
+    emoteStats.physical++;
+    if(!started||disposed||!state.value.settings.auto_emote||updateRequired.value||mainDependencies?.blocked?.())return;
+    if([...physicalHeld].some(k=>MODIFIER.test(k)))return;
+    if(!typingKey(key))return;
+    emoteStats.eligible++;
+    if(now-lastTypedAt>2000)typedKeys=0;
+    lastTypedAt=now;typedKeys++;
+    if(typedKeys<2||now<nextEmoteAt||emoteBusy)return;
+    if(!(mainDependencies.emotes?.()||[]).some(x=>x.id&&x.src)){emoteStats.reason='no-selection';return;}
+    emoteBusy=true;
+    try{
+      const context=await request('typing-context');
+      emoteStats.reason=context.editable?'ready'
+        :context.reason==='accessibility-denied'?'no-access'
+        :context.reason==='disabled'?'disabled':'not-editable';
+      if(!context.editable){nextEmoteAt=Date.now()+500;return;}
+      // 焦点判定和真正发出去之间有几十毫秒：这期间停了手、关了开关或锁了更新，就放弃这次。
+      if(disposed||!state.value.settings.auto_emote||updateRequired.value||mainDependencies.blocked()||Date.now()-lastTypedAt>500)return;
+      const current=(mainDependencies.emotes?.()||[]).filter(x=>x.id&&x.src);
+      if(!current.length)return;
+      mainDependencies.sendEmote(current[Math.floor(Math.random()*current.length)]);
+      emoteStats.sent++;emoteStats.reason='sent';typedKeys=0;
+      nextEmoteAt=Date.now()+2000+Math.floor(Math.random()*2000);
+    }catch(error){emoteStats.reason='error';console.warn('[assistant] typing emote skipped',error);}
+    finally{emoteBusy=false;}
+  }
   const OUTBOX='wuwatappo-confirmed-rewards-v2';
   let outbox=[];
   try{outbox=JSON.parse(window.localStorage?.getItem(OUTBOX)||'[]');if(!Array.isArray(outbox))outbox=[];}catch{}
@@ -135,5 +179,6 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   }
   ready.then(pollPolicy).catch(()=>{});
   window.addEventListener('pagehide',()=>{disposed=true;closePanel();});
-  return {ready,state,updateRequired,startMain,openPanel,closePanel,flush,flushBeforeSwitch,beginChest,chestSucceeded};
+  return {ready,state,updateRequired,startMain,openPanel,closePanel,flush,flushBeforeSwitch,beginChest,chestSucceeded,
+    physicalKey,physicalRelease,emoteStats};
 }

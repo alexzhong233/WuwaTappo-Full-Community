@@ -1,4 +1,9 @@
-"""Local assistant state. No keyboard/mouse injection or focus APIs are used."""
+"""Local assistant state.
+
+No keyboard/mouse injection. The only OS introspection is a read-only UIA focus
+probe (does the focused control accept text?) used by the typing-emote feature;
+it never reads names, values, text ranges or typed characters.
+"""
 from pathlib import Path
 from datetime import datetime, timedelta
 import ctypes
@@ -24,9 +29,23 @@ class PhysicalInput:
     def __init__(self):
         self.user = ctypes.windll.user32
         self.kernel = ctypes.windll.kernel32
+        self._text_probe = None
         self.user.GetAsyncKeyState.argtypes = [ctypes.c_int]
         self.user.GetAsyncKeyState.restype = ctypes.c_short
         self.kernel.GetTickCount.restype = wintypes.DWORD
+
+    def typing_context(self):
+        """焦点是否落在能输入文字的控件上（只问类型，不读内容）。"""
+        if self._text_probe is None:
+            try:
+                from text_focus import FocusedTextProbe
+            except Exception:
+                return {'editable': False, 'source': 'uia-unavailable'}
+            self._text_probe = FocusedTextProbe()
+        try:
+            return self._text_probe.probe()
+        except Exception:
+            return {'editable': False, 'source': 'uia-error'}
 
     def quiet(self):
         info = self.LASTINPUTINFO()
@@ -41,7 +60,7 @@ class PhysicalInput:
 
 class Assistant:
     DEFAULTS = {'enabled': False, 'speed': 5, 'auto_chest': False, 'threshold': 1000,
-                'remember_monitor': True, 'prerelease_updates': False}
+                'remember_monitor': True, 'prerelease_updates': False, 'auto_emote': False}
 
     def __init__(self, root, physical=None, clock=time.time):
         self.path = Path(root) / 'assistant_state.json'
@@ -131,7 +150,7 @@ class Assistant:
                     raise ValueError('Unknown setting')
                 for key, val in changes.items():
                     if key in ('enabled', 'auto_chest', 'remember_monitor',
-                               'prerelease_updates') and type(val) is not bool:
+                               'prerelease_updates', 'auto_emote') and type(val) is not bool:
                         raise ValueError('Expected boolean')
                     if key == 'speed' and (type(val) is not int or val not in (1, 5, 10)):
                         raise ValueError('Speed must be 1, 5 or 10')
@@ -139,6 +158,13 @@ class Assistant:
                         raise ValueError('Invalid chest threshold')
                 self.state['settings'].update(changes)
                 self.save(True)
+            elif action == 'typing-context':
+                # 打字自动表情的焦点判定：开关关掉直接回不可编辑，省一次 UIA 往返。
+                if not self.state['settings'].get('auto_emote'):
+                    return {'editable': False, 'source': 'disabled'}
+                result = self.physical.typing_context() if self.physical else {'editable': False}
+                self.runtime.update(emote_context=result)
+                return result
             elif action == 'reset':
                 self.state['session'] = self.state['confirmed'] = 0
                 self.state['session_chests'] = 0

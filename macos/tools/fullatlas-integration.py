@@ -174,7 +174,28 @@ insert_function(reorder_name, f'if(__lg.enabled.value){{__lg.reorder({param},{st
 favorite_name = m['cases']['collect-change']
 param = re.search(r'function\s+' + re.escape(favorite_name) + r'\((\w+)', main).group(1)
 insert_function(favorite_name, f'if(__lg.enabled.value){{__lg.favorite({param}.assetId,{param}.is_collect===1);return;}}')
+# 官方预设存在账号上，本地模式不能走网络，所以「我的预设」改由控制器落本机。
+# 列表归一化函数与容量上限都从产物里取，官方换名字也不影响。
+preset_loader = function_for(m, main, 'await ' + mi['getPresetList'] + '()')
+preset_source = main[preset_loader['start']:preset_loader['end']]
+preset_normalize = re.search(re.escape(f['presetList']) + r' = [^\n]+\.map\(([\w$]+)\)', preset_source)
+assert preset_normalize, 'Preset list normalization changed'
+preset_limit = re.search(re.escape(f['presetList']) + r'\.length >= ([\w$]+)',
+                         main[named(m, m['cases']['create-preset'])['start']:named(m, m['cases']['create-preset'])['end']])
+assert preset_limit, 'Preset capacity guard changed'
+for action, operation in [('create-preset', f'__lg.createLocalPreset({store}.userInfo,{preset_limit[1]})'),
+                          ('delete-preset', '__lg.deleteLocalPreset({0})'),
+                          ('apply-preset', '__lg.applyLocalPreset({0}.preset_id)')]:
+    action_name = m['cases'][action]
+    action_param = re.search(r'function\s+' + re.escape(action_name) + r'\((\w+)', main)
+    insert_function(action_name, 'if(__lg.enabled.value){try{' + operation.format(action_param[1] if action_param else 'null')
+                   + f';__localRefresh();}}catch(error){{{mi["showToast"]}(error.message);}}return;}}')
+insert_function(preset_loader['name'], f'if(__lg.enabled.value){{{f["presetListLoading"]}=false;return;}}')
 snap_text = main[snapshot['start']:snapshot['end']]
+snap_text = snap_text.replace('presetList: ' + f['presetList'],
+                              'presetList: __lg.enabled.value ? __lg.presetList().map(' + preset_normalize[1] + ') : ' + f['presetList'])
+snap_text = snap_text.replace('presetListLoading: ' + f['presetListLoading'],
+                              'presetListLoading: !__lg.enabled.value && ' + f['presetListLoading'])
 snap_text = snap_text.replace('bagList: ' + bag, 'bagList: __lg.inventory(' + atlas + ',' + bag + ')')
 snap_text = snap_text.replace('atlasList: ' + atlas, 'atlasList: __lg.enabled.value ? __lg.offlineData.value.atlas : ' + atlas)
 snap_text = snap_text.replace(f['userInfo'], f['userInfo'].replace(store + '.userInfo', '__lg.viewUser(' + store + '.userInfo)'))
@@ -249,6 +270,42 @@ for condition in p['roomConditions']:
     if 'activeTab' in text:
         message = pi['openBlock'] + '(), ' + pi['createElementBlock'] + "('div',{class:'module-block',style:'padding:24px'},'本地全图鉴已开启，无法进入联机。请先关闭开关。')"
         edits.append((condition['start'], condition['start'], '__lg.enabled.value && ' + text + ' ? (' + message + ') : '))
+# 图鉴顶部的分类收集进度（上游 1.3.4）：本地模式下所有条目都算「已拥有」，
+# 进度恒 100% 没有意义，所以这块只在官方模式显示真实账号的分类收集情况。
+atlas_text = panel[atlas_component['start']:atlas_component['end']]
+assert re.search(r'[\w$]+ = ' + re.escape(pi['computed']) + r'\(\(\) => [\w$]+\([\w$]+\([\w$]+\.atlasList, [\w$]+\.bagList\)\)\)', atlas_text), \
+    'atlas row merge computed changed'
+category = re.search(r'([\w$]+) = ' + re.escape(pi['computed']) + r'\(\(\) => \{\s*const [\w$]+ = [\w$]+\[([\w$]+)\.value\];', atlas_text)
+assert category, 'atlas category computed changed'
+category_rows, category_index = category.groups()
+atlas_loading = re.search(r'([\w$]+) = ' + re.escape(pi['computed']) + r'\(\(\) => [\w$]+\.bagListLoading \|\| [\w$]+\.atlasListLoading\)', atlas_text)
+assert atlas_loading, 'atlas loading computed changed'
+atlas_loading = atlas_loading.group(1)
+edits.append((atlas_component['returnStart'], atlas_component['returnStart'],
+              f"const __atlasProgress={pi['computed']}(()=>__lg.collectionProgress({category_rows}.value,{atlas_loading}.value)),"
+              f"__atlasProgressTitle={pi['computed']}(()=>['全图鉴收集进度','全角色收集进度','全配件收集进度','全表情收集进度'][{category_index}.value]||'全图鉴收集进度');\n"))
+tab_anchor = 'null, 8, ["modelValue", "tabs"]),'
+assert atlas_text.count(tab_anchor) == 1, 'atlas tab header changed'
+progress = f''' !__lg.enabled.value ? ({pi['openBlock']}(true),{pi['createElementBlock']}('section',{{key:'account-atlas-progress','data-atlas-progress':'online',style:{{padding:'12px 4px 14px',width:'100%',boxSizing:'border-box'}}}},[
+ {h}('div',{{style:{{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'12px',fontSize:'14px',color:'#927b65',marginBottom:'8px'}}}},[
+ {h}('span',null,__atlasProgressTitle.value),{h}('strong',{{style:{{fontVariantNumeric:'tabular-nums',color:'#996644'}}}},
+ !{pi['globalStore']}.isLoggedIn?'登录后查看':{atlas_loading}.value?'正在读取…':__atlasProgress.value.collected+'/'+__atlasProgress.value.total+' · '+__atlasProgress.value.percent.toFixed(1)+'%')]),
+ {h}('div',{{role:'progressbar','aria-label':'真实账号'+__atlasProgressTitle.value,'aria-valuemin':0,'aria-valuemax':__atlasProgress.value.total,'aria-valuenow':__atlasProgress.value.collected,'aria-busy':{atlas_loading}.value,style:{{height:'9px',width:'100%',background:'#ecddc4',borderRadius:'20px',overflow:'hidden'}}}},[
+ {h}('span',{{style:{{display:'block',height:'100%',width:({pi['globalStore']}.isLoggedIn?__atlasProgress.value.percent:0)+'%',background:'linear-gradient(90deg,#e4b56f,#c58b51)',borderRadius:'inherit',transition:'width .25s ease'}}}})])],-2)) : {pi['createCommentVNode']}('local-atlas-progress-hidden',true),'''
+progress_at = atlas_component['start'] + atlas_text.index(tab_anchor) + len(tab_anchor)
+edits.append((progress_at, progress_at, progress))
+# 本地模式下预设不存账号，登录守卫也要放行，否则未登录时「我的预设」整块只显示空槽。
+bag_component = next(c for c in p['components'] if c['name'] == 'MainPanelBagTab')
+bag_text = panel[bag_component['start']:bag_component['end']]
+bag_guard = 'if (!' + pi['globalStore'] + '.isLoggedIn)'
+assert bag_text.count(bag_guard) == 2, 'preset login guard layout changed'
+for match in re.finditer(re.escape(bag_guard), bag_text):
+    edits.append((bag_component['start'] + match.start(), bag_component['start'] + match.end(),
+                  'if (!' + pi['globalStore'] + '.isLoggedIn && !__lg.enabled.value)'))
+delete_guard = re.search(r'if \([\w$]+\.stopPropagation\(\), !' + re.escape(pi['globalStore']) + r'\.isLoggedIn\)', bag_text)
+assert delete_guard, 'preset delete login guard changed'
+delete_at = bag_component['start'] + bag_text.index(delete_guard[0])
+edits.append((delete_at, delete_at + len(delete_guard[0]), delete_guard[0][:-1] + ' && !__lg.enabled.value)'))
 panel = apply_edits(panel, edits)
 
 # 官方的「检查更新」改成打开本机控制台的「更新」页：官方自更新会把整合包替换回原版，

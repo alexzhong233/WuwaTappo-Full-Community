@@ -33,6 +33,8 @@ struct Settings {
     remember_monitor: bool,
     /// 更新检查是否把预发布（alpha/beta）算进候选。默认关闭：只提醒正式版。
     prerelease_updates: bool,
+    /// 打字自动表情：真实文字输入时随机弹一个已装备的表情。
+    auto_emote: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -43,6 +45,7 @@ impl Default for Settings {
             threshold: 1000,
             remember_monitor: true,
             prerelease_updates: false,
+            auto_emote: false,
         }
     }
 }
@@ -729,6 +732,16 @@ impl FullAtlasState {
         let mut inner = self.inner.lock().map_err(|_| "全图鉴数据锁失败")?;
         match action {
             "state" | "renderer-start" => return Ok(Self::snapshot(&inner)),
+            // 打字自动表情的焦点判定。开关关掉就直接回不可编辑，省掉一次 AX 往返；
+            // 查询本身不碰账号数据，也不占用点击节流，所以放锁外面做。
+            "typing-context" => {
+                let armed = inner.saved.settings.auto_emote;
+                drop(inner);
+                if !armed {
+                    return Ok(json!({"editable": false, "reason": "disabled"}));
+                }
+                return Ok(crate::input::focused_text_context());
+            }
             "configure" => {
                 let changes = body
                     .get("settings")
@@ -744,6 +757,9 @@ impl FullAtlasState {
                         "remember_monitor" => {
                             next.remember_monitor =
                                 val.as_bool().ok_or("remember_monitor 必须是布尔值")?
+                        }
+                        "auto_emote" => {
+                            next.auto_emote = val.as_bool().ok_or("auto_emote 必须是布尔值")?
                         }
                         "prerelease_updates" => {
                             next.prerelease_updates =
