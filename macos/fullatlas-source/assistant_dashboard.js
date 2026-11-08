@@ -24,6 +24,14 @@ function assistantUi(window) {
     .wt-setting{padding:13px 0;display:flex;gap:20px;justify-content:space-between;align-items:center;border-bottom:1px solid #f2efe9}.wt-setting:last-child{border:0}.wt-console input[type=checkbox]{appearance:none;flex-shrink:0;width:38px;height:22px;background:#d7d3ca;border:0;border-radius:15px;position:relative;cursor:pointer}.wt-console input[type=checkbox]:after{content:'';display:block;background:white;box-shadow:0 1px 3px #0002;width:16px;height:16px;border-radius:50%;position:absolute;top:3px;left:3px;transition:transform .15s}.wt-console input[type=checkbox]:checked{background:#b8965a}.wt-console input[type=checkbox]:checked:after{transform:translateX(16px)}
     .wt-console input[type=number]{font:inherit;color:var(--ink);width:112px;border:1px solid var(--line);padding:6px 10px;border-radius:8px;background:#faf9f7}.wt-chart{display:flex;gap:14px;align-items:flex-end;height:180px;margin:20px 0 8px}.wt-column{flex:1;min-width:0;text-align:center;font-size:11px;color:var(--muted)}.wt-bar{margin:5px auto;background:#ddc292;border-radius:5px 5px 2px 2px;width:70%}.wt-empty{padding:28px 10px;text-align:center;color:var(--muted);font-size:12px}
     .wt-console footer{padding:10px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:11px;color:var(--muted);background:#faf9f6;flex-shrink:0}.wt-console footer button{font-size:11px;padding:4px 10px;min-height:28px}.wt-notice{font-size:12px;color:#9c6c32;padding:6px 0;min-height:20px}
+    .wt-versions{margin-top:10px;border-top:1px solid var(--line)}
+    .wt-version{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f2efe9}
+    .wt-version:last-child{border:0}
+    .wt-version>div{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+    .wt-version strong{font-size:13px;font-weight:650}
+    .wt-version-value{font-size:13px;font-weight:650;font-variant-numeric:tabular-nums;color:#745022;white-space:nowrap}
+    .wt-version button{font-size:11px;padding:4px 12px;min-height:28px;white-space:nowrap}
+    .wt-gate article p{font-size:13px}
     .wt-mod-pack{border:1px solid #efe9df;border-radius:13px;padding:12px 14px;margin-top:12px;background:#fdfcfa}
     .wt-mod-pack strong{font-size:13px;font-weight:650}
     .wt-console .wt-mod-remove{font-size:11px;padding:4px 10px;min-height:28px}
@@ -185,7 +193,57 @@ function createAssistantDashboard(d){
         const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
       }
       const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
-      const u=card();el('h3','官方基底与 Mac 版本更新',u);el('p','检测到 Kuro 官方新版本后，可以打开本项目 Releases，或把经过官方 HTTPS、区域和文件名校验的 Windows 原包下载到 Downloads。Windows 原包不能直接安装到 Mac；Mac 全图鉴包需要由维护环境或 GitHub Actions 重新构建后发布。',u,'wt-muted');const updates=el('p','正在查询官方基底…',u),actions=el('div',undefined,u,'wt-controls'),releases=button('打开 GitHub Releases',actions,async()=>{try{await window.__TAURI_INTERNALS__.invoke('open_community_releases');}catch(e){updates.textContent='打开 Releases 失败：'+e.message;}}),download=button('下载官方 Windows 原包',actions,async()=>{if(download.disabled)return;download.disabled=true;updates.textContent='正在下载官方原包…';try{const r=await d.atlas.request('/official/download',{});updates.textContent=r.message;}catch(e){updates.textContent='下载失败：'+e.message;}finally{download.disabled=false;}},'wt-primary'),check=button('检查官方版本',actions,async()=>{check.disabled=true;updates.textContent='正在查询官方版本…';try{const r=await d.atlas.request('/official/update-check',{});updates.textContent=r.message+' 当前整合版 '+d.version+'。';download.disabled=!r.updateAvailable||!r.canDownloadOfficial;}catch(e){updates.textContent='检查失败：'+e.message;}finally{check.disabled=false;}});download.disabled=true;updates.style.margin='12px 0';d.atlas.request('/official/update-check',{}).then(r=>{updates.textContent=r.message+' 当前整合版 '+d.version+'。';download.disabled=!r.updateAvailable||!r.canDownloadOfficial;}).catch(()=>{updates.textContent='当前无法检测官方基底；可打开 Releases 查看已发布的 Mac 包。';});
+      const u=card();el('h3','版本与更新',u);
+      const versions=el('div',undefined,u,'wt-versions');
+      const baseRow=el('div',undefined,versions,'wt-version'),baseText=el('div',undefined,baseRow);
+      el('strong','当前版本（官方基底）',baseText);el('span','Kuro 官方客户端版本',baseText,'wt-muted');
+      const baseValue=el('b','检测中…',baseRow,'wt-version-value');
+      const modRow=el('div',undefined,versions,'wt-version'),modText=el('div',undefined,modRow);
+      el('strong','全图鉴版本',modText);el('span','本整合包的发布版本',modText,'wt-muted');
+      const modValue=el('b','检测中…',modRow,'wt-version-value');
+      const check=button('检查更新',modRow,checkCommunity);
+      const updates=el('p','',u,'wt-notice');updates.style.margin='6px 0 0';
+      const actions=el('div',undefined,u,'wt-controls');
+      button('打开 GitHub Releases',actions,openReleases);
+      const download=button('下载官方原包',actions,downloadOfficial,'wt-primary');download.disabled=true;
+      d.atlas.request('/community/version',{}).then(r=>{if(r.current)modValue.textContent=r.current;}).catch(()=>{modValue.textContent=d.version||'未知';});
+      d.atlas.request('/official/update-check',{}).then(paintOfficial).catch(()=>{baseValue.textContent='未知';updates.textContent='无法读取官方基底版本；不影响全图鉴版本检查。';});
+      function paintOfficial(r){
+        const remote=r.latestVersion||r.remote;
+        baseValue.textContent=r.currentVersion||r.local||'未知';
+        const newer=r.updateAvailable===undefined?!!r.newer:!!r.updateAvailable;
+        if(newer){updates.textContent='官方已发布 '+remote+'，当前基底 '+baseValue.textContent+'。';download.disabled=!(r.canDownloadOfficial||r.download_available);}
+        else updates.textContent=remote?'官方基底已是最新（'+remote+'）。':'暂时无法确认官方最新版本。';
+      }
+      async function openReleases(){
+        try{const r=await d.atlas.request('/official/releases',{});if(r&&r.ok===false)throw new Error(r.error||'打开失败');}
+        catch(e){updates.textContent='打开 Releases 失败：'+e.message;}
+      }
+      async function downloadOfficial(){
+        download.disabled=true;updates.textContent='正在下载官方原包…';
+        try{const r=await d.atlas.request('/official/download',{});updates.textContent=r.message||'已开始下载';}
+        catch(e){updates.textContent='下载失败：'+e.message;}
+        finally{download.disabled=false;}
+      }
+      async function checkCommunity(){
+        check.disabled=true;updates.textContent='正在对比 GitHub 最新发布…';
+        try{
+          const r=await d.atlas.request('/community/update-check',{});
+          if(r.current)modValue.textContent=r.current;
+          if(r.updateAvailable){updates.textContent='发现新版本 '+r.latest+'（当前 '+r.current+'）。';confirmUpdate(r);}
+          else updates.textContent=r.latest?'已是最新版本 '+r.current:'GitHub 上还没有已发布的安装包。';
+        }catch(e){updates.textContent='检查更新失败：'+e.message;}
+        finally{check.disabled=false;}
+      }
+      function confirmUpdate(r){
+        const gate=el('section',undefined,doc.body,'wt-gate');gate.setAttribute('role','alertdialog');gate.setAttribute('aria-modal','true');
+        const box=el('article',undefined,gate);el('h2','发现新版本',box);
+        el('p','当前全图鉴版本 '+r.current+'，GitHub 最新发布 '+r.latest+'。',box);
+        el('p','更新会保留账号、图鉴缓存与已导入的 Mod 资源包。',box,'wt-muted');
+        const row=el('div',undefined,box,'wt-controls');
+        button('打开下载页',row,()=>{gate.remove();openReleases();},'wt-primary');
+        button('稍后',row,()=>gate.remove());
+      }
       const sync=card();el('h3','本地图鉴资源',sync);el('p','本地开关只影响物品展示与本机装扮，登录、点数、开箱和版本检查仍使用原账号。',sync,'wt-muted');button('检查并同步官方图鉴',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'官方图鉴资源正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});
       const custom=card();el('h3','外观模式与 Mod',custom);
       el('p','「全图鉴 + Mod」使用完整离线图鉴并叠加本机导入的角色、挂饰和表情；官方模式只用账号背包，不会显示任何本机资源。',custom,'wt-muted');

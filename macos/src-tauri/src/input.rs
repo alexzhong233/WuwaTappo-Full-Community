@@ -78,6 +78,37 @@ fn ensure_input_monitoring_listed() {
     }
 }
 
+/// Drops a TCC record that authorizes an older build of this app.
+///
+/// Grants are keyed on the code signature (cdhash / designated requirement). Ad-hoc
+/// signed builds get a new cdhash on every release, so after an update the system still
+/// reports "granted" through `CGPreflightListenEventAccess` while the stale record cannot
+/// match the new binary. That is why `CGRequestListenEventAccess` returns silently — no
+/// prompt, no error — and the event tap never comes up. `tccutil` needs no privileges and
+/// is the only way to rebuild the record from inside the app: without it the user has to
+/// delete the app row in System Settings by hand before the button does anything.
+fn reset_listen_event(bundle_identifier: &str) -> bool {
+    std::process::Command::new("/usr/bin/tccutil")
+        .args(["reset", "ListenEvent", bundle_identifier])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// Granted on paper but unusable in practice: the tap could not be created or enabled.
+fn stale_grant(status: &InputStatus) -> bool {
+    status.granted
+        && !status.running
+        && matches!(
+            status.error.as_deref(),
+            Some(
+                "input_event_tap_create_failed"
+                    | "input_event_tap_enable_failed"
+                    | "input_event_tap_disabled"
+            )
+        )
+}
+
 pub fn diagnostics(app: &AppHandle) -> InputAccessDiagnostics {
     let input_monitoring_granted = unsafe { CGPreflightListenEventAccess() };
     let hid = unsafe { IOHIDCheckAccess(HID_REQUEST_TYPE_LISTEN_EVENT) };
@@ -411,6 +442,19 @@ pub fn request_input_access(app: AppHandle) -> Result<InputStatus, String> {
     // It deliberately skips the preflight short-circuit: when a reinstall leaves access
     // granted but the Settings row missing, a preflight check would report success and
     // never re-register the app, which is how the row goes missing in the first place.
+    let monitor = app.state::<InputMonitor>();
+    let before = monitor.status();
+    if stale_grant(&before) {
+        // The record points at a previous build. Keeping it means the request below is a
+        // no-op and the user sees a menu item that never responds, so clear it first and
+        // let the next request write a record for the binary that is running now.
+        let bundle = app.config().identifier.clone();
+        if reset_listen_event(&bundle) {
+            eprintln!("Cleared stale input monitoring record for {bundle}");
+        } else {
+            eprintln!("Could not clear stale input monitoring record for {bundle}");
+        }
+    }
     register_listen_event();
     start(app)
 }

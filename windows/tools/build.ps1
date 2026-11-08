@@ -89,6 +89,15 @@ if (Test-Path -LiteralPath $buildPy) {
   $hit = Select-String -LiteralPath $buildPy -Pattern "MOD_VERSION\s*=\s*'([^']+)'" | Select-Object -First 1
   if ($hit) { $modVersion = $hit.Matches[0].Groups[1].Value }
 }
+# 面板「全图鉴版本」跟本仓库 package.json 走，和 GitHub Release 的 tag 同源
+$communityVersion = ''
+$packageJson = Join-Path (Split-Path $Root -Parent) 'package.json'
+if (Test-Path -LiteralPath $packageJson) {
+  try {
+    $communityVersion = [string]((Get-Content -LiteralPath $packageJson -Raw -Encoding UTF8 | ConvertFrom-Json).version)
+  } catch { $communityVersion = '' }
+}
+if (-not $communityVersion) { Write-Warning '未读到 package.json 版本，面板全图鉴版本会显示为空' }
 
 # 前端用 token 给本机 HTTP 请求签名，必须存在。已生成的沿用，避免每次构建换掉已部署实例的凭据
 $configPath = Join-Path $R.WorkDir 'local_config.json'
@@ -116,6 +125,8 @@ $config = [ordered]@{
   atlas_count    = $atlasCount
   client_version = $clientVersion
   mod_version    = $modVersion
+  # 面板「全图鉴版本」要显示本仓库的发布号，不能和上游 MOD_VERSION 混用
+  community_version = $communityVersion
 }
 [IO.File]::WriteAllText($configPath,
   ($config | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))

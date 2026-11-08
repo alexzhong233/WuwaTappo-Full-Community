@@ -183,6 +183,87 @@ def open_community_releases():
         return {'ok': False, 'error': str(error), 'url': COMMUNITY_RELEASES_URL}
 
 
+def _semver_parts(value):
+    text = str(value or '').strip().lstrip('vV')
+    core, _, pre = text.partition('-')
+    numbers = []
+    for part in core.split('.'):
+        digits = ''.join(ch for ch in part if ch.isdigit())
+        numbers.append(int(digits) if digits else 0)
+    while len(numbers) < 3:
+        numbers.append(0)
+    return numbers[:3], pre
+
+
+def _compare_prerelease(left, right):
+    a, b = left.split('.'), right.split('.')
+    for x, y in zip(a, b):
+        if x.isdigit() and y.isdigit():
+            if int(x) != int(y):
+                return -1 if int(x) < int(y) else 1
+        elif x != y:
+            return -1 if x < y else 1
+    return (len(a) > len(b)) - (len(a) < len(b))
+
+
+def _compare_semver(left, right):
+    """semver 比较：正式版高于同号预发布，alpha.10 高于 alpha.9。"""
+    left_numbers, left_pre = _semver_parts(left)
+    right_numbers, right_pre = _semver_parts(right)
+    if left_numbers != right_numbers:
+        return -1 if left_numbers < right_numbers else 1
+    if not left_pre and not right_pre:
+        return 0
+    if not left_pre:
+        return 1
+    if not right_pre:
+        return -1
+    return _compare_prerelease(left_pre, right_pre)
+
+
+def check_community():
+    """对比本仓库 GitHub 发布（含 prerelease，排除草稿）。
+
+    不用 /releases/latest：GitHub 会跳过 prerelease，而本项目的 alpha 正是以
+    prerelease 发布，用那个接口永远查不到新版本。
+    """
+    current = str(CONFIG.get('community_version') or '')
+    result = {'current': current, 'latest': '', 'updateAvailable': False,
+              'releaseUrl': COMMUNITY_RELEASES_URL, 'pageUrl': COMMUNITY_RELEASES_URL,
+              'publishedAt': '', 'message': ''}
+    try:
+        request = urllib.request.Request(
+            'https://api.github.com/repos/alexzhong233/WuwaTappo-Full-Community/releases?per_page=20',
+            headers={'User-Agent': 'WuwaTappo-Full-Community-Win',
+                     'Accept': 'application/vnd.github+json'})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            releases = json.loads(response.read(512 * 1024).decode('utf-8'))
+        best = None
+        for release in releases if isinstance(releases, list) else []:
+            if not isinstance(release, dict) or release.get('draft'):
+                continue
+            tag = str(release.get('tag_name') or '').strip().lstrip('vV')
+            if not tag:
+                continue
+            if best is None or _compare_semver(tag, best[0]) > 0:
+                best = (tag, str(release.get('html_url') or COMMUNITY_RELEASES_URL),
+                        str(release.get('published_at') or ''))
+        if best:
+            result['latest'], result['releaseUrl'], result['publishedAt'] = best
+            result['updateAvailable'] = bool(current) and _compare_semver(best[0], current) > 0
+            if result['updateAvailable']:
+                result['message'] = '发现新版本 v%s，当前 v%s。' % (best[0], current)
+            elif current:
+                result['message'] = '已是最新版本 v%s。' % current
+            else:
+                result['message'] = '已读取 GitHub 最新发布 v%s。' % best[0]
+        else:
+            result['message'] = 'GitHub 上还没有已发布的安装包。'
+    except Exception as error:
+        result['message'] = '检查更新失败（%s）。' % error
+    return result
+
+
 def download_official():
     """把当前官方新 Windows 原包下载到用户 Downloads，不执行安装或覆盖。"""
     info = check_official()
@@ -508,6 +589,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, check_official())
         if path == '/official/releases':
             return self.respond(200, open_community_releases())
+        if path == '/community/version':
+            return self.respond(200, {'current': str(CONFIG.get('community_version') or '')})
+        if path == '/community/update-check':
+            return self.respond(200, check_community())
         if path == '/official/download':
             return self.respond(200, download_official())
         if path == '/official/manager':

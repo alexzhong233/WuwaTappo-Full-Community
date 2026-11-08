@@ -186,6 +186,136 @@ fn official_installer(
     Ok((url, filename))
 }
 
+const COMMUNITY_REPO: &str = "alexzhong233/WuwaTappo-Full-Community";
+const COMMUNITY_RELEASES_PAGE: &str =
+    "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
+
+/// 全图鉴整合包的发布版本；与 `package.json` 同源（bump-version 同步 Cargo.toml）。
+fn community_current_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// 拆成 (数字段, 预发布段)。`1.3.0-alpha.2` → ([1,3,0], Some("alpha.2"))。
+fn split_semver(value: &str) -> (Vec<u64>, Option<String>) {
+    let value = value.trim().trim_start_matches('v');
+    let (core, pre) = match value.split_once('-') {
+        Some((core, pre)) => (core, Some(pre.to_string())),
+        None => (value, None),
+    };
+    let mut numbers = core
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    numbers.resize(3, 0);
+    (numbers, pre)
+}
+
+/// 预发布段按点分段比较，数字段按数值、其余按字典序，符合 semver 对 alpha.10 > alpha.9 的约定。
+fn compare_prerelease(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut left_parts = left.split('.');
+    let mut right_parts = right.split('.');
+    loop {
+        match (left_parts.next(), right_parts.next()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(a), Some(b)) => {
+                let order = match (a.parse::<u64>(), b.parse::<u64>()) {
+                    (Ok(a), Ok(b)) => a.cmp(&b),
+                    (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                    (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                    (Err(_), Err(_)) => a.cmp(b),
+                };
+                if order != std::cmp::Ordering::Equal {
+                    return order;
+                }
+            }
+        }
+    }
+}
+
+fn compare_semver(left: &str, right: &str) -> std::cmp::Ordering {
+    let (left_numbers, left_pre) = split_semver(left);
+    let (right_numbers, right_pre) = split_semver(right);
+    match left_numbers.cmp(&right_numbers) {
+        std::cmp::Ordering::Equal => {}
+        order => return order,
+    }
+    match (left_pre.is_some(), right_pre.is_some()) {
+        (false, false) => std::cmp::Ordering::Equal,
+        // 正式版高于同号的预发布。
+        (false, true) => std::cmp::Ordering::Greater,
+        (true, false) => std::cmp::Ordering::Less,
+        (true, true) => compare_prerelease(
+            left_pre.as_deref().unwrap_or_default(),
+            right_pre.as_deref().unwrap_or_default(),
+        ),
+    }
+}
+
+/// 对比本仓库 GitHub 发布（含 prerelease，排除 draft）。
+///
+/// 不用 `/releases/latest`：GitHub 会跳过 prerelease，而本项目的 alpha 正是以 prerelease
+/// 发布，用它会永远查不到新版本。
+fn community_update_status() -> Result<Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("WuwaTappo-Full-Community-Mac")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let list = get_json(
+        &client,
+        Url::parse(&format!(
+            "https://api.github.com/repos/{COMMUNITY_REPO}/releases?per_page=20"
+        ))
+        .map_err(|e| e.to_string())?,
+    )?;
+    let current = community_current_version();
+    let mut best: Option<(String, String, String)> = None;
+    for release in list.as_array().map(Vec::as_slice).unwrap_or_default() {
+        if release.get("draft").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(tag) = release.get("tag_name").and_then(Value::as_str) else {
+            continue;
+        };
+        let version = tag.trim().trim_start_matches('v').to_string();
+        let url = release
+            .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or(COMMUNITY_RELEASES_PAGE)
+            .to_string();
+        let published = release
+            .get("published_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let newer = match &best {
+            Some((seen, _, _)) => compare_semver(&version, seen) == std::cmp::Ordering::Greater,
+            None => true,
+        };
+        if newer {
+            best = Some((version, url, published));
+        }
+    }
+    let (latest, release_url, published_at) = best.unwrap_or_default();
+    let update_available = !latest.is_empty()
+        && compare_semver(&latest, current) == std::cmp::Ordering::Greater;
+    Ok(json!({
+        "current": current,
+        "latest": latest,
+        "updateAvailable": update_available,
+        "releaseUrl": release_url,
+        "pageUrl": COMMUNITY_RELEASES_PAGE,
+        "publishedAt": published_at,
+        "message": if update_available {
+            format!("发现新版本 v{latest}，当前 v{current}。")
+        } else {
+            format!("已是最新版本 v{current}。")
+        },
+    }))
+}
+
 fn official_update_status(region: crate::profile::Region) -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -812,6 +942,10 @@ impl FullAtlasState {
             return Err("该操作仅允许主桌宠执行".into());
         }
         match action {
+            "official/releases" => crate::system::open_community_releases(app)
+                .map(|()| json!({"ok": true, "url": COMMUNITY_RELEASES_PAGE})),
+            "community/version" => Ok(json!({"current": community_current_version()})),
+            "community/update-check" => community_update_status(),
             "official/update-check" => {
                 official_update_status(crate::profile::Region::from_app(app))
             }
@@ -978,6 +1112,21 @@ mod tests {
         assert!(official_is_newer("1.0.10", "1.0.3"));
         assert!(!official_is_newer("1.0.3", "1.0.3"));
         assert!(!official_is_newer("1.0.2", "1.0.3"));
+    }
+
+    #[test]
+    fn community_version_check_understands_prerelease_ordering() {
+        // 预发布序列内部按数字比较：alpha.10 必须高于 alpha.9，而不是字典序的 alpha.1x。
+        assert_eq!(compare_semver("1.3.0-alpha.10", "1.3.0-alpha.9"), std::cmp::Ordering::Greater);
+        assert_eq!(compare_semver("1.3.0-alpha.2", "1.3.0-alpha.1"), std::cmp::Ordering::Greater);
+        // 同号正式版高于预发布。
+        assert_eq!(compare_semver("1.3.0", "1.3.0-alpha.2"), std::cmp::Ordering::Greater);
+        assert_eq!(compare_semver("1.3.0-alpha.1", "1.3.0"), std::cmp::Ordering::Less);
+        // 主体版本号优先于预发布段。
+        assert_eq!(compare_semver("1.4.0-alpha.1", "1.3.0"), std::cmp::Ordering::Greater);
+        assert_eq!(compare_semver("1.3.0", "1.3.0"), std::cmp::Ordering::Equal);
+        // tag 前缀 v 和空格都要能吃掉。
+        assert_eq!(compare_semver(" v1.3.1 ", "1.3.0"), std::cmp::Ordering::Greater);
     }
 
     #[test]
