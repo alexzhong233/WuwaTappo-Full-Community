@@ -82,7 +82,7 @@ function createAssistantDashboard(d){
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
   const fmt=n=>Number(n||0).toLocaleString('zh-CN');
   function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);root.remove();d.onClose?.();}
-  function checkOfficialNotice(){d.atlas.request('/official/update-check',{}).then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「设置与更新」选择 Releases 或下载官方原包。';}).catch(()=>{});}
+  function checkOfficialNotice(){d.atlas.request('/official/update-check',{}).then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「设置与更新」查看更新，或到官方桌宠页下载原版。';}).catch(()=>{});}
   async function change(changes){
     pending++;
     saveQueue=saveQueue.catch(()=>{}).then(async()=>{try{value=await d.configure(changes);notice.textContent='设置已保存';}catch(e){notice.textContent='保存失败：'+e.message;}finally{pending--;if(!closed)paint();}});
@@ -202,28 +202,30 @@ function createAssistantDashboard(d){
       el('strong','全图鉴版本',modText);el('span','本整合包的发布版本',modText,'wt-muted');
       const modValue=el('b','检测中…',modRow,'wt-version-value');
       const check=button('检查更新',modRow,checkCommunity);
+      const preRow=el('label',undefined,u,'wt-setting');const preText=el('div',undefined,preRow);
+      el('h3','包含预发布版本',preText);el('p','关闭时只提醒正式版；打开后 alpha/beta 也算更新',preText,'wt-muted');
+      const preBox=el('input',undefined,preRow);preBox.type='checkbox';preBox.setAttribute('aria-label','包含预发布版本');preBox.onchange=()=>change({prerelease_updates:preBox.checked});fields.prerelease_updates=preBox;
       const updates=el('p','',u,'wt-notice');updates.style.margin='6px 0 0';
       const actions=el('div',undefined,u,'wt-controls');
       button('打开 GitHub Releases',actions,openReleases);
-      const download=button('下载官方原包',actions,downloadOfficial,'wt-primary');download.disabled=true;
+      button('打开官方桌宠下载页',actions,openPetSite,'wt-primary');
       d.atlas.request('/community/version',{}).then(r=>{if(r.current)modValue.textContent=r.current;}).catch(()=>{modValue.textContent=d.version||'未知';});
       d.atlas.request('/official/update-check',{}).then(paintOfficial).catch(()=>{baseValue.textContent='未知';updates.textContent='无法读取官方基底版本；不影响全图鉴版本检查。';});
       function paintOfficial(r){
         const remote=r.latestVersion||r.remote;
         baseValue.textContent=r.currentVersion||r.local||'未知';
         const newer=r.updateAvailable===undefined?!!r.newer:!!r.updateAvailable;
-        if(newer){updates.textContent='官方已发布 '+remote+'，当前基底 '+baseValue.textContent+'。';download.disabled=!(r.canDownloadOfficial||r.download_available);}
+        if(newer)updates.textContent='官方已发布 '+remote+'，当前基底 '+baseValue.textContent+'。';
         else updates.textContent=remote?'官方基底已是最新（'+remote+'）。':'暂时无法确认官方最新版本。';
       }
       async function openReleases(){
         try{const r=await d.atlas.request('/official/releases',{});if(r&&r.ok===false)throw new Error(r.error||'打开失败');}
         catch(e){updates.textContent='打开 Releases 失败：'+e.message;}
       }
-      async function downloadOfficial(){
-        download.disabled=true;updates.textContent='正在下载官方原包…';
-        try{const r=await d.atlas.request('/official/download',{});updates.textContent=r.message||'已开始下载';}
-        catch(e){updates.textContent='下载失败：'+e.message;}
-        finally{download.disabled=false;}
+      async function openPetSite(){
+        updates.textContent='正在打开官方桌宠下载页…';
+        try{const r=await d.atlas.request('/official/pet-site',{});if(r&&r.ok===false)throw new Error(r.error||'打开失败');updates.textContent='已打开官方桌宠下载页：'+(r.url||'官方站点');}
+        catch(e){updates.textContent='打开失败：'+e.message;}
       }
       async function checkCommunity(){
         check.disabled=true;updates.textContent='正在对比 GitHub 最新发布…';

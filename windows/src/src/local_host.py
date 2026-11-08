@@ -183,6 +183,26 @@ def open_community_releases():
         return {'ok': False, 'error': str(error), 'url': COMMUNITY_RELEASES_URL}
 
 
+def pet_site_url():
+    """官方桌宠（Wuwa Tappo）下载页：国服 / 国际服各一个入口。
+
+    官方只发 Windows 版，Mac 整合版也指向这里，让用户能拿到纯净原版对照。
+    """
+    if str(CONFIG.get('region') or '').lower() == 'global':
+        return 'https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/zh-tw/'
+    return 'https://download-mc-wuwatappo.kurogames-global.com/download/'
+
+
+def open_pet_site():
+    """打开官方桌宠下载页；地址由构建时的区域决定，不接受前端传参。"""
+    url = pet_site_url()
+    try:
+        import webbrowser
+        return {'ok': bool(webbrowser.open(url, new=2)), 'url': url}
+    except Exception as error:
+        return {'ok': False, 'error': str(error), 'url': url}
+
+
 def _semver_parts(value):
     text = str(value or '').strip().lstrip('vV')
     core, _, pre = text.partition('-')
@@ -221,16 +241,18 @@ def _compare_semver(left, right):
     return _compare_prerelease(left_pre, right_pre)
 
 
-def check_community():
-    """对比本仓库 GitHub 发布（含 prerelease，排除草稿）。
+def check_community(include_prerelease=False):
+    """对比本仓库 GitHub 发布（排除草稿）。
 
-    不用 /releases/latest：GitHub 会跳过 prerelease，而本项目的 alpha 正是以
-    prerelease 发布，用那个接口永远查不到新版本。
+    GitHub 的 /releases/latest 会跳过 prerelease，而本项目的 alpha 正以 prerelease
+    发布，用那个接口永远查不到新版本，所以自己扫列表。是否把 alpha/beta 算进候选由
+    `include_prerelease` 决定——默认不算，用户在控制台里可以打开。
     """
     current = str(CONFIG.get('community_version') or '')
     result = {'current': current, 'latest': '', 'updateAvailable': False,
               'releaseUrl': COMMUNITY_RELEASES_URL, 'pageUrl': COMMUNITY_RELEASES_URL,
-              'publishedAt': '', 'message': ''}
+              'publishedAt': '', 'prereleaseIncluded': include_prerelease,
+              'skippedPrerelease': 0, 'message': ''}
     try:
         request = urllib.request.Request(
             'https://api.github.com/repos/alexzhong233/WuwaTappo-Full-Community/releases?per_page=20',
@@ -239,8 +261,12 @@ def check_community():
         with urllib.request.urlopen(request, timeout=15) as response:
             releases = json.loads(response.read(512 * 1024).decode('utf-8'))
         best = None
+        skipped = 0
         for release in releases if isinstance(releases, list) else []:
             if not isinstance(release, dict) or release.get('draft'):
+                continue
+            if not include_prerelease and release.get('prerelease'):
+                skipped += 1
                 continue
             tag = str(release.get('tag_name') or '').strip().lstrip('vV')
             if not tag:
@@ -248,6 +274,7 @@ def check_community():
             if best is None or _compare_semver(tag, best[0]) > 0:
                 best = (tag, str(release.get('html_url') or COMMUNITY_RELEASES_URL),
                         str(release.get('published_at') or ''))
+        result['skippedPrerelease'] = skipped
         if best:
             result['latest'], result['releaseUrl'], result['publishedAt'] = best
             result['updateAvailable'] = bool(current) and _compare_semver(best[0], current) > 0
@@ -257,6 +284,8 @@ def check_community():
                 result['message'] = '已是最新版本 v%s。' % current
             else:
                 result['message'] = '已读取 GitHub 最新发布 v%s。' % best[0]
+        elif skipped:
+            result['message'] = '当前只发布了预发布版本；需要这类提醒可在设置里打开「包含预发布」。'
         else:
             result['message'] = 'GitHub 上还没有已发布的安装包。'
     except Exception as error:
@@ -592,7 +621,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/community/version':
             return self.respond(200, {'current': str(CONFIG.get('community_version') or '')})
         if path == '/community/update-check':
-            return self.respond(200, check_community())
+            return self.respond(200, check_community(ASSISTANT.prerelease_updates()))
+        if path == '/official/pet-site':
+            return self.respond(200, open_pet_site())
         if path == '/official/download':
             return self.respond(200, download_official())
         if path == '/official/manager':

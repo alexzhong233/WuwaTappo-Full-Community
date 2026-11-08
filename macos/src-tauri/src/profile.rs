@@ -41,6 +41,19 @@ impl Region {
         }
     }
 
+    /// 官方桌宠（Wuwa Tappo）下载页。
+    ///
+    /// 官方的 mac 版尚未开放，所以 Mac 整合版也指向同一个 Windows 下载页——
+    /// 用户点进去拿到的是官方原版，用于对照或纯净安装。
+    pub fn pet_site(self) -> &'static str {
+        match self {
+            Self::Cn => "https://download-mc-wuwatappo.kurogames-global.com/download/",
+            Self::Global => {
+                "https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/zh-tw/"
+            }
+        }
+    }
+
     pub fn updater_host_file(self) -> &'static str {
         match self {
             Self::Cn => "latest_host.json",

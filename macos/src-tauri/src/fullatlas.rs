@@ -30,6 +30,8 @@ struct Settings {
     auto_chest: bool,
     threshold: u64,
     remember_monitor: bool,
+    /// 更新检查是否把预发布（alpha/beta）算进候选。默认关闭：只提醒正式版。
+    prerelease_updates: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -39,6 +41,7 @@ impl Default for Settings {
             auto_chest: false,
             threshold: 1000,
             remember_monitor: true,
+            prerelease_updates: false,
         }
     }
 }
@@ -253,27 +256,21 @@ fn compare_semver(left: &str, right: &str) -> std::cmp::Ordering {
     }
 }
 
-/// 对比本仓库 GitHub 发布（含 prerelease，排除 draft）。
+/// 从 GitHub releases 列表里挑出最高版本，返回它和被跳过的预发布数量。
 ///
-/// 不用 `/releases/latest`：GitHub 会跳过 prerelease，而本项目的 alpha 正是以 prerelease
-/// 发布，用它会永远查不到新版本。
-fn community_update_status() -> Result<Value, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .user_agent("WuwaTappo-Full-Community-Mac")
-        .build()
-        .map_err(|e| e.to_string())?;
-    let list = get_json(
-        &client,
-        Url::parse(&format!(
-            "https://api.github.com/repos/{COMMUNITY_REPO}/releases?per_page=20"
-        ))
-        .map_err(|e| e.to_string())?,
-    )?;
-    let current = community_current_version();
+/// 单独抽出来是为了能直接测「开关关闭时不会把 alpha 当更新」这条行为。
+fn pick_latest_release(
+    releases: &[Value],
+    include_prerelease: bool,
+) -> (Option<(String, String, String)>, usize) {
     let mut best: Option<(String, String, String)> = None;
-    for release in list.as_array().map(Vec::as_slice).unwrap_or_default() {
+    let mut skipped = 0usize;
+    for release in releases {
         if release.get("draft").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        if !include_prerelease && release.get("prerelease").and_then(Value::as_bool) == Some(true) {
+            skipped += 1;
             continue;
         }
         let Some(tag) = release.get("tag_name").and_then(Value::as_str) else {
@@ -298,6 +295,32 @@ fn community_update_status() -> Result<Value, String> {
             best = Some((version, url, published));
         }
     }
+    (best, skipped)
+}
+
+/// 对比本仓库 GitHub 发布，排除 draft。
+///
+/// 不用 `/releases/latest`：GitHub 会跳过 prerelease，而本项目的 alpha 正是以 prerelease
+/// 发布，用它会永远查不到新版本。所以这里自己扫列表，并由 `include_prerelease`
+/// 决定要不要把 alpha/beta 算进候选——默认不算，用户可在设置里打开。
+fn community_update_status(include_prerelease: bool) -> Result<Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("WuwaTappo-Full-Community-Mac")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let list = get_json(
+        &client,
+        Url::parse(&format!(
+            "https://api.github.com/repos/{COMMUNITY_REPO}/releases?per_page=20"
+        ))
+        .map_err(|e| e.to_string())?,
+    )?;
+    let current = community_current_version();
+    let (best, skipped_prerelease) = pick_latest_release(
+        list.as_array().map(Vec::as_slice).unwrap_or_default(),
+        include_prerelease,
+    );
     let (latest, release_url, published_at) = best.unwrap_or_default();
     let update_available = !latest.is_empty()
         && compare_semver(&latest, current) == std::cmp::Ordering::Greater;
@@ -308,8 +331,14 @@ fn community_update_status() -> Result<Value, String> {
         "releaseUrl": release_url,
         "pageUrl": COMMUNITY_RELEASES_PAGE,
         "publishedAt": published_at,
+        "prereleaseIncluded": include_prerelease,
+        "skippedPrerelease": skipped_prerelease,
         "message": if update_available {
             format!("发现新版本 v{latest}，当前 v{current}。")
+        } else if latest.is_empty() && skipped_prerelease > 0 {
+            "当前只发布了预发布版本；需要这类提醒可在设置里打开「包含预发布」。".to_string()
+        } else if latest.is_empty() {
+            "GitHub 上还没有已发布的安装包。".to_string()
         } else {
             format!("已是最新版本 v{current}。")
         },
@@ -688,6 +717,10 @@ impl FullAtlasState {
                             next.remember_monitor =
                                 val.as_bool().ok_or("remember_monitor 必须是布尔值")?
                         }
+                        "prerelease_updates" => {
+                            next.prerelease_updates =
+                                val.as_bool().ok_or("prerelease_updates 必须是布尔值")?
+                        }
                         "speed" => {
                             let speed = val
                                 .as_u64()
@@ -944,8 +977,21 @@ impl FullAtlasState {
         match action {
             "official/releases" => crate::system::open_community_releases(app)
                 .map(|()| json!({"ok": true, "url": COMMUNITY_RELEASES_PAGE})),
+            "official/pet-site" => {
+                let region = crate::profile::Region::from_app(app);
+                crate::system::open_pet_site(app, region)
+                    .map(|()| json!({"ok": true, "url": region.pet_site()}))
+            }
             "community/version" => Ok(json!({"current": community_current_version()})),
-            "community/update-check" => community_update_status(),
+            "community/update-check" => {
+                // 是否把预发布算进候选由设置决定；读不到设置时按“不含预发布”处理。
+                let include = self
+                    .inner
+                    .lock()
+                    .map(|inner| inner.saved.settings.prerelease_updates)
+                    .unwrap_or(false);
+                community_update_status(include)
+            }
             "official/update-check" => {
                 official_update_status(crate::profile::Region::from_app(app))
             }
@@ -1115,8 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn community_version_check_understands_prerelease_ordering() {
-        // 预发布序列内部按数字比较：alpha.10 必须高于 alpha.9，而不是字典序的 alpha.1x。
+    fn community_version_check_understands_prerelease_ordering() {        // 预发布序列内部按数字比较：alpha.10 必须高于 alpha.9，而不是字典序的 alpha.1x。
         assert_eq!(compare_semver("1.3.0-alpha.10", "1.3.0-alpha.9"), std::cmp::Ordering::Greater);
         assert_eq!(compare_semver("1.3.0-alpha.2", "1.3.0-alpha.1"), std::cmp::Ordering::Greater);
         // 同号正式版高于预发布。
@@ -1127,6 +1172,29 @@ mod tests {
         assert_eq!(compare_semver("1.3.0", "1.3.0"), std::cmp::Ordering::Equal);
         // tag 前缀 v 和空格都要能吃掉。
         assert_eq!(compare_semver(" v1.3.1 ", "1.3.0"), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn prerelease_releases_are_hidden_unless_the_setting_is_on() {
+        let releases = vec![
+            json!({"tag_name":"v1.3.0-alpha.2","prerelease":true,"html_url":"u2","published_at":"p2"}),
+            json!({"tag_name":"v1.3.0-alpha.1","prerelease":true,"html_url":"u1","published_at":"p1"}),
+            json!({"tag_name":"v1.2.8","prerelease":false,"html_url":"u0","published_at":"p0"}),
+            json!({"tag_name":"v9.9.9","draft":true,"prerelease":false,"html_url":"ud"}),
+        ];
+        // 关闭时：跳过两个预发布、跳过草稿，只剩正式版 1.2.8。
+        let (off, skipped) = pick_latest_release(&releases, false);
+        assert_eq!(skipped, 2);
+        assert_eq!(off.map(|(version, _, _)| version), Some("1.2.8".to_string()));
+        // 打开时：alpha.2 高于 alpha.1，仍然是最高。
+        let (on, skipped) = pick_latest_release(&releases, true);
+        assert_eq!(skipped, 0);
+        assert_eq!(on.map(|(version, _, _)| version), Some("1.3.0-alpha.2".to_string()));
+        // 只有预发布时，关闭开关会得到空结果——界面据此提示“只有预发布”。
+        let only_alpha = vec![json!({"tag_name":"v1.4.0-beta.1","prerelease":true})];
+        let (empty, skipped) = pick_latest_release(&only_alpha, false);
+        assert!(empty.is_none());
+        assert_eq!(skipped, 1);
     }
 
     #[test]

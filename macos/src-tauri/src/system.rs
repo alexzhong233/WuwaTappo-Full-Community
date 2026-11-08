@@ -530,6 +530,13 @@ pub fn open_community_releases(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// 打开官方桌宠下载页。地址来自区域常量，不接受前端传入，避免被拼成任意 URL。
+pub fn open_pet_site(app: &AppHandle, region: Region) -> Result<(), String> {
+    app.opener()
+        .open_url(region.pet_site(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 fn validate_manifest_endpoint(region: Region, endpoint: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(endpoint).map_err(|_| "invalid update manifest URL")?;
     let host = url.host_str().ok_or("update manifest URL has no host")?;

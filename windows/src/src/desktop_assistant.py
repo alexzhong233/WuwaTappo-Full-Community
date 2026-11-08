@@ -41,7 +41,7 @@ class PhysicalInput:
 
 class Assistant:
     DEFAULTS = {'enabled': False, 'speed': 5, 'auto_chest': False, 'threshold': 1000,
-                'remember_monitor': True}
+                'remember_monitor': True, 'prerelease_updates': False}
 
     def __init__(self, root, physical=None, clock=time.time):
         self.path = Path(root) / 'assistant_state.json'
@@ -118,6 +118,11 @@ class Assistant:
         value['update_required'] = self.update_required
         return value
 
+    def prerelease_updates(self):
+        """更新检查是否把预发布算进候选；默认只提醒正式版。"""
+        with self.lock:
+            return bool(self.state.get('settings', {}).get('prerelease_updates'))
+
     def handle(self, action, body, offline=False):
         with self.lock:
             if action == 'configure':
@@ -125,7 +130,8 @@ class Assistant:
                 if not isinstance(changes, dict) or set(changes) - self.DEFAULTS.keys():
                     raise ValueError('Unknown setting')
                 for key, val in changes.items():
-                    if key in ('enabled', 'auto_chest', 'remember_monitor') and type(val) is not bool:
+                    if key in ('enabled', 'auto_chest', 'remember_monitor',
+                               'prerelease_updates') and type(val) is not bool:
                         raise ValueError('Expected boolean')
                     if key == 'speed' and (type(val) is not int or val not in (1, 5, 10)):
                         raise ValueError('Speed must be 1, 5 or 10')

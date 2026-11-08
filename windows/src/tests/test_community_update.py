@@ -27,12 +27,14 @@ class FakeResponse:
 
 
 RELEASES = [
-    {'tag_name': 'v9.9.9', 'draft': True, 'html_url': 'https://github.com/x/releases/tag/v9.9.9',
+    {'tag_name': 'v9.9.9', 'draft': True, 'prerelease': False,
+     'html_url': 'https://github.com/x/releases/tag/v9.9.9',
      'published_at': '2026-11-08T00:00:00Z'},
-    {'tag_name': 'v1.3.0-alpha.2', 'draft': False,
+    {'tag_name': 'v1.3.0-alpha.2', 'draft': False, 'prerelease': True,
      'html_url': 'https://github.com/x/releases/tag/v1.3.0-alpha.2',
      'published_at': '2026-11-07T00:00:00Z'},
-    {'tag_name': 'v1.2.4', 'draft': False, 'html_url': 'https://github.com/x/releases/tag/v1.2.4',
+    {'tag_name': 'v1.2.4', 'draft': False, 'prerelease': False,
+     'html_url': 'https://github.com/x/releases/tag/v1.2.4',
      'published_at': '2026-11-01T00:00:00Z'},
 ]
 
@@ -84,25 +86,64 @@ class CommunityCheckTests(unittest.TestCase):
         self.assertEqual(compare('1.3.0', '1.3.0'), 0)
         self.assertGreater(compare('v1.3.1', '1.3.0'), 0)
 
-    def test_update_check_reports_newer_prerelease(self):
+    def test_update_check_skips_prerelease_by_default(self):
+        with patch('urllib.request.urlopen', return_value=FakeResponse(RELEASES)):
+            status, data = self.post('/community/update-check')
+        self.assertEqual(status, 200)
+        # 默认只提醒正式版：alpha.2 被跳过，当前 alpha.1 相对 1.2.4 不算落后。
+        self.assertFalse(data['updateAvailable'])
+        self.assertEqual(data['latest'], '1.2.4')
+        self.assertEqual(data['skippedPrerelease'], 1)
+        self.assertFalse(data['prereleaseIncluded'])
+        # 草稿（v9.9.9）不能成为最新版本。
+        self.assertNotEqual(data['latest'], '9.9.9')
+
+    def test_update_check_reports_prerelease_when_enabled(self):
+        self.host['ASSISTANT'].state['settings']['prerelease_updates'] = True
         with patch('urllib.request.urlopen', return_value=FakeResponse(RELEASES)):
             status, data = self.post('/community/update-check')
         self.assertEqual(status, 200)
         self.assertTrue(data['updateAvailable'])
         self.assertEqual(data['current'], '1.3.0-alpha.1')
         self.assertEqual(data['latest'], '1.3.0-alpha.2')
-        # 草稿（v9.9.9）不能成为最新版本。
-        self.assertNotEqual(data['latest'], '9.9.9')
+        self.assertTrue(data['prereleaseIncluded'])
+        self.assertEqual(data['skippedPrerelease'], 0)
         self.assertEqual(data['releaseUrl'], 'https://github.com/x/releases/tag/v1.3.0-alpha.2')
 
-    def test_update_check_reports_up_to_date(self):
-        current = [dict(release) for release in RELEASES]
-        current[1]['tag_name'] = 'v1.3.0-alpha.1'
-        with patch('urllib.request.urlopen', return_value=FakeResponse(current)):
+    def test_update_check_with_only_prerelease_says_so(self):
+        only_alpha = [release for release in RELEASES if release['prerelease']]
+        with patch('urllib.request.urlopen', return_value=FakeResponse(only_alpha)):
             status, data = self.post('/community/update-check')
         self.assertEqual(status, 200)
         self.assertFalse(data['updateAvailable'])
-        self.assertEqual(data['latest'], '1.3.0-alpha.1')
+        self.assertEqual(data['latest'], '')
+        self.assertIn('只发布了预发布版本', data['message'])
+
+    def test_update_check_reports_up_to_date(self):
+        releases = [dict(release) for release in RELEASES]
+        releases[1]['tag_name'] = 'v1.2.4'
+        with patch('urllib.request.urlopen', return_value=FakeResponse(releases)):
+            status, data = self.post('/community/update-check')
+        self.assertEqual(status, 200)
+        self.assertFalse(data['updateAvailable'])
+        self.assertEqual(data['latest'], '1.2.4')
+
+    def test_pet_site_points_at_the_region_download_page(self):
+        # 拦截真正的浏览器启动：这里只验证地址，不弹窗。
+        with patch('webbrowser.open', return_value=True) as opener:
+            status, data = self.post('/official/pet-site')
+        self.assertEqual(status, 200)
+        self.assertEqual(opener.call_args[0][0], data['url'])
+        self.assertTrue(data['url'].startswith('https://download-mc-wuwatappo.'))
+        self.assertTrue(data['url'].endswith('/download/'))
+
+    def test_pet_site_uses_the_global_domain_for_global_builds(self):
+        self.host['CONFIG']['region'] = 'global'
+        with patch('webbrowser.open', return_value=True):
+            status, data = self.post('/official/pet-site')
+        self.assertEqual(status, 200)
+        self.assertIn('download-wutheringwaves-wuwatappo.', data['url'])
+        self.assertTrue(data['url'].endswith('/download/zh-tw/'))
 
     def test_update_check_survives_github_errors(self):
         with patch('urllib.request.urlopen', side_effect=OSError('network down')):
