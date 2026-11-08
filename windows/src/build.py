@@ -83,7 +83,11 @@ def main():
     import ssl
     ssl_policy=Path(ssl.__file__).with_name('codex-rejected-cas.pem')
     if ssl_policy.is_file():ssl_data=['--add-data',str(ssl_policy)+os.pathsep+'.']
-    run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--console',*ssl_data,*uia,
+    # 这两个模块是在 local_host.py 的 try/except 里导入的（非 Windows 或装不上就跳过）。
+    # 打包器的静态分析虽然能扫到 IMPORT_NAME，但一旦被优化掉就会变成「右键没菜单、
+    # 设置里退回官方自启开关」，所以显式钉住，宁可多几 KB。
+    runtime=['--hidden-import','native_context_menu','--hidden-import','startup_manager']
+    run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--console',*ssl_data,*uia,*runtime,
          '--name','LocalGalleryHost','--distpath',build/'frozen','--workpath',build/'pyinstaller',
          '--specpath',build,'--paths',PROJECT/'src',PROJECT/'src/local_host.py'])
     if uia_error is not None:
