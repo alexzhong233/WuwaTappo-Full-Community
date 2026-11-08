@@ -28,7 +28,9 @@ class CustomResourceHostTests(unittest.TestCase):
         (cache / 'atlas.json').write_text(json.dumps({'data': self.official['atlas']}))
         (cache / 'asset_manifest.json').write_text(json.dumps({'records': [], 'errors': []}))
         self.original_cache = {p.name: p.read_bytes() for p in cache.iterdir()}
-        source = (Path(__file__).resolve().parents[1] / 'src/local_host.py').read_text()
+        # 显式指定编码：local_host.py 含中文注释，而 CI runner 的默认编码是 cp1252，
+        # 不指定会在 Windows 英文环境里抛 UnicodeDecodeError。
+        source = (Path(__file__).resolve().parents[1] / 'src/local_host.py').read_text(encoding='utf-8')
         self.host = {'__file__': str(self.root / 'local_host.py'), '__name__': 'mod_host_test'}
         with patch('desktop_assistant.PhysicalInput'), patch('threading.Thread.start'), patch.dict(os.environ, {'SystemRoot': str(self.root)}):
             exec(compile(source, self.host['__file__'], 'exec'), self.host)
