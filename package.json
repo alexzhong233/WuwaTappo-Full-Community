@@ -16,6 +16,7 @@
     "build:check": "node scripts/build-platform.mjs --check",
     "test": "node --test macos/tests/*.test.mjs",
     "test:rust": "node macos/scripts/app.mjs test:rust",
+    "sync:frontend": "node scripts/sync-frontend.mjs",
     "assets:sync": "node macos/scripts/sync-upstream.mjs",
     "upstream:check": "node macos/scripts/sync-upstream.mjs --check",
     "upstream:update": "node macos/scripts/sync-upstream.mjs --update-lock",
@@ -26,7 +27,7 @@
     "dev:global": "WUWA_REGION=global npm run dev",
     "build:global": "WUWA_REGION=global npm run build",
     "package:global": "WUWA_REGION=global npm run package",
-    "test:fullatlas": "node --test macos/tests/fullatlas*.test.mjs && node macos/tests/fullatlas-chest-input.cjs"
+    "test:fullatlas": "node --test macos/tests/fullatlas*.test.mjs && node shared/tests/chest-input.cjs && node shared/tests/chest-input.cjs windows/src/src/desktop_assistant.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.4",

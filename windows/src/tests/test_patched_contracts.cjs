@@ -1,6 +1,6 @@
 // Exercise the actual generated original handlers and modified store methods.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const acorn=require('../tools/acorn.cjs'),build=path.resolve(__dirname,'../build');
+const acorn=require('../../../shared/tools/acorn.cjs'),build=path.resolve(__dirname,'../build');
 const manifest=JSON.parse(fs.readFileSync(path.join(build,'build_manifest_v2.json'),'utf8'));
 const main=fs.readFileSync(path.join(build,'frontend_v2/assets',manifest.main),'utf8');
 const shared=fs.readFileSync(path.join(build,'frontend_v2/assets',manifest.shared),'utf8');

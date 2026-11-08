@@ -1,6 +1,11 @@
 // Regression: sustained physical input used to reset the chest delay forever.
+//
+// 两平台的 desktop_assistant.js 是 shared/frontend/ 的生成物，行为必须一样，
+// 所以这个回归测试也共用一份：源文件路径从命令行传入，默认 Mac 侧副本。
+//   node shared/tests/chest-input.cjs [desktop_assistant.js 的路径]
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const source=fs.readFileSync(path.join(__dirname,'../fullatlas-source/desktop_assistant.js'),'utf8');
+const target=process.argv[2]||path.join(__dirname,'../../macos/fullatlas-source/desktop_assistant.js');
+const source=fs.readFileSync(target,'utf8');
 async function scenario({local=false,enabled=false,autoChest=true,balance=2000,loggedIn=true,blocked=false,disabled=false,hidden=false}={}){
   let now=100000,count=0,quiet=false,id=0;
   const tasks=[],clicks=[],settings={enabled,speed:10,auto_chest:autoChest,threshold:1000,remember_monitor:false};
@@ -40,5 +45,5 @@ async function scenario({local=false,enabled=false,autoChest=true,balance=2000,l
   await protect.advance(1000);assert.equal(protect.count,0);
   protect.setQuiet(true);await protect.advance(100);assert(protect.count>0);
   protect.setQuiet(false);const before=protect.count;await protect.advance(1000);assert.equal(protect.count,before);
-  console.log('chest input regression passed: both modes, auto-click on/off, sustained input, 2s delay, both chests, original guards, tapping pause/resume');
+  console.log(`chest input regression passed (${path.relative(process.cwd(),target)}): both modes, auto-click on/off, sustained input, 2s delay, both chests, original guards, tapping pause/resume`);
 })().catch(error=>{console.error(error);process.exitCode=1;});

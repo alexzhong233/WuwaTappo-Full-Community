@@ -55,7 +55,7 @@ if ($Extract) {
   "共享 JS: $($shared.Name)"
   $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
   if (-not $nodeExe) { throw '需要 Node 生成 js_structure.json，请确认 node 在 PATH 上' }
-  & $nodeExe (Join-Path $Patched 'tools\inspect_js.cjs') $Base $shared.Name
+  & $nodeExe (Join-Path $Root '..\shared\tools\inspect_js.cjs') $Base $shared.Name
   if ($LASTEXITCODE -ne 0) { throw '生成 js_structure.json 失败' }
 }
 

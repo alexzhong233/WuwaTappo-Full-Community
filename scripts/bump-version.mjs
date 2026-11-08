@@ -1,15 +1,17 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { syncFrontend } from './sync-frontend.mjs';
 
 // 版本号在这个仓库里有八处副本，少改一处就会在打包那一步炸：
 //   package.json / package-lock.json（顶层 + packages.""）/ 两个 tauri.conf /
-//   Cargo.toml / Cargo.lock / Mac 侧 desktop_assistant.js 的 VERSION 常量。
+//   Cargo.toml / Cargo.lock / 共用前端的 desktop_assistant.js 的 VERSION 常量。
 // macOS 的 dmg 名字取自 CFBundleShortVersionString（即 tauri.conf），
 // release.yml 校验 tag 与 package.json 一致，Cargo 侧又因为 --locked 构建不允许
 // Cargo.toml 与 Cargo.lock 打架；面板「全图鉴版本」读的就是 desktop_assistant.js 的
 // VERSION，漏改会让界面显示的版本和实际发出去的包对不上。
 // 所以这里一次性全改，并在改之前先确认它们本来是齐的。
+// VERSION 常量现在只存在于 shared/frontend/，改完必须重跑生成器把两侧副本刷出来。
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -20,7 +22,7 @@ export const versionFiles = [
   'macos/src-tauri/tauri.global.conf.json',
   'macos/src-tauri/Cargo.toml',
   'macos/src-tauri/Cargo.lock',
-  'macos/fullatlas-source/desktop_assistant.js',
+  'shared/frontend/desktop_assistant.js',
 ];
 
 // 所有模式都只把版本号本身放进第 1 个捕获组，前缀/后缀不参与捕获，
@@ -37,7 +39,7 @@ const patterns = {
   'macos/src-tauri/tauri.global.conf.json': jsonVersion,
   'macos/src-tauri/Cargo.toml': cargoPackageVersion,
   'macos/src-tauri/Cargo.lock': cargoLockVersion,
-  'macos/fullatlas-source/desktop_assistant.js': moduleVersion,
+  'shared/frontend/desktop_assistant.js': moduleVersion,
 };
 
 export function nextPrerelease(version) {
@@ -124,6 +126,8 @@ export async function bumpVersion({ projectRoot = root, dryRun = false } = {}) {
   assertConsistent(readVersions(updated));
   if (!dryRun) {
     for (const file of versionFiles) await writeFile(path.join(projectRoot, file), updated[file]);
+    // 版本常量在共用源里，两侧副本不带这个数——刷一次，免得发出去的包版本号对不上。
+    await syncFrontend({ projectRoot });
   }
   return { previous, next, files: versionFiles };
 }

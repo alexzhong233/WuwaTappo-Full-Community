@@ -1,4 +1,4 @@
-const fs=require('fs'),path=require('path'),acorn=require('./acorn.cjs');
+const fs=require('fs'),path=require('path'),acorn=require('../../../shared/tools/acorn.cjs');
 const build=path.resolve(process.argv[2]||path.join(__dirname,'../build'));
 const report=JSON.parse(fs.readFileSync(path.join(build,'build_report_v2.json'),'utf8'));
 const inventory=report.assets||report.asset_changes;

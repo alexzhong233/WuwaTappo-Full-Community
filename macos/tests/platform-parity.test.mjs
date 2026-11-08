@@ -1,15 +1,15 @@
 /**
  * 平台一致性（platform parity）
  *
- * macOS 与 Windows 共用同一套 FullAtlas 前端模块，但各自保留 4 行平台适配：
- * 品牌文案、更新监控卡（Mac 查官方基底 / Windows 开更新管理器）、VERSION 常量，
- * 以及 local_atlas_controller 的 request / assetsHost 取值方式。
+ * macOS 与 Windows 共用同一套 FullAtlas 前端模块。源只有一份，在 `shared/frontend/`；
+ * `macos/fullatlas-source/` 与 `windows/src/src/` 下的同名文件都是
+ * `npm run sync:frontend` 生成的副本，只差品牌文案、首行平台注释和 VERSION 常量。
  *
- * 两处不共用同一份文件，是因为 windows/src 是上游 Averionx/WuwaTappo-FullAtlas
- * 的完整快照（走 windows/tools/patches 的 diff 存档），直接抽公共件会让上游同步失去可比性。
- * 所以这里改成锁住「差异规模」：谁只改一侧、忘了另一侧，差异行数就会翻倍并在这里失败。
+ * 严格比对由 `frontend-sync.test.mjs` 负责（副本必须逐字节等于渲染结果）。
+ * 这里保留行级 diff，是给人和 CI 日志看的：万一有人绕过生成器直接抄了一份改，
+ * 这几行数字会立刻变得不像话。
  *
- * 差异上限变化时需要人工确认：是上游升级带来的新分化，还是漏改了。
+ * 差异上限变化时需要人工确认：是生成器配置改了（品牌文案 / VERSION），还是漏跑了生成器。
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -47,7 +47,7 @@ function lineDiff(left, right) {
 }
 
 for (const name of MODULES) {
-  test(`${name} 的平台差异不超过 4 行，两侧不会静默分叉`, async () => {
+  test(`${name} 的平台差异不超过 4 行，生成器输出没有被手改`, async () => {
     const mac = await readFile(path.join(macosRoot, MAC_DIR, name), 'utf8');
     const win = await readFile(path.join(repoRoot, WIN_DIR, name), 'utf8');
     const diff = lineDiff(mac, win);
@@ -55,7 +55,7 @@ for (const name of MODULES) {
     assert.ok(
       diff.length <= 4,
       `${name} 两侧差异 ${diff.length} 行，超过约定的 4 行：\n${preview}\n` +
-        '若只改了其中一侧，请同步另一侧；若确属新的平台分化，再上调 tests/platform-parity.test.mjs 的上限。',
+        '这两个文件是 shared/frontend/ 的生成物，不要手改；改完唯一源跑 npm run sync:frontend。',
     );
   });
 }

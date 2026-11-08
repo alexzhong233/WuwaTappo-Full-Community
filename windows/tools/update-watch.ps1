@@ -88,7 +88,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $newBase 'js_structure.json'))) {
     Where-Object { (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8) -match 'function applyCatalog\(' } |
     Select-Object -First 1
   if (-not $shared) { throw 'readable_js 里找不到 applyCatalog 所在共享模块' }
-  & node (Join-Path $Root 'src\tools\inspect_js.cjs') $newBase $shared.Name
+  & node (Join-Path $Root '..\shared\tools\inspect_js.cjs') $newBase $shared.Name
   if ($LASTEXITCODE -ne 0) { throw 'js_structure.json 生成失败（inspect_js.cjs）' }
 }
 

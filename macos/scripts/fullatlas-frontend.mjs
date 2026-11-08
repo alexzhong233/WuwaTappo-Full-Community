@@ -41,7 +41,7 @@ export async function integrateFullAtlas(root, profile) {
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`FullAtlas adapter failed (${command}, ${result.status})`);
   };
-  run(process.execPath, ['tools/fullatlas-inspect.cjs', base, shared]);
+  run(process.execPath, ['../shared/tools/inspect_js.cjs', base, shared]);
   await writeFile(path.join(stage, 'current_base.txt'), base);
   await writeFile(path.join(stage, 'local_config.json'), JSON.stringify({ client_version: version }));
   run(process.env.PYTHON || 'python3', ['tools/fullatlas-integration.py'], { ...process.env, WUWA_BUILD_ROOT: stage });

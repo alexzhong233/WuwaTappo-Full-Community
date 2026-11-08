@@ -30,4 +30,7 @@ test('两个平台目录与跨平台入口都在位', () => {
   for (const name of ['package.json', 'scripts/build-platform.mjs', 'LICENSE', 'THIRD_PARTY_NOTICES.md']) {
     assert.ok(existsSync(path.join(repoRoot, name)), `缺少跨平台入口或仓库级文件 ${name}`);
   }
+  // 两平台共用的前端源码只有一份，放在 shared/frontend/；两侧目录里的是生成物。
+  assert.ok(existsSync(path.join(repoRoot, 'shared/frontend/assistant_dashboard.js')), '缺少共用的前端源');
+  assert.ok(existsSync(path.join(repoRoot, 'scripts/sync-frontend.mjs')), '缺少前端生成器');
 });

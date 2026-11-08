@@ -36,7 +36,7 @@ def main():
     if not (base/'js_structure.json').exists():
         run([sys.executable,PROJECT/'tools/extract_static.py',base/'WuwaTappo.official.exe'])
         shared=next(p.name for p in (base/'readable_js/assets').glob('*.js') if 'function applyCatalog(' in p.read_text(encoding='utf-8'))
-        run([args.node,PROJECT/'tools/inspect_js.cjs',base,shared])
+        run([args.node,PROJECT.parent.parent/'shared/tools/inspect_js.cjs',base,shared])
     (build/'current_base.txt').write_text(str(base),encoding='utf-8')
     manifest=json.loads((args.cache/'asset_manifest.json').read_text(encoding='utf-8'))
     atlas=json.loads((args.cache/'atlas.json').read_text(encoding='utf-8'))['data']

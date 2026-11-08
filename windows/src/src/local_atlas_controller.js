@@ -67,6 +67,7 @@ function createLocalAtlasController(d) {
     await bootstrapPromise;
   }
   async function localRequest(path, body) {
+    if (d.request) return d.request(path, body);
     await ensureLocalToken();
     const response = await rawFetch(origin + path, body === undefined ? {} : {
       method: 'POST', headers: {'Content-Type': 'application/json', 'X-Local-Token': d.token}, body: JSON.stringify(body)
@@ -84,6 +85,7 @@ function createLocalAtlasController(d) {
   }
   function reportDiagnostic(kind, detail) {
     if (!enabled.value) return;
+    if (d.request) { d.request('/diagnostic', {kind}).catch(() => {}); return; }
     rawFetch(origin + '/diagnostic', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Local-Token': d.token},
       body: JSON.stringify({kind, detail, origin: d.window.location.origin, time: Date.now()})}).catch(() => {});
   }
