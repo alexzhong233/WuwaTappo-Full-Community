@@ -6,6 +6,7 @@ mod gamepad;
 mod geometry;
 mod input;
 mod menu;
+mod mod_assets;
 mod profile;
 mod session;
 mod shortcuts;
@@ -298,6 +299,11 @@ pub fn run() {
                 app.path().app_data_dir()?.join("counters.json"),
             ));
             app.manage(fullatlas::FullAtlasState::new(app.path().app_data_dir()?)?);
+            // Mod 图片走本机回环 HTTP：asset:// 在 WKWebView 里取不到，
+            // 而官方渲染器只把 http(s)/asset 原样交给 <img>。
+            app.manage(mod_assets::start(
+                app.path().app_data_dir()?.join("custom-atlas"),
+            ));
             app.manage(shortcuts::ShortcutStore::open(
                 app.path().app_config_dir()?.join("shortcuts.json"),
             )?);

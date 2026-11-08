@@ -76,6 +76,15 @@ class CommunityCheckTests(unittest.TestCase):
         connection.close()
         return response.status, data
 
+    def get(self, route):
+        connection = HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+        connection.request('GET', route, headers={
+            'Origin': 'http://tauri.localhost', 'X-Local-Token': 'fixture-token'})
+        response = connection.getresponse()
+        data = json.loads(response.read().decode('utf-8'))
+        connection.close()
+        return response.status, data
+
     def test_prerelease_ordering_follows_semver(self):
         compare = self.host['_compare_semver']
         self.assertGreater(compare('1.3.0-alpha.10', '1.3.0-alpha.9'), 0)
@@ -127,6 +136,13 @@ class CommunityCheckTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertFalse(data['updateAvailable'])
         self.assertEqual(data['latest'], '1.2.4')
+
+    def test_asset_base_matches_the_local_asset_route(self):
+        # 前端用 base + 'custom-assets/...' 拼图地址，必须能直接落到本机路由上。
+        status, data = self.get('/asset-base')
+        self.assertEqual(status, 200)
+        self.assertTrue(data['base'].startswith('http://127.0.0.1:'))
+        self.assertTrue(data['base'].endswith('/'))
 
     def test_pet_site_points_at_the_region_download_page(self):
         # 拦截真正的浏览器启动：这里只验证地址，不弹窗。

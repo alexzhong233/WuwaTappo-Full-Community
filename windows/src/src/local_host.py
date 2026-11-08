@@ -573,6 +573,9 @@ class Handler(BaseHTTPRequestHandler):
             if not resources_ready():
                 return self.respond(409, {'error': '本地素材还在准备中，请等同步完成后再开启本地图鉴'})
             return self.respond(200, merged_bundle())
+        if path == '/asset-base':
+            # 与 macOS 的 mod_assets 路由同义：前端拿这个前缀拼 custom-assets/... 键。
+            return self.respond(200, {'base': 'http://127.0.0.1:%d/' % CONFIG['port']})
         if path.startswith('/custom-assets/'):
             relative = unquote(path.removeprefix('/custom-assets/'))
             parts = relative.split('/')

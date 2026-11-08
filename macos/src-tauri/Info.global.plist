@@ -4,6 +4,11 @@
 <dict>
   <key>NSInputMonitoringUsageDescription</key>
   <string>Wuwa Tappo animates your desktop companion when you type or click. Typed text is not recorded.</string>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>CFBundleURLTypes</key>

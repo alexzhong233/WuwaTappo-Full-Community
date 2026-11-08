@@ -15,12 +15,20 @@ function createLocalAtlasController(d) {
   const sockets = new Set(), xhrs = new Set(), fetches = new Set();
   const rawFetch = d.window.fetch.bind(d.window);
   const origin = d.origin;
-  // 本地图片怎么变成可加载 URL 是平台差异：Mac 只能走 asset: 协议（要绝对路径），
-  // Windows 走本机 HTTP（只用 reference，避免把用户主目录拼进 URL）。
-  // 由各自注入器提供；漏了就给空串，宁可这张图不显示，也不拼出一个必然 404 的地址。
-  const customAssetUrl = typeof d.customAssetUrl === 'function'
-    ? d.customAssetUrl
-    : reference => (/^https?:/i.test(String(reference || '')) ? reference : '');
+  // 本地图片地址统一走宿主的本机 HTTP 路由：/asset-base 下发前缀，
+  // custom-assets/<包>/<文件> 是相对键。官方渲染器只把 http(s)/asset 原样交给
+  // <img>，而 Mac 的 asset:// 在这个 WebView 里取不到图（表现为 404），所以不用它。
+  // 前缀拿不到就退回宿主自带的转换函数，再不行给空串——宁可这张图不显示，
+  // 也不拼出一个必然 404 的地址。
+  const modBase = d.ref('');
+  const customBase = () => String(modBase.value || offlineData.value?.customAssetBase || '');
+  const customAssetUrl = (reference, file) => {
+    const base = customBase();
+    if (base) return base + String(reference || '').split('/').map(encodeURIComponent).join('/');
+    return typeof d.customAssetUrl === 'function'
+      ? d.customAssetUrl(reference, file)
+      : (/^https?:/i.test(String(reference || '')) ? reference : '');
+  };
   const offlineError = () => new Error('本地全图鉴已开启：不能进入联机或把本地图鉴外观写入账号。真实点击和开箱正常。');
   const read = () => { try { return JSON.parse(d.storage.getItem(KEY) || '{}'); } catch { return {}; } };
   const remote = value => {
@@ -185,7 +193,8 @@ function createLocalAtlasController(d) {
   }
   function assetUrl(reference) {
     const path = offlineData.value?.customAssetPaths?.[reference];
-    return path ? customAssetUrl(reference, path) : '';
+    // 面板缩略图不依赖 offline-data，只要有本机前缀就能按相对键取图。
+    return path || customBase() ? customAssetUrl(reference, path || '') : '';
   }
   function applyData(data) { d.applyOfflineCatalog(runtimeCatalog(data), origin); }
   async function applyMode(on) {
@@ -341,10 +350,13 @@ function createLocalAtlasController(d) {
     pending = pending.catch(() => {}).then(() => applyMode(state.enabled === true)).catch(d.onError);
     revision.value++;
   });
+  async function loadModBase() {
+    try { const info = await localRequest('/asset-base'); if (info?.base) modBase.value = String(info.base); } catch {}
+  }
   async function waitForHost() {
     let last;
     for(let attempt=0;attempt<40;attempt++) {
-      try{return await localRequest('/status');}catch(error){last=error;}
+      try{const status=await localRequest('/status');await loadModBase();return status;}catch(error){last=error;}
       await new Promise(resolve=>d.window.setTimeout(resolve,500));
     }
     throw last;

@@ -1,5 +1,6 @@
-//! Native transport and state for the MIT FullAtlas controllers. No localhost
-//! HTTP server, OS input injection, Windows updater, or simulated rewards.
+//! Native transport and state for the MIT FullAtlas controllers. No OS input
+//! injection, Windows updater, or simulated rewards. The only local HTTP
+//! listener is the read-only Mod image route in `mod_assets`.
 use chrono::{Duration as Days, Local};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -579,7 +580,7 @@ impl FullAtlasState {
         };
         // Mod 叠加失败不能让全图鉴跟着不可用：降级返回官方数据，把原因留给
         // 设置页显示。没有导入 Mod 时这里本来就走透传路径。
-        let value = match crate::custom_resources::merge_official(
+        let mut value = match crate::custom_resources::merge_official(
             &official,
             &self.dir.join("custom-atlas"),
             region,
@@ -600,6 +601,10 @@ impl FullAtlasState {
                 fallback
             }
         };
+        // Mod 图片必须从本机 HTTP 取：官方渲染器只把 http(s)/asset 原样交给
+        // <img>，而 asset:// 在这个 WebView 里取不到。前端拿这个前缀拼
+        // `custom-assets/...` 相对键，与 Windows 侧 local_host 的语义一致。
+        value["customAssetBase"] = json!(app.state::<crate::mod_assets::ModAssetHost>().base());
         *memo = Some(value.clone());
         Ok(value)
     }
@@ -1002,6 +1007,10 @@ impl FullAtlasState {
                 json!({"ready":true,"enabled":self.enabled(),"mode_verified":true,"network_policy":"rooms-only","sync":{"status":"idle"}}),
             ),
             "offline-data" => self.catalog(app, false),
+            // 面板/背包要缩略图时不一定会先拉 offline-data，单独给一个轻量入口。
+            "asset-base" => Ok(json!({
+                "base": app.state::<crate::mod_assets::ModAssetHost>().base()
+            })),
             "sync" => {
                 let v = self.official_catalog(app, true)?;
                 *self.catalog.lock().map_err(|_| "图鉴缓存锁失败")? = None;
