@@ -126,5 +126,23 @@ class HooksTests(unittest.TestCase):
             self.assertIn('integrate', text, f'{relative} 必须导出 integrate')
 
 
+class PatchLogTests(unittest.TestCase):
+    """patch_log 看起来只写不读，实际是被 exec 的打包器写进构建报告的。"""
+
+    def test_replace_records_every_hit(self):
+        before = len(inject_core.patch_log)
+        inject_core.replace('a b a', 'a', 'x', 2)
+        self.assertEqual(len(inject_core.patch_log), before + 1)
+        self.assertEqual(inject_core.patch_log[-1]['matches'], 2)
+        self.assertEqual(inject_core.patch_log[-1]['anchor'], 'a')
+
+    def test_packer_visible_names_are_present_in_the_windows_script(self):
+        # pe_packer 只取正文、不带 import，靠宿主作用域供名字。这里静态确认宿主
+        # 至少写了这些导入，免得再被当成"未使用"精简掉。
+        script = (REPO / 'windows/src/tools/build_integration.py').read_text(encoding='utf-8')
+        self.assertRegex(script, r'(?m)^import hashlib,')
+        self.assertIn('patch_log', script.split('exec(compile(packer', 1)[0])
+
+
 if __name__ == '__main__':
     unittest.main()

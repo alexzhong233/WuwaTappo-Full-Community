@@ -18,10 +18,17 @@ import re
 import shutil
 
 
+# 每次 replace 命中的锚点记在这里，最终由 pe_packer 写进 build_report.json 的 patches。
+# 注意它是在 exec 执行的打包器字符串里被读取的 —— 静态搜 "patch_log" 只会看到这一处
+# 赋值，很容易被误判成死代码删掉，删了会在打包最后一步 NameError。
+patch_log = []
+
+
 def replace(text, old, new, count=1):
     """断言锚点出现次数后再替换；锚点漂了直接抛，别让构建带着半套补丁过。"""
     actual = text.count(old)
     assert actual == count, (old[:100], actual, count)
+    patch_log.append({'anchor': old[:100], 'matches': actual})
     return text.replace(old, new)
 
 

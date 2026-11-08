@@ -4,14 +4,17 @@ Bindings and component locations come from parsed JavaScript, not guessed
 minified variable names. Unknown layouts fail before an installed file changes.
 """
 from pathlib import Path
-import json, re, sys
+import hashlib, json, re, sys
+# hashlib 看着没人用，但下面的 pe_packer 是 exec 执行的字符串：它只取了
+# `# Add a read-only PE section` 之后的正文，前半段的 import 不在，靠这里补。
+# 删掉会在本地和 CI 都炸在 NameError，且只有真正走到打包那一步才暴露。
 
 PROJECT = Path(__file__).resolve().parents[1]
 # 锚点工具与公共补丁放在仓库根的 shared/tools，两个平台共用同一份。
 sys.path.insert(0, str(PROJECT.parent.parent / 'shared' / 'tools'))
 from inject_core import (apply_edits, function_for, load_build, named,
                          patch_atlas_guards, patch_invoke_guard, patch_mod_asset_url,
-                         patch_mod_display_name, patch_online_services, replace)
+                         patch_mod_display_name, patch_online_services, patch_log, replace)
 
 build = load_build(PROJECT)
 ROOT, BASE, frontend = build['root'], build['base'], build['frontend']
@@ -342,4 +345,10 @@ ORIGINAL = BASE
 import sys
 
 import brotli, pefile, base64, struct
+# pe_packer 只取了 `# Add a read-only PE section` 之后的正文，它自己那半段 import 不在，
+# 全靠当前模块作用域提供。少一个名字的报错会出现在 exec 内部的深行号上（看着像打包器
+# 自己的问题），所以先在这里点名检查一遍 —— 这条曾经让 hashlib 与 patch_log 各炸一次。
+_missing = [n for n in ('hashlib', 'json', 'base64', 'struct', 'patch_log', 'brotli', 'pefile')
+            if n not in globals()]
+assert not _missing, f'pe_packer 依赖的名字不在模块作用域里：{_missing}'
 exec(compile(packer, 'checked_pe_packer', 'exec'))
