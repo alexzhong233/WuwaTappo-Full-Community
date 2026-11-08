@@ -116,9 +116,11 @@ export async function verifySourceContract(assetDirectory = path.join(root, prof
       'plugin:deep-link|get_current',
       'if(!assertPendingStateMatches(n.state))',
       'function assertPendingStateMatches(e){const t=readPendingState();return t?t===e:!1}',
-      'await queryPlayer(e,0)',
-      'Login(e.cuid,e.puid,e.channelId,e.userId,e.userName,e.accessToken,"sdk",t,n,0)',
-      'await startOverseasBrowserLogin({lang:t})',
+      // 1.0.4 起国服/海外玩家查询收进 fetchDomesticSdkPlayers / fetchForeignSdkPlayers，
+      // is_domestic 由第二实参表达；登录调用与浏览器 OAuth 入口只断言结构前缀。
+      'await queryPlayer(e,0,',
+      'Login(e.cuid,e.puid,e.channelId,e.userId,e.userName,e.accessToken,"sdk",',
+      'await startOverseasBrowserLogin({lang:',
     ]) assert.ok(login.includes(value), `Missing global OAuth contract marker: ${value}`);
     globalOAuthDelivery = verifyGlobalCallbackBridge(login, { prepared });
     assert.ok(loginView.includes('handleForeignSDKLogin'), 'Global login view must bind the browser OAuth entry point');
