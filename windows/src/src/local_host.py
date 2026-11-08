@@ -764,6 +764,16 @@ def main():
         # 发行包不带素材缓存（体积原因），首次启动就后台补齐，前端只显示进度。
         start_sync()
     print(json.dumps({'ready': READY, 'enabled': ACTUAL_OFFLINE, 'port': PORT}), flush=True)
+    # 桌宠退出后释放后台服务（上游 1.3.4）：启动器是先把服务拉起来再开主程序、
+    # 然后自己退出的，所以主程序关掉以后这个进程会一直挂着。这里盯一下主程序，
+    # 它没了就收工，别在用户任务管理器里留一个常驻 python。
+    retiring = threading.Event()
+    try:
+        from process_lifecycle import watch_native_exit
+        threading.Thread(target=watch_native_exit, args=(ROOT, server.shutdown),
+                         kwargs={'stop_event': retiring}, daemon=True).start()
+    except Exception as error:
+        print(json.dumps({'warning': 'watch_native_exit unavailable: %s' % error}), flush=True)
     server.serve_forever()
     server.server_close()
     ASSISTANT.save(True)

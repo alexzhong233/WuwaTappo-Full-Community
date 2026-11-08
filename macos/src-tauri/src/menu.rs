@@ -173,6 +173,9 @@ fn context_items(
         normal(app, "open-atlas", &labels.open_atlas)?,
         normal(app, "open-exchange", &labels.open_exchange)?,
         normal(app, "open-room", &labels.open_room)?,
+        // 控制台（自动化/统计/Mod/更新）原来只能点面板里的「设置 → 桌宠助手」进，
+        // 上游 1.3.6 把入口放进了右键菜单；mac 这边对应的就是状态栏菜单。
+        normal(app, "open-console", "控制台")?,
         normal(app, "open-setting", settings)?,
         MenuItemKind::Predefined(PredefinedMenuItem::separator(app)?),
         normal(app, "toggle-pet", visibility)?,
@@ -299,6 +302,7 @@ fn event_for_id(id: &str) -> Option<(&'static str, Value)> {
         "open-atlas" => ("dock-open-panel", Value::from("atlas")),
         "open-exchange" => ("dock-open-panel", Value::from("exchange")),
         "open-room" => ("dock-open-panel", Value::from("room")),
+        "open-console" => ("local-assistant-view", Value::from("overview")),
         "open-setting" => ("dock-open-panel", Value::from("setting")),
         "toggle-pet" => ("tray-toggle-pet-visibility", Value::Null),
         "toggle-passthrough" => ("tray-toggle-window-passthrough", Value::Null),
