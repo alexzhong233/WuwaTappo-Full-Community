@@ -17,8 +17,9 @@ for (const platform of ['macos', 'windows']) {
   const source = await readFile(new URL(file, import.meta.url), 'utf8');
   const factory = vm.runInNewContext(source + '\ncreateLocalAtlasController', { URL, AbortController });
 
+  const assetBase = platform === 'macos' ? 'http://127.0.0.1:53421/tok/' : 'http://127.0.0.1:43229/';
   function harness() {
-    const backend = { enabled: false, installed: false, reject: false };
+    const backend = { enabled: false, installed: false, reject: false, base: assetBase };
     const values = new Map(), windows = [];
     function data() {
       const catalog = structuredClone(account), atlas = structuredClone(officialAtlas);
@@ -56,6 +57,10 @@ for (const platform of ['macos', 'windows']) {
         if (route === '/status') return { ready: true, enabled: backend.enabled, mode_verified: true, network_policy: 'rooms-only' };
         if (route === '/mode') { backend.enabled = body.enabled; return { enabled: body.enabled, mode_verified: true, network_policy: 'rooms-only' }; }
         if (route === '/offline-data') return data();
+        if (route === '/asset-base') {
+          if (!backend.base) throw new Error('No local asset route');
+          return { base: backend.base };
+        }
         if (route === '/custom/import') { if (backend.reject) throw new Error('Invalid ZIP'); backend.installed = true; return { id: 'mod-example', name: 'Example', item_count: 3 }; }
         if (route === '/custom/remove') { backend.installed = false; return { removed: body.id }; }
         throw new Error('Unexpected route ' + route);
@@ -97,7 +102,8 @@ for (const platform of ['macos', 'windows']) {
     assert.equal(first.controller.enabled.value, false, 'import preserves official mode');
     await first.controller.setEnabled(true);
     assert.equal(first.controller.inventory([], bag).length, 4);
-    const expectedURL = platform === 'macos' ? 'asset://localhost/' + encodeURIComponent(localPath) : 'http://127.0.0.1:43229/' + reference.split('/').map(encodeURIComponent).join('/');
+    // 两端都走宿主本机 HTTP 路由：asset:// 在 Mac 的 WebView 里取不到图。
+    const expectedURL = assetBase + reference.split('/').map(encodeURIComponent).join('/');
     assert.equal(first.catalog().character_skin[1000000001].url, expectedURL);
     assert.equal(first.win.document.documentElement.hasAttribute('data-wuwa-mod'), true, '本地模式下才挂 Mod 标记');
     assert.equal(first.catalog().character_skin[1000000001].body1.url, expectedURL);
@@ -140,8 +146,9 @@ for (const platform of ['macos', 'windows']) {
     controller.dispose();
   });
 
-  test(platform + ': 注入器没有提供 customAssetUrl 时不拼出必然 404 的地址', async () => {
+  test(platform + ': 宿主没给本机路由时不拼出必然 404 的地址', async () => {
     const app = harness(), opened = app.open({ sharedDefault: true });
+    app.backend.base = '';
     await opened.controller.ready;
     app.backend.installed = true;
     await opened.controller.setEnabled(true);

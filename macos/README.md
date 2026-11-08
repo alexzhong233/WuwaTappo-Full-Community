@@ -58,6 +58,8 @@ npm run package:global # 产物名 WuwaTappo-Full-Global-Community-*-macOS-arm64
 
 区域差异全部由 `scripts/regions.mjs` 的 profile 决定：`frontend`/`frontend-global`、`build/frontend`/`build/frontend-global`、`icons`/`icons-global`、`tauri.conf.json`/`tauri.global.conf.json`、以及产物前缀。两者**不能交叉**：`prepare-frontend.mjs` 会校验入口模块里是否写着对应区域的 `APP_REGION`，`network-smoke.mjs` 还会拒绝另一服的源码，串了会直接报错而不是静默构建出错的包。
 
+FullAtlas 控制面板两个区域都注入（`integrateFullAtlas` 对国服/国际服各跑一遍），中间产物也按区域分开放在 `build/fullatlas-adapter-<cn|global>/`，所以同一工作区里先后构建两服不会互相覆盖结构快照。
+
 每日官方更新检测（`.github/workflows/sync-upstream.yml`，北京时间 10:17）国服、国际服各跑一遍，手动触发时可以用 `region` 入参只挑一个。两个区域互不加锁，各自的锁文件、契约快照、候选包和 PR 都是分开的。
 
 契约快照同样分两份（`tests/contracts.json`、`tests/contracts-global.json`），官方版本一变就要重新生成：

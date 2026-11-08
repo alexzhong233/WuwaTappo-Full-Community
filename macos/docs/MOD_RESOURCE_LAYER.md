@@ -139,12 +139,12 @@ mods/
 | 平台 | 改写后的 URL | 由谁提供字节 |
 | --- | --- | --- |
 | Windows | `http://127.0.0.1:43229/mod/<id>/<file>` | `local_host.py` 新增 `/mod/` 路由 |
-| macOS 方案 A（推荐） | `asset://localhost/<encoded 绝对路径>` | Tauri `assetProtocol`（scope 限定到 `mods/**`），Rust 侧只开权限不写服务 |
-| macOS 方案 B（备选） | `http://127.0.0.1:<随机端口>/mod/...` | Rust 起一个 loopback 服务 |
+| macOS 方案 A（已否决） | `asset://localhost/<encoded 绝对路径>` | Tauri `assetProtocol`（scope 限定到 `custom-atlas/**`） |
+| macOS 方案 B（已落地） | `http://127.0.0.1:<随机端口>/<随机 token>/` + 相对键 | `src-tauri/src/mod_assets.rs` 的只读 loopback 服务 |
 
-方案 A 不新增端口、不受 ATS 限制、不碰 CSP（当前 `csp: null`），代价是需要在 `fullatlas-integration.py` 里给官方 5 处 URL 解析函数加「放行 `asset:`」的锚点（带 count 断言，结构定位）。方案 B 的代价是移动「本机不跑 localhost 服务」这条设计边界，且 macOS ATS 对 `http://127.0.0.1` 子资源未必放行，要先做 spike。
+**实际落地的是方案 B。** 方案 A 的 spike 结果是：官方 URL 解析函数本身放行 `asset:`，但 `tauri://localhost` 页面里取 `asset://` 子资源拿不到字节（表现为 404），这条路走不通。
 
-**建议 A，并把 B 作为 A 不通过时的降级。**
+方案 B 的实现要点：只 bind `127.0.0.1`、端口由系统分配、路径前缀是每次启动随机的 token、只服务 `custom-assets/<包>/<文件>` 这类校验过的相对键，规范化后的真实路径必须仍在 Mod 根目录内。服务起不来只降级（前端退回注入器给的转换函数），不影响应用启动。前端不直接拼协议，而是启动时向 `/asset-base` 取前缀——两平台同一份控制器代码。
 
 ### 4.5 数据流（做完之后）
 
@@ -190,12 +190,13 @@ mods/
 | --- | --- |
 | `macos/src-tauri/src/mods.rs`（新） | 扫描 + manifest 解析 + 校验 + `index.json` 生成（纯 Rust，可单测） |
 | `macos/src-tauri/src/fullatlas.rs` | action `offline-data` 应答前套 overlay；`status` 增加 `mods` 摘要 |
-| `macos/src-tauri/src/lib.rs` | `manage(ModsState)`；`assetProtocol` scope 配置 |
-| `macos/tools/fullatlas-integration.py` | 5 处 URL 解析函数放行 `asset:`（带 count 断言） |
+| `macos/src-tauri/src/lib.rs` | `manage(ModsState)`；`manage(mod_assets::start(..))` |
+| `macos/src-tauri/src/mod_assets.rs` | 只读 loopback 取图服务（随机端口 + token，白名单键） |
+| `macos/tools/fullatlas-integration.py` | 注入 `customAssetUrl` 作为前缀缺失时的降级 |
 | `macos/src-tauri/src/fullatlas.rs` | 顺手补 `sync/status` action（见 2.2 第 2 条） |
 | `macos/tests/` | `mods.test`（Rust 内联）：逃逸、大小写、超限、坏 JSON、adapter 不匹配 |
 
-**首个动作是 spike，不是写代码**：造一个 30 行的最小样例，验证 `asset://localhost/<path>` 的图片能在 `tauri://localhost` 页面的 `<img>` 里加载、且能通过 `resolveAppearanceAssetUrl` 的改写链路。这一步不过，直接切方案 B 或缩小到「macOS 只支持 L1 资源包」。
+**spike 已完成**：`asset://localhost/<path>` 在 `tauri://localhost` 页面的 `<img>` 里加载不出来，所以最终按方案 B（loopback 只读服务）实现，见 4.4。
 
 ### P2 —— 按需（不做也算完整）
 

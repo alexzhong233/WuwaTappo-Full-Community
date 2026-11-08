@@ -44,6 +44,7 @@ test('routes controller requests through the native bridge and never fetches loc
   const { instance, calls } = controller();
   await instance.ready;
   await instance.request('/assistant/state', {});
-  assert.deepEqual(calls.map(([route]) => route), ['/status', '/assistant/state']);
+  // /asset-base 在启动时取一次本机取图前缀，其余请求照旧全部走原生桥。
+  assert.deepEqual(calls.map(([route]) => route), ['/status', '/asset-base', '/assistant/state']);
   instance.dispose();
 });

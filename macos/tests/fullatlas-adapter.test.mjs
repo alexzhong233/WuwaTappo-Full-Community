@@ -3,25 +3,30 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { parse } from 'acorn';
 import { test } from 'node:test';
-import { verifiedAdapterVersion } from '../scripts/fullatlas-frontend.mjs';
+import { adapterVersion } from '../scripts/fullatlas-frontend.mjs';
 import { getRegionProfile } from '../scripts/regions.mjs';
 
 const profile = getRegionProfile();
-// FullAtlas 数据整合只在国服构建里启用（integrateFullAtlas 对国际服直接返回），
-// 国际服没有对应的整合产物，下面三个依赖产物的用例无从比对。
-const integratedOnly = profile.id === 'cn' ? {} : { skip: `FullAtlas 集成不参与${profile.label}构建` };
+// 两个区域都接入 FullAtlas，产物目录按区域分开。
+const assets = new URL(`../build/${profile.id === 'cn' ? 'frontend' : 'frontend-global'}/assets/`, import.meta.url);
+const stage = new URL(`../build/fullatlas-adapter-${profile.id}/`, import.meta.url);
 
-test('FullAtlas accepts only the reviewed official version and exact installer digest', async () => {
+test('FullAtlas takes any official baseline as long as the installer is pinned', async () => {
   const lock = JSON.parse(await readFile(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
-  assert.equal(verifiedAdapterVersion(lock), '1.0.4');
-  assert.throws(() => verifiedAdapterVersion({ ...lock, version: '1.0.99' }), /no verified Mac adapter/);
-  assert.throws(() => verifiedAdapterVersion({ ...lock, installer: { ...lock.installer, sha256: 'f'.repeat(64) } }), /no verified Mac adapter/);
-  assert.throws(() => verifiedAdapterVersion({ ...lock, region: 'GLOBAL' }), /no verified Mac adapter/);
+  assert.equal(adapterVersion(lock), lock.version);
+  // 版本号不再是准入条件：锚点是否还成立由注入器的结构断言回答，
+  // 官方升版先编译，锚点漂移才需要人工改适配。
+  assert.equal(adapterVersion({ ...lock, version: '1.9.9' }), '1.9.9');
+  assert.throws(() => adapterVersion({ ...lock, version: '' }), /missing the official version or installer digest/);
+  assert.throws(() => adapterVersion({ ...lock, installer: { ...lock.installer, sha256: '' } }), /missing the official version or installer digest/);
+  // 国际服同样接入，锁也要能过。
+  const global = JSON.parse(await readFile(new URL('../upstream-global.json', import.meta.url), 'utf8'));
+  assert.equal(adapterVersion(global), global.version);
 });
 
-test('prepared FullAtlas factory stays inactive in login and other auxiliary routes', integratedOnly, async () => {
+test('prepared FullAtlas factory stays inactive in login and other auxiliary routes', async () => {
   const { readdir } = await import('node:fs/promises');
-  const directory = new URL('../build/frontend/assets/', import.meta.url);
+  const directory = assets;
   const sources = await Promise.all((await readdir(directory)).filter(name => name.endsWith('.js')).map(name => readFile(new URL(name, directory), 'utf8')));
   const source = sources.find(text => text.includes('const localAtlasRoute='));
   assert.ok(source, 'prepare the CN frontend before testing the integrated adapter');
@@ -39,9 +44,9 @@ test('prepared FullAtlas factory stays inactive in login and other auxiliary rou
   }
 });
 
-test('every prepared module imports exports that its actual dependency provides', integratedOnly, async () => {
+test('every prepared module imports exports that its actual dependency provides', async () => {
   const { readdir } = await import('node:fs/promises');
-  const directory = new URL('../build/frontend/assets/', import.meta.url);
+  const directory = assets;
   const modules = new Map();
   for (const name of (await readdir(directory)).filter(name => name.endsWith('.js'))) {
     const text = await readFile(new URL(name, directory), 'utf8');
@@ -65,13 +70,13 @@ test('every prepared module imports exports that its actual dependency provides'
   }
 });
 
-test('assistant chest timers bind to the official readiness computations after minifier renaming', integratedOnly, async () => {
-  const structure = JSON.parse(await readFile(new URL('../build/fullatlas-adapter/base/js_structure.json', import.meta.url), 'utf8'));
+test('assistant chest timers bind to the official readiness computations after minifier renaming', async () => {
+  const structure = JSON.parse(await readFile(new URL('base/js_structure.json', stage), 'utf8'));
   const main = Object.entries(structure.files).find(([, meta]) => meta.snapshots.length === 1);
   assert.ok(main);
   const [name, meta] = main;
-  const original = await readFile(new URL(`../build/fullatlas-adapter/base/readable_js/assets/${name}`, import.meta.url), 'utf8');
-  const prepared = await readFile(new URL(`../build/frontend/assets/${name}`, import.meta.url), 'utf8');
+  const original = await readFile(new URL(`base/readable_js/assets/${name}`, stage), 'utf8');
+  const prepared = await readFile(new URL(name, assets), 'utf8');
   const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = new RegExp('([\\w$]+) = ' + escape(meta.imports.computed) + '\\(\\(\\) => ([\\w$]+)\\.value \\|\\| !' + escape(meta.imports.globalStore) + '\\.isLoggedIn \\? !0 : ([\\w$]+)\\.value <= 0\\)', 'g');
   const ready = [...original.matchAll(pattern)];
@@ -81,9 +86,9 @@ test('assistant chest timers bind to the official readiness computations after m
   }
 });
 
-test('prepared appearance renderers preserve local Mod image URLs', integratedOnly, async () => {
-  const structure = JSON.parse(await readFile(new URL('../build/fullatlas-adapter/base/js_structure.json', import.meta.url), 'utf8'));
-  const source = await readFile(new URL(`../build/frontend/assets/${structure.shared}`, import.meta.url), 'utf8');
+test('prepared appearance renderers preserve local Mod image URLs', async () => {
+  const structure = JSON.parse(await readFile(new URL('base/js_structure.json', stage), 'utf8'));
+  const source = await readFile(new URL(structure.shared, assets), 'utf8');
   assert.match(
     source,
     // 1.0.4 的产物会把注入片段一起压缩，空格不再固定，这里只校验语义。

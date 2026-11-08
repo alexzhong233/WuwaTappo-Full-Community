@@ -124,4 +124,12 @@ macOS 的 Mod 单独存放在当前应用数据目录的 `custom-atlas/`；Windo
 
 重新启动应用会读取已安装的 Mod。移除正在使用的角色后会回退到可用角色，失效挂饰和表情会从当前显示中移除。Mod 列表中的“移除”只删除对应的本机资源包。
 
-当前 macOS 国际服仍沿用仓库已有的原版前端，没有接入 FullAtlas 控制面板；本分支不承诺其 Mod 界面可用。Windows 的国服与国际服共用同一套注入入口。
+macOS 国服与国际服都接入 FullAtlas 控制面板，Mod 界面两服一致；Windows 的国服与国际服共用同一套注入入口。
+
+## 本机取图路由
+
+背包、图鉴和 Mod 管理面板里的缩略图都从宿主的本机 HTTP 服务取，不用 `asset://`：官方渲染器只把 `http(s)` / `asset` 原样交给 `<img>`，而 Mac 的 WebView 从 `tauri://` 页面里取 `asset://` 子资源拿不到图（表现为 404）。
+
+- macOS：`src-tauri/src/mod_assets.rs` 起一个只监听 `127.0.0.1` 的只读服务，端口由系统分配，路径前缀是每次启动随机生成的 token，只服务 `custom-assets/<包>/<文件>` 这类校验过的相对键。
+- Windows：沿用本地服务的 `/custom-assets/` 路由，语义相同。
+- 前端通过 `/asset-base` 拿前缀，拼接 `custom-assets/...` 相对键；拿不到前缀时退回注入器给的转换函数，宁可这张图不显示也不拼出必然 404 的地址。

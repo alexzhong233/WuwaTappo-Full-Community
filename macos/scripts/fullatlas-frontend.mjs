@@ -5,24 +5,23 @@ import beautify from 'js-beautify';
 import { minify } from 'terser';
 import { parse } from 'acorn';
 
-// The upstream adapter uses parsed bindings and rejects unknown 1.0.2 layouts.
-// Keep macOS patches first, then structurally integrate the original FullAtlas UI.
-export function verifiedAdapterVersion(lock) {
-  const reviewed = {
-    '1.0.2': '152d8ac4847f1b4641a750c45b680091c5a7cf92cb6059cd6d97e803f6eb5487',
-    '1.0.3': '29b6f4aaeb0ad4db5a8002e3686435692fa0ddb88ea9389e89b53fb93932136e',
-    '1.0.4': 'eb4e6d2103c222297508837a5ca92eeaa058891c9f1e2e7bf034c23f37668e26',
-  };
-  if (lock.region !== 'CN' || !Object.hasOwn(reviewed, lock.version) || lock.installer?.sha256 !== reviewed[lock.version]) {
-    throw new Error('FullAtlas: official version or installer digest has no verified Mac adapter; review upstream changes before building');
+// The upstream adapter locates its anchors structurally, but the parsed layout it
+// relies on has to come from a real official build. 版本号不再作为准入条件：
+// 官方发新版就直接尝试注入，锚点漂移时下面的断言会明确报出是哪一处变了，
+// 那时才需要人工改适配（对应「编译失败再提 PR」的流程）。
+export function adapterVersion(lock) {
+  const version = String(lock?.version || '').trim();
+  const digest = String(lock?.installer?.sha256 || '').trim();
+  if (!version || !/^[0-9a-f]{64}$/i.test(digest)) {
+    throw new Error('FullAtlas: baseline lock is missing the official version or installer digest');
   }
-  return lock.version;
+  return version;
 }
 
 export async function integrateFullAtlas(root, profile) {
-  if (profile.id !== 'cn') return;
-  const version = verifiedAdapterVersion(JSON.parse(await readFile(path.join(root, profile.upstreamLock), 'utf8')));
-  const stage = path.join(root, 'build/fullatlas-adapter');
+  const version = adapterVersion(JSON.parse(await readFile(path.join(root, profile.upstreamLock), 'utf8')));
+  // 每个区域一套中间产物：国服与国际服的共享模块名不同，混用会让后续步骤读到别人的结构。
+  const stage = path.join(root, `build/fullatlas-adapter-${profile.id}`);
   const base = path.join(stage, 'base');
   await rm(stage, { recursive: true, force: true });
   await mkdir(path.join(base, 'readable_js/assets'), { recursive: true });
@@ -54,5 +53,5 @@ export async function integrateFullAtlas(root, profile) {
     const result = await minify(content, { compress: false, mangle: false, format: { beautify: false, quote_style: 2 } });
     await writeFile(path.join(root, profile.preparedDir, 'assets', name), result.code);
   }
-  console.log('Integrated FullAtlas 1.2 into the macOS CN frontend');
+  console.log(`Integrated FullAtlas 1.2 into the macOS ${profile.region} frontend`);
 }
