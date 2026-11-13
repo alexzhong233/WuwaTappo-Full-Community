@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/wuwa-tappo-desktop.png" width="128" height="128" alt="Wuwa Tappo 桌面版原始图标" />
+  <img src="../../docs/windows/images/wuwa-tappo-desktop.png" width="128" height="128" alt="Wuwa Tappo 桌面版原始图标" />
 </p>
 
 <h1 align="center">WuwaTappo全图鉴版</h1>
@@ -73,29 +73,29 @@
 
 角色、配件与表情可以在本机直接选择。下面展示全图鉴页面的一部分，完整列表可继续滚动查看。
 
-![本地全图鉴：角色与表情预览](docs/images/full-atlas.svg)
+![本地全图鉴：角色与表情预览](../../docs/windows/images/full-atlas.svg)
 
 ### 桌宠控制台
 
 账号点数、会话计数与宝箱1、宝箱2的进度集中显示。自动点击与自动开箱独立控制，关闭面板后后台继续运行。
 
-![桌宠控制台：真实点数、宝箱进度与点击速度](docs/images/console-overview.svg)
+![桌宠控制台：真实点数、宝箱进度与点击速度](../../docs/windows/images/console-overview.svg)
 
 ### 开箱获得记录
 
 显示原版服务器已确认的奖励，方便查看自动领取获得了什么。这里的记录不会把本地图鉴展示的物品当作账号奖励。
 
-![开箱记录：奖励、领取时间、宝箱与点数消耗](docs/images/chest-records.svg)
+![开箱记录：奖励、领取时间、宝箱与点数消耗](../../docs/windows/images/chest-records.svg)
 
 ### 每日点击统计
 
 两种图鉴模式共用真实累计点击数的增量，今日、昨日和最近 7 天的数据放在一起查看。
 
-![每日统计：今日、昨日与最近七天点击增量](docs/images/daily-stats.svg)
+![每日统计：今日、昨日与最近七天点击增量](../../docs/windows/images/daily-stats.svg)
 
 ## 下载与升级
 
-前往 [GitHub Releases 发行与下载页面](https://github.com/Averionx/WuwaTappo-FullAtlas/releases)，在对应版本的 **Assets** 中选择安装包。本文对应 **1.2（官方基底 1.0.2）**，旧版附件不包含 1.2 的新功能。功能与实测说明见 [开发记录](docs/DESKTOP_PROGRESS.md)。
+前往 [GitHub Releases 发行与下载页面](https://github.com/Averionx/WuwaTappo-FullAtlas/releases)，在对应版本的 **Assets** 中选择安装包。本文对应 **1.2（官方基底 1.0.2）**，旧版附件不包含 1.2 的新功能。功能与实测说明见 [开发记录](../../docs/DESKTOP_PROGRESS.md)。
 
 - 系统：Windows 10 / 11，x64。
 - 已安装全图鉴版：退出桌宠，运行 **WuwaTappo-FullAtlas-1.2-Upgrade.exe**。直接升级原目录，无需重新安装官方程序。
@@ -169,6 +169,6 @@
 
 本仓库新编写的控制器、本地服务、构建和安装脚本采用 [MIT License](LICENSE)。WuwaTappo 原程序、界面和美术素材、WebView2 及其他依赖保留各自权利和许可，详见 [第三方说明](THIRD_PARTY_NOTICES.md)。本仓库的开源许可不构成第三方素材的额外授权。
 
-仓库不包含个人账号、Cookie、控制令牌、官方原版 EXE 或完整提取前端。构建需要另行准备已验证的官方 1.0.2 程序、公开素材缓存和官方 WebView2 运行时，见 [构建说明](docs/BUILD.md)。未知基底会拒绝修改。
+仓库不包含个人账号、Cookie、控制令牌、官方原版 EXE 或完整提取前端。构建需要另行准备已验证的官方 1.0.2 程序、公开素材缓存和官方 WebView2 运行时，见 [构建说明](../../docs/windows/BUILD.md)。未知基底会拒绝修改。
 
 反馈问题时请提供系统版本、开关状态和复现步骤，不要上传登录令牌、验证码、Cookie 或整个用户数据目录。

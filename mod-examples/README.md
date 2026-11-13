@@ -68,7 +68,7 @@
 ## 校验
 
 ```bash
-cd macos/docs/mod-examples && python make_demo_pack.py     # 重新生成包与预览
+cd mod-examples && python make_demo_pack.py           # 重新生成包与预览
 cd windows/src && python -m unittest discover -s tests -p "test_custom*.py"
 ```
 

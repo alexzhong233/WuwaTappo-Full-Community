@@ -113,11 +113,11 @@
 
 | 包 | 内容 |
 | --- | --- |
-| [demo-animated-pet.zip](mod-examples/demo-animated-pet.zip) | 一个完整角色：五帧动作 + 缩略图，静置看眨眼、拖动看迈步 |
-| [demo-accessories.zip](mod-examples/demo-accessories.zip) | 三个挂饰：猫耳、蝴蝶结、围巾 |
-| [demo-emotes.zip](mod-examples/demo-emotes.zip) | 三个表情：开心、眨眼、生气 |
+| [demo-animated-pet.zip](../mod-examples/demo-animated-pet.zip) | 一个完整角色：五帧动作 + 缩略图，静置看眨眼、拖动看迈步 |
+| [demo-accessories.zip](../mod-examples/demo-accessories.zip) | 三个挂饰：猫耳、蝴蝶结、围巾 |
+| [demo-emotes.zip](../mod-examples/demo-emotes.zip) | 三个表情：开心、眨眼、生气 |
 
-[逐帧预览](mod-examples/frames.png) 和 [制作过程](mod-examples/README.md) 在同一目录；[make_demo_pack.py](mod-examples/make_demo_pack.py) 画角色，[make_accessory_emote_packs.py](mod-examples/make_accessory_emote_packs.py) 画挂饰与表情，改完重跑即可重新打包。
+[逐帧预览](../mod-examples/frames.png) 和 [制作过程](../mod-examples/README.md) 在同一目录；[make_demo_pack.py](../mod-examples/make_demo_pack.py) 画角色，[make_accessory_emote_packs.py](../mod-examples/make_accessory_emote_packs.py) 画挂饰与表情，改完重跑即可重新打包。
 
 
 支持 PNG、JPEG、WebP 和 GIF 图片；这是一套图片外观包格式，不执行包内代码。缩略图未指定时，挂饰和表情使用 `image`，角色使用 `preview` 或 `body1`。

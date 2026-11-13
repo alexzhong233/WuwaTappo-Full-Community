@@ -20,7 +20,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 UninstallDisplayName={#AppTitle} 1.2
-InfoBeforeFile=..\docs\INSTALL_NOTES.txt
+InfoBeforeFile=..\..\..\docs\windows\INSTALL_NOTES.txt
 SetupLogging=yes
 
 [Languages]

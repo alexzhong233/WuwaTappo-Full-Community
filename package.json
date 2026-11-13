@@ -14,7 +14,7 @@
     "build:win": "node scripts/build-platform.mjs --platform=win",
     "build:all": "node scripts/build-platform.mjs --platform=all",
     "build:check": "node scripts/build-platform.mjs --check",
-    "test": "node --test macos/tests/*.test.mjs",
+    "test": "node --test macos/tests/*.test.mjs && node shared/tests/chest-input.cjs && node shared/tests/chest-input.cjs windows/src/src/desktop_assistant.js && node shared/tests/balance-threshold.cjs",
     "test:rust": "node macos/scripts/app.mjs test:rust",
     "sync:frontend": "node scripts/sync-frontend.mjs",
     "assets:sync": "node macos/scripts/sync-upstream.mjs",

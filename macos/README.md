@@ -18,10 +18,9 @@
 macos/
 ├─ src-tauri/            Rust 后端与 Tauri 配置（tauri.conf.json、tauri.global.conf.json）
 ├─ scripts/              构建链：前端准备、注入、打包、上游同步与校验（*.mjs / *.js / package-macos.sh）
-├─ tests/                node --test 套件；契约、前端适配、打包、平台一致性、仓库结构
+├─ tests/                Mac 适配、注入、打包与平台集成测试
 ├─ tools/                FullAtlas 集成器（Python）与前端结构检查器
-├─ fullatlas-source/     共用前端模块的 Mac 侧副本（与 windows/src 的差异锁在 4 行内）
-├─ docs/                 官方版本适配记录、更新流水线、发布步骤、Release Notes
+├─ fullatlas-source/     shared/frontend/ 生成的 Mac 构建输入
 ├─ upstream-cn.json      国服官方客户端锁定版本、安装包直链与 SHA-256
 ├─ upstream-global.json  国际服同上（版本与国服同步跟新）
 └─ rust-toolchain.toml   Rust 版本固定（1.97.1，CI 与本地共用）
@@ -36,13 +35,15 @@ macos/
 ```bash
 npm ci                 # 仓库根；依赖装在仓库根 node_modules
 npm run setup          # 同步官方基底 + 生成图标 + 准备前端
-npm test               # node --test macos/tests/*.test.mjs
+npm test               # 双端共享与平台集成 Node 测试
 npm run test:fullatlas # 3 个共用前端模块的适配测试
 npm run test:rust      # cargo test（仅 macOS）
 npm run build          # Tauri 构建 → macos/src-tauri/target/release/bundle/macos/
 npm run package        # 校验签名与内嵌资源，产出 ZIP / DMG 到仓库根 dist/
 npm run build:mac -- --package   # 上面两步合一，走跨平台分派器
 ```
+
+跨平台共享代码边界、文档归属与测试入口见仓库根的 [架构说明](../docs/ARCHITECTURE.md) 和 [开发说明](../docs/DEVELOPMENT.md)。
 
 产物统一落在**仓库根的 `dist/`**，与 Windows 侧同一个交付目录；临时日志与中间状态落在本目录的 `.work/`，不进仓库。
 
@@ -72,7 +73,7 @@ WUWA_REGION=global node macos/scripts/inventory-contract.mjs   # 覆盖 tests/co
 
 ## 与 Windows 侧怎么分工
 
-- **共用**：`fullatlas-source/*.js` 三个前端模块与 `windows/src/src` 下的同名文件同源，各只差 4 行（品牌文案、更新监控卡、`VERSION`、`assetsHost`/`request` 取值）。不并成一份，是因为 `windows/src` 是上游完整快照，抽公共件会让上游 diff 失去基线；差异规模由 `tests/platform-parity.test.mjs` 锁住。
+- **共用**：三个助手前端模块唯一源位于仓库根 `shared/frontend/`，平台目录内副本由 `npm run sync:frontend` 生成并由 `frontend-sync.test.mjs` 严格校验。其余原生运行时和官方资源注入仍由平台适配器负责。
 - **不共用**：运行时、构建层、注入器范式完全不同（Rust/Tauri vs Python/PE 重打包），硬并只会造出一个到处 `if (platform === ...)` 的缝合怪。
 
 ## 应用内官方版本检测
@@ -83,7 +84,7 @@ Mac 应用不在本地做“Windows EXE → Mac + FullAtlas DMG”重编。这�
 
 ## 输入监控授权
 
-键鼠监听走 HID 层只监听的 event tap，需要用户在「系统设置 > 隐私与安全性 > 输入监控」授权。授权绑定代码签名身份，重装后可能出现「功能可用但设置列表里没有本应用」：旧 TCC 记录仍在生效，而旧版授权请求在 preflight 为真时会跳过，列表那一行就再也没被重建。现在启动时会在已授权前提下静默重新登记，主菜单「启用键鼠监听…」也会无条件补登记；诊断与手动重置见 `docs/INPUT_PERMISSION.md`。发布时设置 `APPLE_SIGNING_IDENTITY` 用固定证书签名，可让授权跨版本保留。
+键鼠监听走 HID 层只监听的 event tap，需要用户在「系统设置 > 隐私与安全性 > 输入监控」授权。授权绑定代码签名身份，重装后可能出现「功能可用但设置列表里没有本应用」：旧 TCC 记录仍在生效，而旧版授权请求在 preflight 为真时会跳过，列表那一行就再也没被重建。现在启动时会在已授权前提下静默重新登记，主菜单「启用键鼠监听…」也会无条件补登记；诊断与手动重置见 [输入监控授权说明](../docs/macos/INPUT_PERMISSION.md)。发布时设置 `APPLE_SIGNING_IDENTITY` 用固定证书签名，可让授权跨版本保留。
 
 ## 三条刻意不动的约定
 

@@ -22,7 +22,7 @@
 
 ## 新增：演示包
 
-仓库里带了 `macos/docs/mod-examples/demo-animated-pet.zip`，直接导入即可试：静置看眨眼，拖动看迈步。五帧齐全，同目录有逐帧预览和制作说明。
+仓库根目录的 `mod-examples/demo-animated-pet.zip` 可以直接导入体验：静置看眨眼，拖动看迈步。五帧齐全，同目录有逐帧预览和制作说明。
 
 ## 新增：背包里的区分
 

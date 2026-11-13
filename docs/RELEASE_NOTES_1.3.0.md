@@ -22,7 +22,7 @@
 
 角色的动作帧是固定五格：`body1` 待机、`body2` 向左走、`body3` 向右走、`head1` 常规、`head2` 眨眼。给了就播，没给就用基础帧补齐，不会出现某层闪空。
 
-仓库里带了演示包 `macos/docs/mod-examples/demo-animated-pet.zip`，直接导入即可试：静置看眨眼，拖动看迈步。
+仓库根目录的 `mod-examples/demo-animated-pet.zip` 可以直接导入体验：静置看眨眼，拖动看迈步。
 
 Mod 条目在背包里带紫色虚线描边 + `MOD` 角标；切回官方模式后条目、角标、分组位置全部消失，账号背包不受影响。
 

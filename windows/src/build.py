@@ -52,54 +52,19 @@ def main():
     shutil.copytree(args.runtime,payload/'runtime',dirs_exist_ok=True,copy_function=copy_if_changed)
     for name in ['README.md','LICENSE','THIRD_PARTY_NOTICES.md']:
         shutil.copy2(PROJECT/name,payload/name)
-    shutil.copytree(PROJECT/'docs',payload/'docs',dirs_exist_ok=True)
-    licenses=payload/'licenses';licenses.mkdir(exist_ok=True)
-    shutil.copy2(Path(sys.base_prefix)/'LICENSE.txt',licenses/'PYTHON_LICENSE.txt')
-    import importlib.metadata
-    pyinstaller_license=next(p for p in importlib.metadata.distribution('PyInstaller').files if p.name=='COPYING.txt')
-    shutil.copy2(importlib.metadata.distribution('PyInstaller').locate_file(pyinstaller_license),licenses/'PYINSTALLER_COPYING.txt')
-    psutil_dist=importlib.metadata.distribution('psutil')
-    psutil_license=next(p for p in psutil_dist.files if p.name=='LICENSE')
-    shutil.copy2(psutil_dist.locate_file(psutil_license),licenses/'PSUTIL_LICENSE.txt')
-    # 打字自动表情要读「当前焦点是不是输入框」，用的是 UIAutomation 的只读焦点查询。
-    # comtypes 的类型库模块不会被打包器自动收，先让 comtypes 生成 UIAutomationClient
-    # 再用 --hidden-import 钉进去。
-    # 以前这里是「装不上就 warn 继续打包」：产物照样构建成功，但打字自动表情永远不触发，
-    # 界面上只显示「焦点不在输入框」，排查起来像功能没写对。缺依赖必须在构建期炸。
-    try:
-        from comtypes.client import GetModule
-        GetModule('UIAutomationCore.dll')
-        comtypes_dist=importlib.metadata.distribution('comtypes')
-        comtypes_license=next(p for p in comtypes_dist.files if p.name=='LICENSE.txt')
-        shutil.copy2(comtypes_dist.locate_file(comtypes_license),licenses/'COMTYPES_LICENSE.txt')
-    except Exception as error:
-        sys.exit('打包缺少 comtypes，打字自动表情会静默失效。'
-                 '先执行 tools\\setup-env.ps1（或 pip install -r src\\requirements-build.txt）再构建：%s' % error)
-    uia=['--hidden-import','comtypes.gen.UIAutomationClient']
+    shutil.copytree(PROJECT.parent.parent/'docs/windows',payload/'docs',dirs_exist_ok=True)
     for script in (PROJECT/'installer').glob('*.ps1'):
         # Windows PowerShell 5.1 requires a BOM for Chinese labels.
         (payload/script.name).write_text(script.read_text(encoding='utf-8-sig'),encoding='utf-8-sig')
     shutil.copy2(build/'local_config.json',payload/'package_config.json')
-    ssl_data=[]
-    import ssl
-    ssl_policy=Path(ssl.__file__).with_name('codex-rejected-cas.pem')
-    if ssl_policy.is_file():ssl_data=['--add-data',str(ssl_policy)+os.pathsep+'.']
-    # 这三个模块是在 try/except 或函数体里导入的（非 Windows、装不上、或只在
-    # typing-context 分支用到）。打包器的静态分析虽然能扫到 IMPORT_NAME，但一旦被
-    # 优化掉就会变成「右键没菜单、设置里退回官方自启开关、焦点探测恒不可用」，
-    # 所以显式钉住，宁可多几 KB。
-    runtime=['--hidden-import','native_context_menu','--hidden-import','startup_manager',
-             '--hidden-import','text_focus']
-    run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--console',*ssl_data,*uia,*runtime,
-         '--name','LocalGalleryHost','--distpath',build/'frozen','--workpath',build/'pyinstaller',
-         '--specpath',build,'--paths',PROJECT/'src',PROJECT/'src/local_host.py'])
-    # 这条不只验 TLS：local_host 的 --self-check 还会确认 UIA 依赖能初始化，
-    # 失败即以非零退出（check=True 会让构建中断），见 src/local_host.py。
-    run([build/'frozen/LocalGalleryHost/LocalGalleryHost.exe','--self-check'])
+    backend=PROJECT.parent.parent/'shared'/'backend'
+    subprocess.run(['cargo','build','--locked','--release','--manifest-path',str(backend/'Cargo.toml'),'--bin','local-gallery-host'],env=env,check=True,cwd=backend)
+    host=backend/'target'/'release'/'local-gallery-host.exe'
+    if not host.is_file(): raise SystemExit('Rust 本地服务没有产出')
+    host_dir=build/'frozen'/'LocalGalleryHost';host_dir.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(host,host_dir/'LocalGalleryHost.exe')
     shutil.copytree(build/'frozen/LocalGalleryHost',payload/'host',dirs_exist_ok=True)
-    # Keep the frozen service adjacent to the app; its Python DLLs stay in _internal.
     shutil.copy2(payload/'host/LocalGalleryHost.exe',payload/'LocalGalleryHost.exe')
-    shutil.copytree(payload/'host/_internal',payload/'_internal',dirs_exist_ok=True)
     if args.iscc:
         run([args.iscc,PROJECT/'installer/setup.iss'])
 

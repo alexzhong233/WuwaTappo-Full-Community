@@ -142,30 +142,21 @@ if (Test-Path -LiteralPath (Join-Path $R.WorkDir 'frontend_v2')) {
 & $Py (Join-Path $Patched 'tools\build_integration.py')
 if ($LASTEXITCODE -ne 0) { throw "注入失败" }
 
-"== 3/5 冻结本地素材服务 =="
-# 打字自动表情要判断「焦点是不是在输入框」，靠的是 UIAutomation。comtypes 的类型库
-# 模块（comtypes.gen.UIAutomationClient）既不会自动生成、也进不了静态分析，不预生成
-# 就只能运行期现场生成（首次探测多几百毫秒，只读目录还会直接失败）；而缺了它探测会
-# 恒返回 uia-unavailable，界面只显示「焦点不在输入框」，从用户侧看不出是依赖缺失。
-# 所以先让 comtypes 生成一次，再钉进 hidden-import。
-& $Py -c "from comtypes.client import GetModule; GetModule('UIAutomationCore.dll')"
-if ($LASTEXITCODE -ne 0) {
-  throw 'comtypes 生成 UIAutomationClient 失败：确认 .venv 已装 src\requirements-build.txt'
-}
-& $Py -m PyInstaller --noconfirm --clean --onedir --console --name LocalGalleryHost `
-  --distpath (Join-Path $R.WorkDir 'frozen') `
-  --workpath (Join-Path $R.WorkDir 'pyinstaller') `
-  --specpath $R.WorkDir `
-  --hidden-import comtypes.gen.UIAutomationClient `
-  --hidden-import text_focus `
-  --paths (Join-Path $Patched 'src') `
-  (Join-Path $Patched 'src\local_host.py')
-if ($LASTEXITCODE -ne 0) { throw "冻结失败" }
-# 打包后立刻自检：除了 TLS，还验 UIA 依赖能不能初始化（只验依赖，不要求真有焦点——
-# runner 上没有用户焦点，那不该算失败）。失败即中断，不让「构建成功但表情不触发」的
-# 包流出去。
-& (Join-Path $R.WorkDir 'frozen\LocalGalleryHost\LocalGalleryHost.exe') --self-check
-if ($LASTEXITCODE -ne 0) { throw "本地服务自检失败：UIA 或 TLS 依赖没进包" }
+"== 3/5 编译共享 Rust 本地服务 =="
+# 运行期宿主与 macOS 助手使用同一个 shared/backend crate；Python 只保留构建期的
+# 官方客户端解包/注入工具，不再随 Windows 程序发布或常驻。
+$Cargo = (Get-Command cargo -ErrorAction SilentlyContinue).Source
+if (-not $Cargo) { throw '找不到 cargo：请安装 Rust stable 工具链并将 cargo 加入 PATH' }
+$SharedBackend = Join-Path $Root '..\shared\backend'
+$HostBuild = Join-Path $SharedBackend 'target\release'
+& $Cargo build --locked --release --manifest-path (Join-Path $SharedBackend 'Cargo.toml') --bin local-gallery-host
+if ($LASTEXITCODE -ne 0) { throw "Rust 本地服务编译失败" }
+$HostExe = Join-Path $HostBuild 'local-gallery-host.exe'
+if (-not (Test-Path -LiteralPath $HostExe)) { throw "缺少 Rust 本地服务产物：$HostExe" }
+$FrozenHost = Join-Path $R.WorkDir 'frozen\LocalGalleryHost'
+if (Test-Path -LiteralPath $FrozenHost) { Remove-Item -LiteralPath $FrozenHost -Recurse -Force }
+New-Item -ItemType Directory -Path $FrozenHost -Force | Out-Null
+Copy-Item -LiteralPath $HostExe -Destination (Join-Path $FrozenHost 'LocalGalleryHost.exe')
 
 "== 4/5 编译无控制台启动器 =="
 # 安装包的快捷方式指向它；缺失就只能退到 start.cmd（弹黑框 + cmd 图标）。
@@ -173,7 +164,7 @@ if ($LASTEXITCODE -ne 0) { throw "本地服务自检失败：UIA 或 TLS 依赖�
 
 if ($NoDeploy) {
   "== 5/5 跳过装配（-NoDeploy）=="
-  "构建产物: build\WuwaTappo.Local.v2.exe 与 build\frozen\LocalGalleryHost"
+  "构建产物: build\WuwaTappo.Local.v2.exe 与 build\frozen\LocalGalleryHost（Rust）"
   exit 0
 }
 

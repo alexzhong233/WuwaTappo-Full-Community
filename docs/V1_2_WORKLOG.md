@@ -22,4 +22,4 @@
 
 新增要求：监控 Averionx/WuwaTappo-FullAtlas 正式 Release，有高于当前版本且完整有效的升级 ZIP 和 SHA256 清单时必须升级。草稿、预发布、代码提交不触发；检测失败不新建锁，已确认的更新锁跨重启保留。
 
-构建环境和已验证的官方基底见 docs/BUILD.md。Windows PowerShell 5 脚本使用 UTF-8 BOM。先完成构建与检查，再运行升级；本机私有升级脚本、测试状态和控制令牌不进入仓库或发行包。
+构建环境和已验证的官方基底见 [构建说明](windows/BUILD.md)。Windows PowerShell 5 脚本使用 UTF-8 BOM。先完成构建与检查，再运行升级；本机私有升级脚本、测试状态和控制令牌不进入仓库或发行包。

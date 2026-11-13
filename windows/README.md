@@ -108,7 +108,6 @@ windows\
 ├─ src\              注入用的 FullAtlas 源码（原上游仓库内容 + 1.0.3 适配改动）
 │   ├─ src\          本地服务 local_host.py、助手后端、3 个前端模块
 │   ├─ tools\        build_integration.py（注入）、extract_static.py（解包）、pe_packer.py（重打包）
-│   ├─ docs\         上游原始文档与验证清单（构建记录、验证结果都看这里，不再另建副本）
 │   └─ installer\    提权脚本存档（本机策略会删 .ps1，见「已知限制」）
 ├─ tools\
 │   ├─ setup-env.ps1 / fetch-official.ps1          环境与官方基底
@@ -126,7 +125,7 @@ windows\
 
 ## 和 macOS 侧怎么分工
 
-`tools\`、`docs\` 两个名字两边都有，但不是重复劳动：
+平台源代码目录不再存放文档；通用文档统一维护在仓库根 `docs/`，平台专属资料才分别放在 `docs/windows/` 或 `docs/macos/`：
 
 | | macOS（`macos/`） | Windows（本目录） | 能否共用 |
 | --- | --- | --- | --- |
@@ -135,11 +134,9 @@ windows\
 | 注入器 | `macos\tools\fullatlas-integration.py`（改 Tauri 资源） | `src\tools\build_integration.py`（改 PE 资源段） | 不能。注入目标不同 |
 | 前端模块 | `macos\fullatlas-source\*.js` | `src\src\*.js` | **共用**，见下 |
 
-**唯一真正共用的是那 3 个前端模块**（`assistant_dashboard.js`、`desktop_assistant.js`、`local_atlas_controller.js`），各只差 4 行：品牌文案、更新监控卡、`VERSION` 常量、以及 `assetsHost` / `request` 的取值方式。
+助手的三个前端模块已收敛到仓库根 `shared/frontend/`，`npm run sync:frontend` 生成 `src\src\` 的 Windows 构建副本和 Mac 副本；`npm test` 会逐字节检查生成结果。上游快照中的其他文件和 Windows 原生服务仍留在本目录。
 
-它们**没有**并成一份，原因是 `src\` 是上游仓库的完整快照，改动靠 `tools\patches\1.0.3-adaptation.diff` 存档；抽公共件会让「上游 v1.2 → v1.3」的同步失去可比对基线。代价由 `macos\tests\platform-parity.test.mjs` 兜住：两侧差异一旦超过 4 行（也就是只改了一边），CI 直接失败。
-
-两份 `integrate_assistant.py`（`macos\tools\` 与本目录的 `src\tools\`）同理：前一份面向 1.0.3 并兼容双版本绑定，这份面向上游 1.0.2 布局、改 `src\` 下的模块，差异是有意的，不是漏同步。
+助手主流程与注入基础能力在仓库根 `shared/tools/`；平台目录只负责读取对应基底、补充原生集成并写回各自格式。跨平台文档、共享源和维护命令见根目录 [`docs/`](../docs/ARCHITECTURE.md)。
 
 ## 官方更新怎么跟
 

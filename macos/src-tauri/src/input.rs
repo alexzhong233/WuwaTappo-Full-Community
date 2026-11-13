@@ -9,6 +9,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct InputStatus {
@@ -87,12 +88,23 @@ fn ensure_input_monitoring_listed() {
 /// prompt, no error — and the event tap never comes up. `tccutil` needs no privileges and
 /// is the only way to rebuild the record from inside the app: without it the user has to
 /// delete the app row in System Settings by hand before the button does anything.
-fn reset_listen_event(bundle_identifier: &str) -> bool {
+fn reset_listen_event(bundle_identifier: &str) -> Result<(), String> {
     std::process::Command::new("/usr/bin/tccutil")
         .args(["reset", "ListenEvent", bundle_identifier])
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .map_err(|error| format!("could not run tccutil: {error}"))
+        .and_then(|output| {
+            if output.status.success() {
+                Ok(())
+            } else {
+                let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                Err(if detail.is_empty() {
+                    format!("tccutil exited with {}", output.status)
+                } else {
+                    format!("tccutil failed: {detail}")
+                })
+            }
+        })
 }
 
 /// Granted on paper but unusable in practice: the tap could not be created or enabled.
@@ -107,6 +119,10 @@ fn stale_grant(status: &InputStatus) -> bool {
                     | "input_event_tap_disabled"
             )
         )
+}
+
+fn should_reset_listen_event(status: &InputStatus) -> bool {
+    !status.granted || stale_grant(status)
 }
 
 pub fn diagnostics(app: &AppHandle) -> InputAccessDiagnostics {
@@ -444,19 +460,27 @@ pub fn request_input_access(app: AppHandle) -> Result<InputStatus, String> {
     // never re-register the app, which is how the row goes missing in the first place.
     let monitor = app.state::<InputMonitor>();
     let before = monitor.status();
-    if stale_grant(&before) {
-        // The record points at a previous build. Keeping it means the request below is a
-        // no-op and the user sees a menu item that never responds, so clear it first and
-        // let the next request write a record for the binary that is running now.
+    if should_reset_listen_event(&before) {
+        // A prior denial also suppresses another system prompt. Reset the app's one
+        // ListenEvent decision on this explicit user action, then request it again.
         let bundle = app.config().identifier.clone();
-        if reset_listen_event(&bundle) {
-            eprintln!("Cleared stale input monitoring record for {bundle}");
+        if let Err(error) = reset_listen_event(&bundle) {
+            eprintln!("Could not clear input monitoring record for {bundle}: {error}");
         } else {
-            eprintln!("Could not clear stale input monitoring record for {bundle}");
+            eprintln!("Cleared stale input monitoring record for {bundle}");
         }
     }
     register_listen_event();
-    start(app)
+    let result = start(app.clone());
+    if !result.as_ref().is_ok_and(|status| status.granted && status.running) {
+        if let Err(error) = app.opener().open_url(
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
+            None::<&str>,
+        ) {
+            eprintln!("Could not open Input Monitoring settings: {error}");
+        }
+    }
+    result
 }
 
 #[derive(Debug)]

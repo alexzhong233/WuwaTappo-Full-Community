@@ -42,19 +42,23 @@ export const TARGETS = {
 
 /** 版本号常量只在这一个模块里，别处没有 `const VERSION=`。 */
 export const VERSION_MODULE = 'desktop_assistant.js';
+const SETTINGS_CONTRACT = JSON.parse(await readFile(new URL('../shared/contracts/assistant-settings.json', import.meta.url), 'utf8'));
 
 /** 把唯一源渲染成某个平台的副本。 */
 export function render(name, source, target) {
   let text = source
     .replaceAll('__WUWA_BRAND__', target.brand)
     .replaceAll('__WUWA_PLATFORM__', target.platform);
+  if (name === VERSION_MODULE) {
+    text = text.replaceAll('__WUWA_ASSISTANT_DEFAULTS__', JSON.stringify(SETTINGS_CONTRACT.defaults));
+  }
   if (target.version && name === VERSION_MODULE) {
     const pattern = /const VERSION='[^']*'/;
     if (!pattern.test(text)) throw new Error(`${name} 里找不到 const VERSION='...'，无法覆盖版本号`);
     text = text.replace(pattern, `const VERSION='${target.version}'`);
   }
   // 只查这两个占位符：代码里还有 __WUWA_OPEN_PANEL_TAB__ 这类真实全局名，不能用宽泛前缀匹配。
-  for (const placeholder of ['__WUWA_BRAND__', '__WUWA_PLATFORM__']) {
+  for (const placeholder of ['__WUWA_BRAND__', '__WUWA_PLATFORM__', '__WUWA_ASSISTANT_DEFAULTS__']) {
     if (text.includes(placeholder)) throw new Error(`${name} 渲染后仍有未替换的占位符 ${placeholder}`);
   }
   return text;

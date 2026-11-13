@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "enabled": false,
+    "speed": 5,
+    "auto_chest": false,
+    "threshold": 1000,
+    "auto_click_balance": false,
+    "auto_click_below": 10000,
+    "auto_click_above": 40000,
+    "remember_monitor": true,
+    "prerelease_updates": false,
+    "auto_emote": false
+  },
+  "properties": {
+    "enabled": { "type": "boolean" },
+    "speed": { "type": "integer", "enum": [1, 5, 10] },
+    "auto_chest": { "type": "boolean" },
+    "threshold": { "type": "integer", "minimum": 1, "maximum": 1000000000 },
+    "auto_click_balance": { "type": "boolean" },
+    "auto_click_below": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
+    "auto_click_above": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
+    "remember_monitor": { "type": "boolean" },
+    "prerelease_updates": { "type": "boolean" },
+    "auto_emote": { "type": "boolean" }
+  },
+  "constraints": [
+    { "relation": "lessThan", "left": "auto_click_below", "right": "auto_click_above" }
+  ]
+}

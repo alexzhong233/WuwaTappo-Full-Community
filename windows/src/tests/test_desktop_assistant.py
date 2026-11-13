@@ -97,15 +97,9 @@ class AssistantTests(unittest.TestCase):
         self.a.save(True)
         self.assertNotIn('private-account-id',self.a.path.read_text())
 
-    def test_balance_threshold_automation_uses_hysteresis(self):
+    def test_tick_does_not_own_shared_balance_threshold_policy(self):
         self.call('configure',{'settings':{'auto_click_balance':True}})
-        self.assertFalse(self.call('tick',{'balance':10000})['allowed'])
-        self.assertTrue(self.call('tick',{'balance':9999})['allowed'])
-        self.assertTrue(self.call('tick',{'balance':25000})['settings']['enabled'])
-        self.assertFalse(self.call('tick',{'balance':40001})['settings']['enabled'])
-        self.call('configure',{'settings':{'enabled':True}})
-        self.assertTrue(self.call('tick',{'balance':40000})['settings']['enabled'])
-        self.assertFalse(self.call('tick',{'balance':40001})['settings']['enabled'])
+        self.assertFalse(self.call('tick',{'balance':9999})['settings']['enabled'])
     def test_flush_handshake_and_mode_switch(self):
         self.call('configure',{'settings':{'enabled':True}})
         self.assertTrue(self.call('tick',{'mode':'normal'},True)['allowed'])

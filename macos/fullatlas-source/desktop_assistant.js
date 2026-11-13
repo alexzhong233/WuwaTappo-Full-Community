@@ -1,7 +1,14 @@
 /* Main-renderer driver. No signal enters the macOS input queue. */
+function resolveBalanceAutoClick(settings,balance) {
+  if(!settings.auto_click_balance||!Number.isFinite(balance))return null;
+  if(balance<settings.auto_click_below)return true;
+  if(balance>settings.auto_click_above)return false;
+  return null;
+}
+
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
   const VERSION='1.3.1', updateRequired=ref(false);
-  const state=ref({settings:{enabled:false,speed:5,auto_chest:false,threshold:1000,auto_click_balance:false,auto_click_below:10000,auto_click_above:40000,remember_monitor:true,prerelease_updates:false,auto_emote:false}});
+  const state=ref({settings:{"enabled":false,"speed":5,"auto_chest":false,"threshold":1000,"auto_click_balance":false,"auto_click_below":10000,"auto_click_above":40000,"remember_monitor":true,"prerelease_updates":false,"auto_emote":false}});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
   const ready=atlas.ready.then(()=>request('state')).then(v=>{state.value=v;updateRequired.value=!!v.update_required;});
   let started=false,disposed=false,timer=null,mainDependencies=null,sent=0,confirmed=0,lastObserve=0;
@@ -125,6 +132,9 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       if(disposed)return;
       let delay=1000;
       try{
+        const autoClick=resolveBalanceAutoClick(state.value.settings,Number(d.balance()));
+        if(autoClick!==null&&autoClick!==state.value.settings.enabled)
+          state.value=await request('configure',{settings:{enabled:autoClick}});
         const now=Date.now(),body={sent,confirmed};sent=confirmed=0;
         if(now-lastObserve>=1000){Object.assign(body,observation(d));lastObserve=now;await drainRewards();}
         const result=await request('tick',body);state.value={...state.value,...result};

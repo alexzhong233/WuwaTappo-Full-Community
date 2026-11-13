@@ -1,10 +1,10 @@
 # WuwaTappo Full Community
 
-> 当前整合版本为 **1.3.1**，Windows / macOS 国服与国际服均锁定官方客户端 **1.0.4**。FullAtlas 1.3.4–1.3.8 中适用于本项目双平台架构的功能已同步；依赖上游 Windows 外壳的功能保留各平台原生实现。`1.2.8` 是上一条正式版本线。详见 [上游同步记录](macos/docs/UPSTREAM_SYNC_2026-11-05.md) 与 [1.0.4 适配记录](macos/docs/RELEASE_NOTES_1.2.7.md)。
+> 当前整合版本为 **1.3.1**，Windows / macOS 国服与国际服均锁定官方客户端 **1.0.4**。FullAtlas 1.3.4–1.3.8 中适用于本项目双平台架构的功能已同步；依赖上游 Windows 外壳的功能保留各平台原生实现。`1.2.8` 是上一条正式版本线。详见 [上游同步记录](docs/UPSTREAM_SYNC_2026-11-05.md) 与 [1.0.4 适配记录](docs/RELEASE_NOTES_1.2.7.md)。
 
 让《鸣潮》桌宠在 macOS 和 Windows 上运行，并在原有面板中加入本地全图鉴和桌面助手。
 
-基于 [wuwa-tappo-mac](https://github.com/Last-emo-boy/wuwa-tappo-mac) 的 Rust / Tauri macOS 后端，以及 [WuwaTappo-FullAtlas](https://github.com/Averionx/WuwaTappo-FullAtlas) 的图鉴和助手功能开发。macOS 侧无需 Windows、Wine 或虚拟机；Windows 侧直接给官方客户端打补丁，不需要重写。本项目为非官方社区整合版，与库洛官方及两个上游项目的发行渠道独立。最近一次上游同步记录见 [2026-11-05 上游同步](macos/docs/UPSTREAM_SYNC_2026-11-05.md)。
+基于 [wuwa-tappo-mac](https://github.com/Last-emo-boy/wuwa-tappo-mac) 的 Rust / Tauri macOS 后端，以及 [WuwaTappo-FullAtlas](https://github.com/Averionx/WuwaTappo-FullAtlas) 的图鉴和助手功能开发。macOS 侧无需 Windows、Wine 或虚拟机；Windows 侧直接给官方客户端打补丁，不需要重写。本项目为非官方社区整合版，与库洛官方及两个上游项目的发行渠道独立。最近一次上游同步记录见 [2026-11-05 上游同步](docs/UPSTREAM_SYNC_2026-11-05.md)。
 
 ## 平台
 
@@ -17,24 +17,25 @@
 | 为什么不同 | 官方没有 Mac 包 | 官方包本来能跑，重写没有收益 |
 | 运行时 | 原生 IPC 绑定 | Python 本地服务 + 本机 HTTP |
 | 产物 | `.app` / `.dmg`（约 70 MiB） | 绿色目录（约 1.1 GB） |
-| 文档 | [macos/README.md](macos/README.md) | [windows/README.md](windows/README.md) |
+| 文档 | [macOS 指南](macos/README.md) | [Windows 指南](windows/README.md) |
 
-两侧的 FullAtlas 前端模块同源，平台差异集中在 3 个文件的各 4 行里，收敛计划见 [windows/README.md](windows/README.md) 末尾。
+双端共用代码与适配边界见[架构说明](docs/ARCHITECTURE.md)，开发和测试命令见[开发说明](docs/DEVELOPMENT.md)。
 
 ## 目录结构
 
 ```text
 .
-├── macos/          macOS 实现：src-tauri/（Rust）、scripts/（构建与上游同步）、tests/、fullatlas-source/、docs/
-├── windows/        Windows 实现：src/（上游快照）、tools/（PowerShell 构建层）
-├── scripts/        只放跨平台分派器 build-platform.mjs
+├── macos/          macOS 适配器、原生实现、构建与平台专属文档
+├── windows/        Windows 适配器、上游快照、构建与平台专属文档
+├── shared/         双端共用前端源、注入核心与回归测试
+├── scripts/        跨平台构建分派与共享前端生成器
+├── docs/           跨平台架构与开发文档
 ├── dist/           两平台共用的产物目录（不入库）
 ├── package.json    npm 入口与发版号来源，两侧都读它
 └── licenses/       FullAtlas 许可原文
 ```
 
-平台实现不放在仓库根：`macos/` 与 `windows/` 各自闭环，根目录只留两平台都要用的东西。
-这条边界有测试守着（`macos/tests/repo-layout.test.mjs`），平台目录再长回根目录会直接失败。
+平台专属能力留在各自适配器里，共享功能源和跨平台文档集中在 `shared/` 与根目录 `docs/`。目录约定由 `macos/tests/repo-layout.test.mjs` 验证。
 
 ## 构建
 
@@ -74,7 +75,7 @@ Windows 侧版本记录在 `windows/upstream-win.json`，由同步工作流跟�
 
 「官方 / 全图鉴 + Mod」外观模式：官方模式使用账号背包；全图鉴模式保留原有完整离线图鉴，并叠加本机导入的自制角色、挂饰和表情。没有 Mod 时仍可使用原有全图鉴，官方缓存独立保存。
 
-在「挂机与统计 → Mod 管理」切换「官方 / 全图鉴 + Mod」，导入 ZIP 资源包后可同时安装多个包、查看条目缩略图或单独移除；官方模式下不会显示任何本机 Mod。包内无需填写 ID，应用自动管理编号，Mod 条目在背包里单独成组置顶、带 `MOD` 角标。格式与示例见 [Mod 制作说明](macos/docs/MODS.md)，想先试效果可直接导入 [演示包](macos/docs/mod-examples/demo-animated-pet.zip)：五个动作帧齐全，静置看眨眼、拖动看迈步；[逐帧预览](macos/docs/mod-examples/frames.png) 与[制作过程](macos/docs/mod-examples/README.md)（含生成脚本）在同目录。本功能在独立分支开发，尚未合入 1.2.8 主线；macOS 目前接入国服前端。
+在「挂机与统计 → Mod 管理」切换「官方 / 全图鉴 + Mod」，导入 ZIP 资源包后可同时安装多个包、查看条目缩略图或单独移除；官方模式下不会显示任何本机 Mod。包内无需填写 ID，应用自动管理编号，Mod 条目在背包里单独成组置顶、带 `MOD` 角标。格式说明见 [Mod 制作说明](docs/MODS.md)，演示 ZIP 和逐帧预览放在仓库根目录的 [`mod-examples/`](mod-examples/)。
 
 ## 功能
 
@@ -130,6 +131,8 @@ npm run build
 npm run package
 ```
 
+跨平台共享行为与生成副本检查由 `npm test` 覆盖；平台构建所需的官方前端资源需先执行 `npm run setup`。Mac 专属 Rust 测试使用 `npm run test:rust`，Windows Python 测试见[开发说明](docs/DEVELOPMENT.md)。
+
 `setup` 下载 `upstream-cn.json` 锁定的官方安装包，核对大小和 SHA-256 后静态提取前端；整个过程不运行 Windows 程序。若已有对应官方原包，可用 `npm run assets:sync -- --installer /绝对路径/安装包.exe`，然后执行 `npm run icons` 和 `npm run prepare:frontend`。
 
 构建应用位于 `macos/src-tauri/target/release/bundle/macos/`，ZIP / DMG 位于仓库根的 `dist/`（两平台共用这个交付目录）。官方解包资源、依赖、安装包和用户数据不提交到源码仓库。清洁检出需要先执行 `setup`，部分测试需要已准备的前端。
@@ -147,7 +150,7 @@ npm run package
 - 发版前会校验 Windows 锁与 macOS 锁是同一版本、同一个安装包，避免一个 Release 里两个平台的客户端不是同一代。
 - `main` 和 `dev` 的 CI 按区域矩阵构建：macOS（`cn` / `global`）与 Windows（`cn` / `global`）各出一份产物。`dev` 的 CI 成功后会自动创建或更新 `dev` 滚动预发布版；版本标签触发的 Release 工作流只生成**草稿预发布**，需要维护者验收后手动发布.
 
-在你的仓库启用 Actions 后这些工作流才会运行。定时同步需要在仓库设置中允许 Actions 创建 Pull Request，首次发布步骤见 [GitHub 发布指南](macos/docs/PUBLISHING.md)。[官方更新流水线](macos/docs/OFFICIAL_UPDATE_PIPELINE.md) 和 [来源与更新记录](macos/docs/official-update-status-2026-10-30.md) 保留实现边界与核验信息。
+在你的仓库启用 Actions 后这些工作流才会运行。定时同步需要在仓库设置中允许 Actions 创建 Pull Request，首次发布步骤见 [GitHub 发布指南](docs/PUBLISHING.md)。[官方更新流水线](docs/OFFICIAL_UPDATE_PIPELINE.md) 和 [来源与更新记录](docs/official-update-status-2026-10-30.md) 保留实现边界与核验信息。
 
 这条流水线不能在已安装的 Mac 应用内部运行：官方提供的是 Windows EXE，转换需要 Node、7-Zip、Rust、Xcode 工具链和完整源码。桌宠可以检测并提示新 Mac Release，但下载、构建和替换应用必须由维护者或 GitHub Actions 完成。
 

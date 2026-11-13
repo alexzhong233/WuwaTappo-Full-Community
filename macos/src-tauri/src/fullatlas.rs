@@ -1,12 +1,10 @@
 //! Native transport and state for the MIT FullAtlas controllers. No OS input
 //! injection, Windows updater, or simulated rewards. The only local HTTP
 //! listener is the read-only Mod image route in `mod_assets`.
-use chrono::{Duration as Days, Local};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
     fs,
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
@@ -15,73 +13,27 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use wuwatappo_assistant_core::AssistantCore;
 
 const UPDATE_MESSAGE: &str =
     "这是 Mac 整合版；Windows FullAtlas 更新包不能安装到 Mac。请使用本项目的 Mac 安装包更新。";
-const MAX_JSON: u64 = 16 * 1024 * 1024;
 const MAX_OFFICIAL_INSTALLER: u64 = 512 * 1024 * 1024;
 const COMMUNITY_RELEASES_URL: &str =
     "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-struct Settings {
-    enabled: bool,
-    speed: u32,
-    auto_chest: bool,
-    threshold: u64,
-    auto_click_balance: bool,
-    auto_click_below: u64,
-    auto_click_above: u64,
-    remember_monitor: bool,
-    /// 更新检查是否把预发布（alpha/beta）算进候选。默认关闭：只提醒正式版。
-    prerelease_updates: bool,
-    /// 打字自动表情：真实文字输入时随机弹一个已装备的表情。
-    auto_emote: bool,
-}
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            speed: 5,
-            auto_chest: false,
-            threshold: 1000,
-            auto_click_balance: false,
-            auto_click_below: 10_000,
-            auto_click_above: 40_000,
-            remember_monitor: true,
-            prerelease_updates: false,
-            auto_emote: false,
-        }
-    }
-}
-
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
-    settings: Settings,
     enabled: bool,
-    session: u64,
-    confirmed: u64,
-    session_chests: u64,
-    rewards: Vec<Value>,
-    rooms: Vec<Value>,
-    deleted_rooms: Vec<String>,
-    monitor: Option<Value>,
-    baselines: BTreeMap<String, u64>,
-    days: BTreeMap<String, u64>,
 }
+
 #[derive(Default)]
 struct Runtime {
-    account: String,
-    values: Value,
-    next_tick: Option<Instant>,
-    flush_generation: u64,
-    flush_done: u64,
     last_save: Option<Instant>,
 }
 struct Inner {
     saved: Saved,
+    assistant: AssistantCore,
     runtime: Runtime,
 }
 pub struct FullAtlasState {
@@ -114,92 +66,6 @@ fn local_window(label: &str, url: &Url) -> bool {
             || (matches!(url.scheme(), "http" | "https")
                 && url.host_str() == Some("tauri.localhost")))
 }
-fn trusted_asset_url(region: crate::profile::Region, url: &str) -> Result<Url, String> {
-    let url = Url::parse(url).map_err(|_| "图鉴地址无效")?;
-    if url.scheme() != "https"
-        || url.host_str() != Some(region.asset_host())
-        || url.port_or_known_default() != Some(443)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        return Err("图鉴目录地址不是当前地区官方素材源".into());
-    }
-    Ok(url)
-}
-fn get_json(client: &reqwest::blocking::Client, url: Url) -> Result<Value, String> {
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|e| format!("读取图鉴失败：{e}"))?
-        .error_for_status()
-        .map_err(|e| format!("图鉴响应失败：{e}"))?;
-    if response.content_length().is_some_and(|n| n > MAX_JSON) {
-        return Err("图鉴目录超出大小限制".into());
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_JSON + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_JSON {
-        return Err("图鉴目录超出大小限制".into());
-    }
-    serde_json::from_slice(&bytes).map_err(|e| format!("图鉴 JSON 无效：{e}"))
-}
-
-fn version_numbers(value: &str) -> Vec<u64> {
-    value
-        .split(['.', '-', '+'])
-        .take(3)
-        .map(|part| {
-            part.chars()
-                .take_while(|character| character.is_ascii_digit())
-                .collect::<String>()
-        })
-        .filter_map(|part| part.parse::<u64>().ok())
-        .collect()
-}
-
-fn official_is_newer(latest: &str, current: &str) -> bool {
-    let mut left = version_numbers(latest);
-    let mut right = version_numbers(current);
-    left.resize(3, 0);
-    right.resize(3, 0);
-    left > right
-}
-
-fn official_installer(
-    region: crate::profile::Region,
-    manifest: &Value,
-    version: &str,
-) -> Result<(Url, String), String> {
-    let platform = manifest
-        .pointer("/platforms/windows-x86_64")
-        .ok_or("官方版本清单缺少 Windows 原包")?;
-    let value = platform
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or("官方版本清单缺少 Windows 原包地址")?;
-    let url = trusted_asset_url(region, value)?;
-    let filename = url
-        .path_segments()
-        .and_then(|segments| segments.last())
-        .filter(|name| !name.is_empty())
-        .ok_or("官方原包文件名无效")?
-        .to_string();
-    let region_id = match region {
-        crate::profile::Region::Cn => "cn",
-        crate::profile::Region::Global => "global",
-    };
-    let expected = format!("WuwaTappo-{region_id}_{version}_x64-setup.exe");
-    if filename != expected {
-        return Err("官方原包文件名与版本或服务器区域不匹配".into());
-    }
-    Ok((url, filename))
-}
-
-const COMMUNITY_REPO: &str = "alexzhong233/WuwaTappo-Full-Community";
 const COMMUNITY_RELEASES_PAGE: &str =
     "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 
@@ -208,319 +74,79 @@ fn community_current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// 拆成 (数字段, 预发布段)。`1.3.0-alpha.2` → ([1,3,0], Some("alpha.2"))。
-fn split_semver(value: &str) -> (Vec<u64>, Option<String>) {
-    let value = value.trim().trim_start_matches('v');
-    let (core, pre) = match value.split_once('-') {
-        Some((core, pre)) => (core, Some(pre.to_string())),
-        None => (value, None),
-    };
-    let mut numbers = core
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect::<Vec<_>>();
-    numbers.resize(3, 0);
-    (numbers, pre)
-}
-
-/// 预发布段按点分段比较，数字段按数值、其余按字典序，符合 semver 对 alpha.10 > alpha.9 的约定。
-fn compare_prerelease(left: &str, right: &str) -> std::cmp::Ordering {
-    let mut left_parts = left.split('.');
-    let mut right_parts = right.split('.');
-    loop {
-        match (left_parts.next(), right_parts.next()) {
-            (None, None) => return std::cmp::Ordering::Equal,
-            (None, Some(_)) => return std::cmp::Ordering::Less,
-            (Some(_), None) => return std::cmp::Ordering::Greater,
-            (Some(a), Some(b)) => {
-                let order = match (a.parse::<u64>(), b.parse::<u64>()) {
-                    (Ok(a), Ok(b)) => a.cmp(&b),
-                    (Ok(_), Err(_)) => std::cmp::Ordering::Less,
-                    (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
-                    (Err(_), Err(_)) => a.cmp(b),
-                };
-                if order != std::cmp::Ordering::Equal {
-                    return order;
-                }
-            }
-        }
-    }
-}
-
-fn compare_semver(left: &str, right: &str) -> std::cmp::Ordering {
-    let (left_numbers, left_pre) = split_semver(left);
-    let (right_numbers, right_pre) = split_semver(right);
-    match left_numbers.cmp(&right_numbers) {
-        std::cmp::Ordering::Equal => {}
-        order => return order,
-    }
-    match (left_pre.is_some(), right_pre.is_some()) {
-        (false, false) => std::cmp::Ordering::Equal,
-        // 正式版高于同号的预发布。
-        (false, true) => std::cmp::Ordering::Greater,
-        (true, false) => std::cmp::Ordering::Less,
-        (true, true) => compare_prerelease(
-            left_pre.as_deref().unwrap_or_default(),
-            right_pre.as_deref().unwrap_or_default(),
-        ),
-    }
-}
-
-/// 从 GitHub releases 列表里挑出最高版本，返回它和被跳过的预发布数量。
-///
-/// 单独抽出来是为了能直接测「开关关闭时不会把 alpha 当更新」这条行为。
-fn pick_latest_release(
-    releases: &[Value],
-    include_prerelease: bool,
-) -> (Option<(String, String, String)>, usize) {
-    let mut best: Option<(String, String, String)> = None;
-    let mut skipped = 0usize;
-    for release in releases {
-        if release.get("draft").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        if !include_prerelease && release.get("prerelease").and_then(Value::as_bool) == Some(true) {
-            skipped += 1;
-            continue;
-        }
-        let Some(tag) = release.get("tag_name").and_then(Value::as_str) else {
-            continue;
-        };
-        let version = tag.trim().trim_start_matches('v').to_string();
-        let url = release
-            .get("html_url")
-            .and_then(Value::as_str)
-            .unwrap_or(COMMUNITY_RELEASES_PAGE)
-            .to_string();
-        let published = release
-            .get("published_at")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let newer = match &best {
-            Some((seen, _, _)) => compare_semver(&version, seen) == std::cmp::Ordering::Greater,
-            None => true,
-        };
-        if newer {
-            best = Some((version, url, published));
-        }
-    }
-    (best, skipped)
-}
-
-/// 对比本仓库 GitHub 发布，排除 draft。
-///
-/// 不用 `/releases/latest`：GitHub 会跳过 prerelease，而本项目的 alpha 正是以 prerelease
-/// 发布，用它会永远查不到新版本。所以这里自己扫列表，并由 `include_prerelease`
-/// 决定要不要把 alpha/beta 算进候选——默认不算，用户可在设置里打开。
-/// 把 Release 正文压成几行纯文字，给面板的「这次更新了什么」用。
-///
-/// 规则与 Windows 侧 `desktop_updater.release_notes_text` 对齐：丢掉表格行、图片、
-/// 代码块、引用和裸 URL，去掉 Markdown 记号，最多 40 行。这里不做链接语法解析
-/// （`[文字](地址)` 会原样留下文字和括号里的地址），因为 Rust 侧没有正则依赖，
-/// 而这段文本只是提示语气，不值得为它引一个库。
-fn release_notes_text(body: &str) -> String {
-    body.lines()
-        .map(str::trim)
-        .filter(|line| {
-            !line.is_empty()
-                && !line.starts_with('|')
-                && !line.starts_with("![")
-                && !line.starts_with("<img")
-                && !line.starts_with("```")
-                && !line.starts_with('>')
-                && !line.starts_with("http://")
-                && !line.starts_with("https://")
-        })
-        .map(|line| line.trim_start_matches('#').trim())
-        .map(|line| line.trim_start_matches("- ").trim())
-        .map(|line| line.replace("**", "").replace('`', ""))
-        .map(|line| line.trim_matches(|c| c == ' ' || c == '-').to_string())
-        .filter(|line| !line.is_empty())
-        .take(40)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn community_update_status(include_prerelease: bool) -> Result<Value, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .user_agent("WuwaTappo-Full-Community-Mac")
-        .build()
-        .map_err(|e| e.to_string())?;
-    let list = get_json(
-        &client,
-        Url::parse(&format!(
-            "https://api.github.com/repos/{COMMUNITY_REPO}/releases?per_page=20"
-        ))
-        .map_err(|e| e.to_string())?,
-    )?;
-    let current = community_current_version();
-    let (best, skipped_prerelease) = pick_latest_release(
-        list.as_array().map(Vec::as_slice).unwrap_or_default(),
+    wuwatappo_assistant_core::release_updates::check_community(
+        community_current_version(),
         include_prerelease,
-    );
-    let (latest, release_url, published_at) = best.unwrap_or_default();
-    let update_available = !latest.is_empty()
-        && compare_semver(&latest, current) == std::cmp::Ordering::Greater;
-    // 说明正文跟着选中的那个 release 走：GitHub 的列表响应本来就带 body，
-    // 不用再单独发一次请求。拿不到就是空串，前端会隐藏那一块。
-    let release_notes = if latest.is_empty() {
-        String::new()
-    } else {
-        list.as_array()
-            .and_then(|items| items.iter().find(|item| {
-                item.get("tag_name")
-                    .and_then(Value::as_str)
-                    .map(|tag| tag.trim().trim_start_matches('v') == latest.as_str())
-                    .unwrap_or(false)
-            }))
-            .and_then(|item| item.get("body").and_then(Value::as_str))
-            .map(release_notes_text)
-            .unwrap_or_default()
-    };
-    Ok(json!({
-        "current": current,
-        "latest": latest,
-        "updateAvailable": update_available,
-        "releaseUrl": release_url,
-        "pageUrl": COMMUNITY_RELEASES_PAGE,
-        "publishedAt": published_at,
-        "releaseNotes": release_notes,
-        "prereleaseIncluded": include_prerelease,
-        "skippedPrerelease": skipped_prerelease,
-        "message": if update_available {
-            format!("发现新版本 v{latest}，当前 v{current}。")
-        } else if latest.is_empty() && skipped_prerelease > 0 {
-            "当前只发布了预发布版本；需要这类提醒可在设置里打开「包含预发布」。".to_string()
-        } else if latest.is_empty() {
-            "GitHub 上还没有已发布的安装包。".to_string()
-        } else {
-            format!("已是最新版本 v{current}。")
-        },
-    }))
+    )
 }
 
 fn official_update_status(region: crate::profile::Region) -> Result<Value, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("WuwaTappo-FullAtlas-Mac")
-        .build()
-        .map_err(|e| e.to_string())?;
-    let api = format!("https://{}", region.api_host());
-    let activity = get_json(
-        &client,
-        Url::parse(&format!("{api}/api/common/activity-config")).map_err(|e| e.to_string())?,
+    let region = if region == crate::profile::Region::Cn {
+        "cn"
+    } else {
+        "global"
+    };
+    let mut result = wuwatappo_assistant_core::release_updates::check_official(
+        region,
+        env!("WUWA_OFFICIAL_VERSION"),
     )?;
-    let host = activity
-        .pointer("/data/assets_host")
-        .and_then(Value::as_str)
-        .ok_or("官方版本检查缺少资源源")?
-        .trim_end_matches('/');
-    let host = trusted_asset_url(region, host)?;
-    // 两个地址都带一次性时间戳：CDN 边缘节点会保留旧对象，表现为官方清单长期
-    // 停在上一版（我们已跟进 1.0.4，检查结果却还是 1.0.3）。
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or(0);
-    let pointer = get_json(
-        &client,
-        trusted_asset_url(
-            region,
-            &format!(
-                "{}/app/json-host/{}?_={}",
-                host,
-                region.updater_host_file(),
-                stamp
-            ),
-        )?,
-    )?;
-    let manifest_url = pointer
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or("官方版本检查缺少版本清单")?;
-    let mut manifest_url = trusted_asset_url(region, manifest_url)?;
-    manifest_url
-        .query_pairs_mut()
-        .append_pair("_", &stamp.to_string());
-    let manifest = get_json(&client, manifest_url)?;
-    let latest = manifest
-        .get("version")
-        .and_then(Value::as_str)
-        .ok_or("官方版本清单无效")?;
-    let current = env!("WUWA_OFFICIAL_VERSION");
-    let changed = official_is_newer(latest, current);
-    // 官方清单落后于已整合基底时，界面不能再说「已是最新（旧号）」。
-    let remote_older = official_is_newer(current, latest);
-    let (installer_url, installer_name) = official_installer(region, &manifest, latest)?;
-    Ok(json!({
-        "currentVersion": current,
-        "latestVersion": latest,
-        "updateAvailable": changed,
-        "remoteOlder": remote_older,
-        "officialInstallerUrl": installer_url.as_str(),
-        "officialInstallerFileName": installer_name,
-        "officialInstallerPlatform": "windows-x86_64",
-        "communityReleasesUrl": COMMUNITY_RELEASES_URL,
-        "canDownloadOfficial": true,
-        "supportsLocalAdaptation": false,
-        "localAdaptationReason": "已安装的 Mac 应用没有源码、Node、Rust、Xcode 和 7-Zip，不能在应用内安全重打包。",
-        "message": if changed {
-            format!("检测到官方 {latest}，可下载官方 Windows 原包；Mac 全图鉴包需由本项目构建后从 Releases 更新。")
-        } else if remote_older {
-            format!("官方清单当前是 {latest}，本包基底已跟进到 {current}。")
-        } else {
-            format!("官方基底已是 {current}。")
-        },
-    }))
+    result["communityReleasesUrl"] = json!(COMMUNITY_RELEASES_URL);
+    result["supportsLocalAdaptation"] = json!(false);
+    result["localAdaptationReason"] =
+        json!("已安装的 Mac 应用没有源码、Node、Rust、Xcode 和 7-Zip，不能在应用内安全重打包。");
+    result["local_adaptation_supported"] = json!(false);
+    result["local_adaptation_reason"] = result["localAdaptationReason"].clone();
+    result["message"] = json!(if result["newer"].as_bool() == Some(true) {
+        format!("检测到官方 {}，可下载官方 Windows 原包；Mac 全图鉴包需由本项目构建后从 Releases 更新。", result["remote"].as_str().unwrap_or(""))
+    } else {
+        result["message"]
+            .as_str()
+            .unwrap_or("官方版本检查完成")
+            .to_string()
+    });
+    Ok(result)
 }
 
 fn download_official_installer(
     app: &AppHandle,
     region: crate::profile::Region,
 ) -> Result<Value, String> {
+    let region_id = if region == crate::profile::Region::Cn {
+        "cn"
+    } else {
+        "global"
+    };
+    let status = wuwatappo_assistant_core::release_updates::check_official(
+        region_id,
+        env!("WUWA_OFFICIAL_VERSION"),
+    )?;
+    if status["newer"].as_bool() != Some(true) {
+        return Err(status["message"]
+            .as_str()
+            .unwrap_or("没有可下载的新版本")
+            .to_string());
+    }
+    let latest = status["remote"]
+        .as_str()
+        .ok_or("官方版本检查没有返回版本号")?;
+    let url = Url::parse(
+        status["officialInstallerUrl"]
+            .as_str()
+            .ok_or("官方版本检查没有返回安装包地址")?,
+    )
+    .map_err(|_| "官方安装包地址无效")?;
+    let filename = status["officialInstallerFileName"]
+        .as_str()
+        .ok_or("官方版本检查没有返回安装包文件名")?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(300))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("WuwaTappo-Full-Community-Mac")
         .build()
         .map_err(|e| e.to_string())?;
-    let api = format!("https://{}", region.api_host());
-    let activity = get_json(
-        &client,
-        Url::parse(&format!("{api}/api/common/activity-config")).map_err(|e| e.to_string())?,
-    )?;
-    let host = activity
-        .pointer("/data/assets_host")
-        .and_then(Value::as_str)
-        .ok_or("官方版本下载缺少资源源")?
-        .trim_end_matches('/');
-    let host = trusted_asset_url(region, host)?;
-    let pointer = get_json(
-        &client,
-        trusted_asset_url(
-            region,
-            &format!("{}/app/json-host/{}", host, region.updater_host_file()),
-        )?,
-    )?;
-    let manifest_url = pointer
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or("官方版本下载缺少版本清单")?;
-    let manifest = get_json(&client, trusted_asset_url(region, manifest_url)?)?;
-    let latest = manifest
-        .get("version")
-        .and_then(Value::as_str)
-        .ok_or("官方版本清单无效")?;
-    let (url, filename) = official_installer(region, &manifest, latest)?;
-    let current = env!("WUWA_OFFICIAL_VERSION");
-    if !official_is_newer(latest, current) {
-        return Err(format!("官方仍是 {current}，没有可下载的新版本"));
-    }
     let response = client
-        .get(url.clone())
+        .get(url)
         .send()
         .map_err(|e| format!("下载官方原包失败：{e}"))?;
     if !response.status().is_success() {
@@ -609,16 +235,25 @@ fn validate_catalog(value: &Value) -> Result<(), String> {
 impl FullAtlasState {
     pub fn new(dir: PathBuf) -> Result<Self, String> {
         let path = dir.join("fullatlas.json");
-        let saved = if path.exists() {
-            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("FullAtlas 状态文件损坏，请备份后修复：{e}"))?
+        let bytes = if path.exists() {
+            Some(fs::read(&path).map_err(|e| e.to_string())?)
         } else {
-            Saved::default()
+            None
         };
+        let saved = bytes
+            .as_deref()
+            .map(|bytes| serde_json::from_slice(bytes))
+            .transpose()
+            .map_err(|e| format!("FullAtlas 状态文件损坏，请备份后修复：{e}"))?
+            .unwrap_or_default();
+        let core_state = bytes
+            .as_deref()
+            .and_then(|value| serde_json::from_slice(value).ok());
         Ok(Self {
             dir,
             inner: Mutex::new(Inner {
                 saved,
+                assistant: AssistantCore::new(core_state),
                 runtime: Runtime::default(),
             }),
             catalog: Mutex::new(None),
@@ -636,7 +271,7 @@ impl FullAtlasState {
                 .last_save
                 .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
         {
-            atomic_json(&self.dir.join("fullatlas.json"), &inner.saved)?;
+            atomic_json(&self.dir.join("fullatlas.json"), &inner.assistant.saved())?;
             inner.runtime.last_save = Some(Instant::now());
         }
         Ok(())
@@ -724,358 +359,51 @@ impl FullAtlasState {
                 }
             }
         }
-        let region = crate::profile::Region::from_app(app);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent("WuwaTappo-FullAtlas-Mac")
-            .build()
-            .map_err(|e| e.to_string())?;
-        let api = format!("https://{}", region.api_host());
-        let activity = get_json(
-            &client,
-            Url::parse(&format!("{api}/api/common/activity-config")).map_err(|e| e.to_string())?,
-        )?;
-        let atlas = get_json(
-            &client,
-            Url::parse(&format!("{api}/api/common/atlas")).map_err(|e| e.to_string())?,
-        )?;
-        if activity.get("code") != Some(&json!(0)) || atlas.get("code") != Some(&json!(0)) {
-            return Err("官方目录请求失败，原缓存保留".into());
-        }
-        let host = activity
-            .pointer("/data/assets_host")
-            .and_then(Value::as_str)
-            .ok_or("官方素材源缺失")?
-            .trim_end_matches('/');
-        trusted_asset_url(region, host)?;
-        let pointer = get_json(
-            &client,
-            trusted_asset_url(
-                region,
-                &format!("{host}/app/json-host/appearance_asset_host.json"),
-            )?,
-        )?;
-        let url = pointer
-            .get("url")
-            .and_then(Value::as_str)
-            .ok_or("官方目录地址缺失")?;
-        let catalog = get_json(&client, trusted_asset_url(region, url)?)?;
-        let value = json!({"atlas":atlas["data"], "catalog":catalog, "assets_host":host, "assets_json_ts":activity.pointer("/data/assets_json_ts"), "checked_at":unix_time()});
+        let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn {
+            "cn"
+        } else {
+            "global"
+        };
+        let snapshot = wuwatappo_assistant_core::resource_cache::fetch_catalog(region)?;
+        let host = snapshot.assets_host.as_str().trim_end_matches('/');
+        let value = json!({
+            "atlas": snapshot.atlas["data"],
+            "catalog": snapshot.catalog,
+            "assets_host": host,
+            "assets_json_ts": snapshot.activity.pointer("/data/assets_json_ts"),
+            "checked_at": unix_time()
+        });
         validate_catalog(&value)?;
         atomic_json(&path, &value)?;
         *memo = Some(value.clone());
         Ok(value)
     }
-    fn snapshot(inner: &Inner) -> Value {
-        let today = Local::now().date_naive();
-        let weekly: Vec<Value> = (0..7)
-            .rev()
-            .map(|n| {
-                let day = (today - Days::days(n)).to_string();
-                json!({"count":inner.saved.days.get(&day).copied().unwrap_or(0), "date":day})
-            })
-            .collect();
-        json!({"settings":inner.saved.settings, "session":inner.saved.session, "confirmed":inner.saved.confirmed, "session_chests":inner.saved.session_chests,
-            "rewards":inner.saved.rewards, "rooms":inner.saved.rooms, "monitor":inner.saved.monitor, "runtime":inner.runtime.values,
-            "flush_generation":inner.runtime.flush_generation, "flush_done":inner.runtime.flush_done, "weekly":{"normal":weekly}, "update_required":false})
-    }
     fn assistant(&self, action: &str, body: &Value, physical_quiet: bool) -> Result<Value, String> {
         let mut inner = self.inner.lock().map_err(|_| "全图鉴数据锁失败")?;
-        match action {
-            "state" | "renderer-start" => return Ok(Self::snapshot(&inner)),
-            // 打字自动表情的焦点判定。开关关掉就直接回不可编辑，省掉一次 AX 往返；
-            // 查询本身不碰账号数据，也不占用点击节流，所以放锁外面做。
-            "typing-context" => {
-                let armed = inner.saved.settings.auto_emote;
-                drop(inner);
-                if !armed {
-                    return Ok(json!({"editable": false, "reason": "disabled"}));
-                }
-                return Ok(crate::input::focused_text_context());
+        if action == "typing-context" {
+            if !inner.assistant.saved()["settings"]["auto_emote"]
+                .as_bool()
+                .unwrap_or(false)
+            {
+                return Ok(json!({"editable": false, "reason": "disabled"}));
             }
-            "configure" => {
-                let changes = body
-                    .get("settings")
-                    .and_then(Value::as_object)
-                    .ok_or("设置必须是对象")?;
-                let mut next = inner.saved.settings.clone();
-                for (key, val) in changes {
-                    match key.as_str() {
-                        "enabled" => next.enabled = val.as_bool().ok_or("enabled 必须是布尔值")?,
-                        "auto_chest" => {
-                            next.auto_chest = val.as_bool().ok_or("auto_chest 必须是布尔值")?
-                        }
-                        "auto_click_balance" => {
-                            next.auto_click_balance =
-                                val.as_bool().ok_or("auto_click_balance 必须是布尔值")?
-                        }
-                        "auto_click_below" => {
-                            next.auto_click_below = val
-                                .as_u64()
-                                .filter(|v| *v <= 1_000_000_000)
-                                .ok_or("自动点击下限无效")?
-                        }
-                        "auto_click_above" => {
-                            next.auto_click_above = val
-                                .as_u64()
-                                .filter(|v| *v <= 1_000_000_000)
-                                .ok_or("自动点击上限无效")?
-                        }
-                        "remember_monitor" => {
-                            next.remember_monitor =
-                                val.as_bool().ok_or("remember_monitor 必须是布尔值")?
-                        }
-                        "auto_emote" => {
-                            next.auto_emote = val.as_bool().ok_or("auto_emote 必须是布尔值")?
-                        }
-                        "prerelease_updates" => {
-                            next.prerelease_updates =
-                                val.as_bool().ok_or("prerelease_updates 必须是布尔值")?
-                        }
-                        "speed" => {
-                            let speed = val
-                                .as_u64()
-                                .filter(|v| [1, 5, 10].contains(v))
-                                .ok_or("速度必须是 1、5 或 10")?;
-                            next.speed = speed as u32;
-                        }
-                        "threshold" => {
-                            next.threshold = val
-                                .as_u64()
-                                .filter(|v| (1..=1_000_000_000).contains(v))
-                                .ok_or("开箱阈值无效")?
-                        }
-                        _ => return Err(format!("未知设置：{key}")),
-                    }
-                }
-                if next.auto_click_below >= next.auto_click_above {
-                    return Err("自动点击下限必须低于上限".into());
-                }
-                inner.saved.settings = next;
-            }
-            "tick" | "observe" => {
-                if action == "tick" && inner.saved.settings.auto_click_balance {
-                    if let Some(balance) = body.get("balance").and_then(Value::as_u64) {
-                        if balance < inner.saved.settings.auto_click_below {
-                            inner.saved.settings.enabled = true;
-                        } else if balance > inner.saved.settings.auto_click_above {
-                            inner.saved.settings.enabled = false;
-                        }
-                    }
-                }
-                let sent = body.get("sent").and_then(Value::as_u64).unwrap_or(0);
-                let confirmed = body.get("confirmed").and_then(Value::as_u64).unwrap_or(0);
-                if sent > 1 || confirmed > sent {
-                    return Err("点击确认值无效".into());
-                }
-                inner.saved.session = inner.saved.session.saturating_add(sent);
-                inner.saved.confirmed = inner.saved.confirmed.saturating_add(confirmed);
-                if let Some(total) = body.get("total").and_then(Value::as_u64) {
-                    if total > 9_007_199_254_740_991 {
-                        return Err("累计点击值超出有效范围".into());
-                    }
-                    let account = body
-                        .get("account")
-                        .and_then(Value::as_str)
-                        .unwrap_or("guest");
-                    if account.len() > 200 {
-                        return Err("账号标识过长".into());
-                    }
-                    inner.runtime.account = account.into();
-                    if let Some(before) = inner.saved.baselines.insert(account.into(), total) {
-                        if total >= before {
-                            *inner
-                                .saved
-                                .days
-                                .entry(Local::now().date_naive().to_string())
-                                .or_default() += total - before;
-                        }
-                    }
-                    if inner.saved.baselines.len() > 100 {
-                        inner.saved.baselines.retain(|key, _| key == account);
-                    }
-                    let cutoff = (Local::now().date_naive() - Days::days(90)).to_string();
-                    inner.saved.days.retain(|date, _| date >= &cutoff);
-                    inner.runtime.values = json!({"total":total,"balance":body.get("balance"),"logged_in":body.get("logged_in")==Some(&Value::Bool(true)),"chests":body.get("chests"),"local_atlas":inner.saved.enabled,"quiet":physical_quiet,"connected":true,"seen_at":unix_time()});
-                }
-                if action == "tick" {
-                    let allowed = inner.saved.settings.enabled
-                        && physical_quiet
-                        && inner.runtime.next_tick.is_none_or(|t| Instant::now() >= t);
-                    if allowed {
-                        inner.runtime.next_tick = Some(
-                            Instant::now()
-                                + Duration::from_secs_f64(
-                                    1.0 / f64::from(inner.saved.settings.speed),
-                                ),
-                        );
-                    }
-                    self.save(&mut inner, false)?;
-                    return Ok(
-                        json!({"allowed":allowed,"quiet":physical_quiet,"settings":inner.saved.settings,"session":inner.saved.session,"confirmed":inner.saved.confirmed,
-                        "flush_generation":if inner.runtime.flush_generation>inner.runtime.flush_done{inner.runtime.flush_generation}else{0},"update_required":false,"quit":false}),
-                    );
-                }
-            }
-            "reward" => {
-                let reward = body
-                    .get("reward")
-                    .and_then(Value::as_object)
-                    .ok_or("奖励必须是对象")?;
-                let id = reward
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|v| !v.is_empty() && v.len() <= 120)
-                    .ok_or("奖励事件 ID 无效")?;
-                if reward.get("confirmed") != Some(&Value::Bool(true))
-                    || !matches!(
-                        reward.get("side").and_then(Value::as_str),
-                        Some("left" | "right")
-                    )
-                    || reward.get("asset_name").and_then(Value::as_str).is_none()
-                    || reward.get("cost").and_then(Value::as_u64).unwrap_or(0) == 0
-                {
-                    return Err("只保存原版服务器确认的奖励".into());
-                }
-                if !inner
-                    .saved
-                    .rewards
-                    .iter()
-                    .any(|r| r.get("id").and_then(Value::as_str) == Some(id))
-                {
-                    let mut record = json!({"time":unix_time(),"confirmed":true});
-                    for field in [
-                        "id",
-                        "side",
-                        "asset_id",
-                        "asset_type",
-                        "asset_name",
-                        "name",
-                        "rarity",
-                        "cost",
-                        "source",
-                    ] {
-                        if let Some(value) = reward.get(field) {
-                            record[field] = value.clone();
-                        }
-                    }
-                    inner.saved.rewards.insert(0, record);
-                    inner.saved.rewards.truncate(1000);
-                    inner.saved.session_chests += 1;
-                }
-            }
-            "room" => {
-                if inner.saved.enabled {
-                    return Err("本地图鉴开启时不能加入房间".into());
-                }
-                let code = body
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .filter(|s| {
-                        !s.is_empty()
-                            && s.len() <= 32
-                            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                    })
-                    .ok_or("房间号无效")?;
-                let new_visit = body.get("new_visit") == Some(&Value::Bool(true));
-                if inner.saved.deleted_rooms.iter().any(|item| item == code) && !new_visit {
-                    return Ok(Self::snapshot(&inner));
-                }
-                if new_visit {
-                    inner.saved.deleted_rooms.retain(|item| item != code);
-                }
-                let favorite = inner
-                    .saved
-                    .rooms
-                    .iter()
-                    .find(|r| r["code"] == code)
-                    .is_some_and(|r| r["favorite"] == true);
-                let old_visited = inner
-                    .saved
-                    .rooms
-                    .iter()
-                    .find(|r| r["code"] == code)
-                    .and_then(|r| r["visited"].as_u64());
-                inner.saved.rooms.retain(|r| r["code"] != code);
-                inner.saved.rooms.insert(0,json!({"code":code,"host":body.get("host").and_then(Value::as_str).unwrap_or("").chars().take(100).collect::<String>(),"favorite":favorite,"visited":if new_visit || old_visited.is_none(){unix_time()}else{old_visited.unwrap()}}));
-                inner.saved.rooms.sort_by(|a, b| {
-                    (
-                        a["favorite"] != true,
-                        std::cmp::Reverse(a["visited"].as_u64().unwrap_or(0)),
-                    )
-                        .cmp(&(
-                            b["favorite"] != true,
-                            std::cmp::Reverse(b["visited"].as_u64().unwrap_or(0)),
-                        ))
-                });
-                inner.saved.rooms.truncate(100);
-            }
-            "delete-room" => {
-                let code = body
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .filter(|s| {
-                        !s.is_empty()
-                            && s.len() <= 32
-                            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                    })
-                    .ok_or("房间号无效")?;
-                inner.saved.rooms.retain(|r| r["code"] != code);
-                inner.saved.deleted_rooms.retain(|item| item != code);
-                inner.saved.deleted_rooms.push(code.to_owned());
-                if inner.saved.deleted_rooms.len() > 100 {
-                    let start = inner.saved.deleted_rooms.len() - 100;
-                    inner.saved.deleted_rooms.drain(..start);
-                }
-            }
-            "favorite" => {
-                for room in &mut inner.saved.rooms {
-                    if room.get("code") == body.get("code") {
-                        room["favorite"] = json!(body.get("favorite") == Some(&Value::Bool(true)));
-                    }
-                }
-                inner.saved.rooms.sort_by(|a, b| {
-                    (
-                        a["favorite"] != true,
-                        std::cmp::Reverse(a["visited"].as_u64().unwrap_or(0)),
-                    )
-                        .cmp(&(
-                            b["favorite"] != true,
-                            std::cmp::Reverse(b["visited"].as_u64().unwrap_or(0)),
-                        ))
-                });
-            }
-            "monitor" => {
-                let value = body.get("monitor").cloned().unwrap_or(Value::Null);
-                if !value.is_null() && value.get("name").and_then(Value::as_str).is_none() {
-                    return Err("显示器信息无效".into());
-                }
-                inner.saved.monitor = Some(value);
-            }
-            "reset" => {
-                inner.saved.session = 0;
-                inner.saved.confirmed = 0;
-                inner.saved.session_chests = 0;
-            }
-            "flush-request" => {
-                inner.runtime.flush_generation += 1;
-                return Ok(json!({"flush_generation":inner.runtime.flush_generation}));
-            }
-            "flush-ack" => {
-                if let Some(n) = body.get("generation").and_then(Value::as_u64) {
-                    if n >= inner.runtime.flush_done && n <= inner.runtime.flush_generation {
-                        inner.runtime.flush_done = n;
-                    }
-                }
-            }
-            _ => return Err(format!("未知助手操作：{action}")),
+            drop(inner);
+            return Ok(crate::input::focused_text_context());
         }
+        let offline = inner.assistant.app_enabled();
+        let result = inner.assistant.handle(
+            action,
+            body,
+            unix_time() as f64,
+            physical_quiet,
+            offline,
+            false,
+        )?;
         self.save(
             &mut inner,
             action != "observe" || body.get("flush") == Some(&Value::Bool(true)),
         )?;
-        Ok(Self::snapshot(&inner))
+        Ok(result)
     }
     fn request(
         &self,
@@ -1112,7 +440,11 @@ impl FullAtlasState {
                 let include = self
                     .inner
                     .lock()
-                    .map(|inner| inner.saved.settings.prerelease_updates)
+                    .map(|inner| {
+                        inner.assistant.saved()["settings"]["prerelease_updates"]
+                            .as_bool()
+                            .unwrap_or(false)
+                    })
                     .unwrap_or(false);
                 community_update_status(include)
             }
@@ -1145,10 +477,8 @@ impl FullAtlasState {
                 } else {
                     "GLOBAL"
                 };
-                let packs = crate::custom_resources::list_details(
-                    &self.dir.join("custom-atlas"),
-                    region,
-                )?;
+                let packs =
+                    crate::custom_resources::list_details(&self.dir.join("custom-atlas"), region)?;
                 let items: usize = packs
                     .iter()
                     .map(|pack| pack["item_count"].as_u64().unwrap_or(0) as usize)
@@ -1157,11 +487,7 @@ impl FullAtlasState {
                     .iter()
                     .map(|pack| pack["asset_count"].as_u64().unwrap_or(0) as usize)
                     .sum();
-                let error = self
-                    .custom_error
-                    .lock()
-                    .ok()
-                    .and_then(|slot| slot.clone());
+                let error = self.custom_error.lock().ok().and_then(|slot| slot.clone());
                 Ok(
                     json!({"enabled":self.enabled(),"region":region,"installed":!packs.is_empty(),"packs":packs,"atlas_count":items,"asset_count":assets,"error":error}),
                 )
@@ -1204,9 +530,7 @@ impl FullAtlasState {
                 };
                 let any = !crate::custom_resources::list_summaries(&root, region)?.is_empty();
                 *memo = None;
-                Ok(
-                    json!({"removed":id,"any_installed":any}),
-                )
+                Ok(json!({"removed":id,"any_installed":any}))
             }
             "mode" => {
                 let enabled = body
@@ -1218,6 +542,7 @@ impl FullAtlasState {
                 }
                 let mut inner = self.inner.lock().map_err(|_| "全图鉴数据锁失败")?;
                 inner.saved.enabled = enabled;
+                inner.assistant.set_app_enabled(enabled);
                 self.save(&mut inner, true)?;
                 drop(inner);
                 if enabled {
@@ -1281,94 +606,6 @@ mod tests {
     }
 
     #[test]
-    fn official_version_check_only_reports_a_higher_release() {
-        assert!(official_is_newer("1.0.4", "1.0.3"));
-        assert!(official_is_newer("1.0.10", "1.0.3"));
-        assert!(!official_is_newer("1.0.3", "1.0.3"));
-        assert!(!official_is_newer("1.0.2", "1.0.3"));
-    }
-
-    #[test]
-    fn community_version_check_understands_prerelease_ordering() {        // 预发布序列内部按数字比较：alpha.10 必须高于 alpha.9，而不是字典序的 alpha.1x。
-        assert_eq!(compare_semver("1.3.0-alpha.10", "1.3.0-alpha.9"), std::cmp::Ordering::Greater);
-        assert_eq!(compare_semver("1.3.0-alpha.2", "1.3.0-alpha.1"), std::cmp::Ordering::Greater);
-        // 同号正式版高于预发布。
-        assert_eq!(compare_semver("1.3.0", "1.3.0-alpha.2"), std::cmp::Ordering::Greater);
-        assert_eq!(compare_semver("1.3.0-alpha.1", "1.3.0"), std::cmp::Ordering::Less);
-        // 主体版本号优先于预发布段。
-        assert_eq!(compare_semver("1.4.0-alpha.1", "1.3.0"), std::cmp::Ordering::Greater);
-        assert_eq!(compare_semver("1.3.0", "1.3.0"), std::cmp::Ordering::Equal);
-        // tag 前缀 v 和空格都要能吃掉。
-        assert_eq!(compare_semver(" v1.3.1 ", "1.3.0"), std::cmp::Ordering::Greater);
-    }
-
-    #[test]
-    fn release_notes_drop_tables_images_and_markdown_noise() {
-        // 与 Windows 侧 desktop_updater.release_notes_text 对齐：只留人话。
-        let body = [
-            "## v1.3.1",
-            "| 文件 | 大小 |",
-            "| --- | --- |",
-            "![preview](https://example.invalid/a.png)",
-            "- 控制台改成页签",
-            "https://example.invalid/raw",
-            "**修复** 右键菜单不响应",
-        ]
-        .join("\n");
-        let notes = release_notes_text(&body);
-        assert_eq!(notes, "v1.3.1\n控制台改成页签\n修复 右键菜单不响应");
-        assert!(!notes.contains('|'));
-        assert!(!notes.contains("!["));
-        // 超长正文只截前 40 行，免得整页正文灌进面板。
-        let long: String = (0..60).map(|i| format!("第{i}行\n")).collect();
-        assert_eq!(release_notes_text(&long).lines().count(), 40);
-    }
-
-    #[test]
-    fn prerelease_releases_are_hidden_unless_the_setting_is_on() {
-        let releases = vec![
-            json!({"tag_name":"v1.3.0-alpha.2","prerelease":true,"html_url":"u2","published_at":"p2"}),
-            json!({"tag_name":"v1.3.0-alpha.1","prerelease":true,"html_url":"u1","published_at":"p1"}),
-            json!({"tag_name":"v1.2.8","prerelease":false,"html_url":"u0","published_at":"p0"}),
-            json!({"tag_name":"v9.9.9","draft":true,"prerelease":false,"html_url":"ud"}),
-        ];
-        // 关闭时：跳过两个预发布、跳过草稿，只剩正式版 1.2.8。
-        let (off, skipped) = pick_latest_release(&releases, false);
-        assert_eq!(skipped, 2);
-        assert_eq!(off.map(|(version, _, _)| version), Some("1.2.8".to_string()));
-        // 打开时：alpha.2 高于 alpha.1，仍然是最高。
-        let (on, skipped) = pick_latest_release(&releases, true);
-        assert_eq!(skipped, 0);
-        assert_eq!(on.map(|(version, _, _)| version), Some("1.3.0-alpha.2".to_string()));
-        // 只有预发布时，关闭开关会得到空结果——界面据此提示“只有预发布”。
-        let only_alpha = vec![json!({"tag_name":"v1.4.0-beta.1","prerelease":true})];
-        let (empty, skipped) = pick_latest_release(&only_alpha, false);
-        assert!(empty.is_none());
-        assert_eq!(skipped, 1);
-    }
-
-    #[test]
-    fn official_installer_requires_the_current_region_and_versioned_filename() {
-        let manifest = json!({
-            "platforms": {
-                "windows-x86_64": {
-                    "url": "https://mc-wuwatappo.kurogames-global.com/app/WuwaTappo-cn_1.0.4_x64-setup.exe"
-                }
-            }
-        });
-        let (url, filename) =
-            official_installer(crate::profile::Region::Cn, &manifest, "1.0.4").unwrap();
-        assert_eq!(url.host_str(), Some("mc-wuwatappo.kurogames-global.com"));
-        assert_eq!(filename, "WuwaTappo-cn_1.0.4_x64-setup.exe");
-        for value in [
-            "https://example.com/WuwaTappo-cn_1.0.4_x64-setup.exe",
-            "https://mc-wuwatappo.kurogames-global.com/app/WuwaTappo-global_1.0.4_x64-setup.exe",
-        ] {
-            let invalid = json!({"platforms": {"windows-x86_64": {"url": value}}});
-            assert!(official_installer(crate::profile::Region::Cn, &invalid, "1.0.4").is_err());
-        }
-    }
-    #[test]
     fn assistant_uses_baselines_and_limits_rate() {
         let s = state();
         s.assistant("observe", &json!({"account":"a","total":100}), true)
@@ -1409,17 +646,26 @@ mod tests {
             .is_err());
     }
     #[test]
-    fn balance_threshold_automation_uses_hysteresis() {
+    fn tick_does_not_own_shared_balance_threshold_policy() {
         let s = state();
-        s.assistant("configure", &json!({"settings":{"auto_click_balance":true}}), true)
-            .unwrap();
-        assert_eq!(s.assistant("tick", &json!({"balance":10_000}), true).unwrap()["allowed"], false);
-        assert_eq!(s.assistant("tick", &json!({"balance":9_999}), true).unwrap()["allowed"], true);
-        assert_eq!(s.assistant("tick", &json!({"balance":25_000}), true).unwrap()["settings"]["enabled"], true);
-        assert_eq!(s.assistant("tick", &json!({"balance":40_001}), true).unwrap()["settings"]["enabled"], false);
-        s.assistant("configure", &json!({"settings":{"enabled":true}}), true).unwrap();
-        assert_eq!(s.assistant("tick", &json!({"balance":40_000}), true).unwrap()["settings"]["enabled"], true);
-        assert!(s.assistant("configure", &json!({"settings":{"auto_click_below":40_000}}), true).is_err());
+        s.assistant(
+            "configure",
+            &json!({"settings":{"auto_click_balance":true}}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            s.assistant("tick", &json!({"balance":9_999}), true)
+                .unwrap()["settings"]["enabled"],
+            false
+        );
+        assert!(s
+            .assistant(
+                "configure",
+                &json!({"settings":{"auto_click_below":40_000}}),
+                true
+            )
+            .is_err());
     }
     #[test]
     fn rewards_require_confirmation_and_deduplicate() {
@@ -1502,10 +748,5 @@ mod tests {
             "main",
             &Url::parse("https://example.com").unwrap()
         ));
-        assert!(trusted_asset_url(
-            crate::profile::Region::Cn,
-            "https://evil.invalid/catalog.json"
-        )
-        .is_err());
     }
 }

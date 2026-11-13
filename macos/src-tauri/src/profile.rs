@@ -54,13 +54,6 @@ impl Region {
         }
     }
 
-    pub fn updater_host_file(self) -> &'static str {
-        match self {
-            Self::Cn => "latest_host.json",
-            Self::Global => "latest-global_host.json",
-        }
-    }
-
     pub fn initialization_script(self) -> String {
         let profile = json!({
             "region": if self == Self::Cn { "CN" } else { "GLOBAL" },

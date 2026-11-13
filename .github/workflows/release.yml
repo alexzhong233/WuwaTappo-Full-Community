@@ -95,7 +95,7 @@ jobs:
           const sumLines = expected.map(name =>
             `${createHash('sha256').update(readFileSync(`dist/${name}`)).digest('hex')}  ${name}`);
           writeFileSync('dist/SHA256SUMS.txt', sumLines.join('\n') + '\n');
-          const notes = `macos/docs/RELEASE_NOTES_${version}.md`;
+          const notes = `docs/macos/RELEASE_NOTES_${version}.md`;
           const body = existsSync(notes)
             ? readFileSync(notes, 'utf8')
             : `# WuwaTappo Full Community ${version}\n\n社区版整合了官方客户端的本地图鉴与桌宠能力，国服与国际服分开打包。\n\n- macOS：Apple Silicon / macOS 13 及以上，下载 \`.dmg\` 拖入「应用程序」\n- Windows：下载 \`.exe\` 安装后双击快捷方式即可使用；已装旧版可在控制台「更新」里一键升级\n\n实验预发布，完整业务仍需验收。\n`;

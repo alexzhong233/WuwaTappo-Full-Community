@@ -13,6 +13,21 @@ import json
 import math
 import threading
 import time
+import sys
+
+
+def _load_settings_contract():
+    candidates = []
+    if getattr(sys, '_MEIPASS', None):
+        candidates.append(Path(sys._MEIPASS) / 'assistant-settings.json')
+    candidates.append(Path(__file__).resolve().parents[3] / 'shared/contracts/assistant-settings.json')
+    for candidate in candidates:
+        if candidate.is_file():
+            return json.loads(candidate.read_text(encoding='utf-8'))
+    raise RuntimeError('Missing shared assistant settings contract')
+
+
+SETTINGS_CONTRACT = _load_settings_contract()
 
 
 def atomic_json(path, value):
@@ -59,9 +74,7 @@ class PhysicalInput:
 
 
 class Assistant:
-    DEFAULTS = {'enabled': False, 'speed': 5, 'auto_chest': False, 'threshold': 1000,
-                'auto_click_balance': False, 'auto_click_below': 10000, 'auto_click_above': 40000,
-                'remember_monitor': True, 'prerelease_updates': False, 'auto_emote': False}
+    DEFAULTS = SETTINGS_CONTRACT['defaults']
 
     def __init__(self, root, physical=None, clock=time.time):
         self.path = Path(root) / 'assistant_state.json'
@@ -147,21 +160,25 @@ class Assistant:
         with self.lock:
             if action == 'configure':
                 changes = body.get('settings', {})
-                if not isinstance(changes, dict) or set(changes) - self.DEFAULTS.keys():
+                if not isinstance(changes, dict):
                     raise ValueError('Unknown setting')
                 for key, val in changes.items():
-                    if key in ('enabled', 'auto_chest', 'auto_click_balance', 'remember_monitor',
-                               'prerelease_updates', 'auto_emote') and type(val) is not bool:
+                    rule = SETTINGS_CONTRACT['properties'].get(key)
+                    if rule is None:
+                        raise ValueError('Unknown setting')
+                    if rule['type'] == 'boolean' and type(val) is not bool:
                         raise ValueError('Expected boolean')
-                    if key == 'speed' and (type(val) is not int or val not in (1, 5, 10)):
-                        raise ValueError('Speed must be 1, 5 or 10')
-                    if key == 'threshold' and (type(val) is not int or not 1 <= val <= 1000000000):
-                        raise ValueError('Invalid chest threshold')
-                    if key in ('auto_click_below', 'auto_click_above') and (type(val) is not int or not 0 <= val <= 1000000000):
-                        raise ValueError('Invalid automatic click balance threshold')
+                    if rule['type'] == 'integer':
+                        if type(val) is not int:
+                            raise ValueError('Expected integer')
+                        if val < rule.get('minimum', val) or val > rule.get('maximum', val):
+                            raise ValueError('Setting outside allowed range')
+                        if 'enum' in rule and val not in rule['enum']:
+                            raise ValueError('Setting is not an allowed option')
                 next_settings = {**self.state['settings'], **changes}
-                if next_settings['auto_click_below'] >= next_settings['auto_click_above']:
-                    raise ValueError('Automatic click lower threshold must be below the upper threshold')
+                for constraint in SETTINGS_CONTRACT['constraints']:
+                    if constraint['relation'] == 'lessThan' and not next_settings[constraint['left']] < next_settings[constraint['right']]:
+                        raise ValueError('Automatic click lower threshold must be below the upper threshold')
                 self.state['settings'] = next_settings
                 self.save(True)
             elif action == 'typing-context':
@@ -178,14 +195,6 @@ class Assistant:
             elif action == 'renderer-start':
                 self.runtime = {'seen_at': self.clock(), 'connected': True}
             elif action in ('tick', 'observe'):
-                if action == 'tick' and self.state['settings']['auto_click_balance']:
-                    balance = body.get('balance')
-                    if type(balance) is int:
-                        settings = self.state['settings']
-                        if balance < settings['auto_click_below']:
-                            settings['enabled'] = True
-                        elif balance > settings['auto_click_above']:
-                            settings['enabled'] = False
                 if 'total' in body:
                     scope = 'normal:' + str(body.get('account', 'guest'))[:200]
                     self.observe(scope, body['total'])

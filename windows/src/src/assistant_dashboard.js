@@ -88,7 +88,7 @@ function createAssistantDashboard(d){
   el('span','关闭面板后，后台任务继续运行',footer);const version=button('v'+d.version+' · 检查更新',footer,()=>showTab('update'));
   // 底栏版本号统一取本仓库发布号：Windows 侧的 d.version 是上游 MOD 版本（1.2），
   // 和设置页「全图鉴版本」不是同一个号，直接显示会和 Mac 对不上。
-  d.atlas.request('/community/version',{}).then(r=>{if(r&&r.current)version.textContent='v'+r.current+' · 检查更新';else version.textContent='版本未知 · 检查更新';}).catch(()=>{version.textContent='版本未知 · 检查更新';});
+  withTimeout(d.atlas.request('/community/version',{}),'本机版本读取').then(r=>{if(r&&r.current)version.textContent='v'+r.current+' · 检查更新';else version.textContent='版本未知 · 检查更新';}).catch(()=>{version.textContent='版本未知 · 检查更新';});
   const notice=el('div','',header,'wt-notice');
   const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['mods','Mod 管理'],['update','更新'],['settings','设置']],navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
@@ -180,7 +180,7 @@ function createAssistantDashboard(d){
           list.replaceChildren();
           summary.textContent=packs.length?('共 '+packs.length+' 个包 · '+r.atlas_count+' 项 · '+r.asset_count+' 张图片'):'还没有导入资源包。没有 Mod 时「全图鉴 + Mod」等同于原有全图鉴。';
           if(r.error)el('p','Mod 叠加失败，已回退到官方图鉴：'+r.error,list,'wt-muted');
-          if(!packs.length)el('div','点上方「导入 Mod ZIP」选择资源包；格式见 macos/docs/MODS.md',list,'wt-empty');
+          if(!packs.length)el('div','点上方「导入 Mod ZIP」选择资源包；格式见 docs/MODS.md',list,'wt-empty');
           for(const pack of packs){
             const box=el('div',undefined,list,'wt-mod-pack'),head=el('div',undefined,box,'wt-row wt-between');
             const title=el('div',undefined,head);el('strong',pack.name,title);
@@ -228,7 +228,7 @@ function createAssistantDashboard(d){
       button('打开 GitHub Releases',actions,openReleases);
       button('打开官方桌宠下载页',actions,openPetSite,'wt-primary');
       // 拿不到发布号就说「未知」，不要一直挂着「检测中」——那看着像还在等网络。
-      d.atlas.request('/community/version',{}).then(r=>{modValue.textContent=r.current||'未知';}).catch(()=>{modValue.textContent=d.version||'未知';});
+      withTimeout(d.atlas.request('/community/version',{}),'本机版本读取').then(r=>{modValue.textContent=r.current||'未知';}).catch(()=>{modValue.textContent=d.version||'未知';});
       withTimeout(d.atlas.request('/official/update-check',{}),'官方版本检查').then(paintOfficial).catch(e=>{baseValue.textContent='未知';updates.textContent='官方版本检查失败：'+e.message+'；不影响全图鉴版本检查。';});
       // 官方清单偶尔会落后于我们已整合的基底（CDN 缓存或发布节奏差），
       // 这时说「已是最新（旧号）」会让人以为检查坏了，改成把两个号都摆出来。
@@ -320,8 +320,11 @@ function createAssistantDashboard(d){
       renderView=()=>{pollInstall();if(!installTimer)installTimer=window.setInterval(pollInstall,2000);};
     }else{
       const c=card();el('h3','自动化设置',c);const fields={};
-      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','低于下限开启自动点击，高于上限关闭；中间区间保持当前状态'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；真实文字输入时偶尔随机弹出，联机沿用手动发送，后台连点不触发'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
-        const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
+      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；真实文字输入时随机弹出，联机沿用手动发送，后台连点不触发'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
+        const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>{
+          if(key==='enabled'&&!input.checked)change({enabled:false,auto_click_balance:false});
+          else change({[key]:input.checked});
+        };fields[key]=input;
       }
       for(const[key,title]of [['auto_click_below','低于此可用点数时开启'],['auto_click_above','高于此可用点数时关闭']]){
         const row=el('label',undefined,c,'wt-setting'),t=el('div',undefined,row);el('h3',title,t);el('p',key==='auto_click_below'?'严格低于下限后自动开始点击':'严格高于上限后自动停止点击',t,'wt-muted');
@@ -340,7 +343,7 @@ function createAssistantDashboard(d){
         finally{localBox.disabled=false;}
       };
       const emoteHint=el('p','',c,'wt-muted');emoteHint.setAttribute('data-emote-hint','true');
-      renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox')input.checked=!!value.settings[k];else input.value=value.settings[k];}
+      renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox'){input.checked=!!value.settings[k];input.disabled=k==='auto_click_balance'&&!value.settings.enabled&&!value.settings.auto_click_balance;}else input.value=value.settings[k];}
         if(doc.activeElement!==localBox)localBox.checked=!!d.atlas.enabled.value;
         localBox.disabled=!!d.atlas.busy.value;
         const stats=d.atlas?.assistant?.emoteStats||{};

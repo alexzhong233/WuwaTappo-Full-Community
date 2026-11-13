@@ -9,7 +9,7 @@
   双击会先弹一个控制台窗口、图标也是 cmd 的——这是发行包最显眼的体检项，
   所以 build.ps1 里缺了就构建，package-installer.ps1 缺了就直接报错。
 
-  图标取自官方客户端解包出来的 icon_32512.ico，找不到就用 PyInstaller 默认图标。
+  图标由安装器从官方客户端资源中取用；启动器由 shared/backend 统一编译。
 
   注意：不再用 --uac-admin。启动器只做「拉起本地服务 + 拉起主程序」，
   不需要管理员权限；带上它会让每次双击都先弹一次 UAC 确认框。
@@ -23,8 +23,9 @@ $Root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'region.ps1')
 $R = Get-RegionProfile -Root $Root -Region $Region
 
-$Py = Join-Path $Root '.venv\Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $Py)) { throw "缺少 .venv，先跑 tools\setup-env.ps1" }
+$Cargo = (Get-Command cargo -ErrorAction SilentlyContinue).Source
+if (-not $Cargo) { throw '找不到 cargo：请安装 Rust stable 工具链并将 cargo 加入 PATH' }
+$Backend = Join-Path $Root '..\shared\backend'
 
 if (-not $Icon) {
   $candidate = Get-ChildItem -LiteralPath (Join-Path $R.WorkDir 'official') -Recurse -Filter 'icon_32512.ico' -ErrorAction SilentlyContinue |
@@ -33,20 +34,12 @@ if (-not $Icon) {
 }
 
 $dist = Join-Path $R.WorkDir 'launcher\dist'
-$pyArgs = @(
-  '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--noconsole',
-  '--name', 'WuwaTappoLauncher',
-  '--distpath', $dist,
-  '--workpath', (Join-Path $R.WorkDir 'launcher\work'),
-  '--specpath', (Join-Path $R.WorkDir 'launcher')
-)
-if ($Icon) { $pyArgs += @('--icon', $Icon) }
-$pyArgs += (Join-Path $PSScriptRoot 'launcher.py')
-
-& $Py @pyArgs
-if ($LASTEXITCODE -ne 0) { throw '启动器编译失败' }
-
+$target = Join-Path $Backend 'target\release\wuwatappo-launcher.exe'
+& $Cargo build --locked --release --manifest-path (Join-Path $Backend 'Cargo.toml') --bin wuwatappo-launcher
+if ($LASTEXITCODE -ne 0) { throw 'Rust 启动器编译失败' }
 $exe = Join-Path $dist 'WuwaTappoLauncher.exe'
+New-Item -ItemType Directory -Path $dist -Force | Out-Null
+Copy-Item -LiteralPath $target -Destination $exe -Force
 if (-not (Test-Path -LiteralPath $exe)) { throw "没有生成启动器：$exe" }
 
 # 单独运行本脚本时顺手更新 app\；走 build.ps1 的话由 deploy.ps1 装配

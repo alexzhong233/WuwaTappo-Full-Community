@@ -29,10 +29,9 @@ New-Item -ItemType Directory -Path $Payload | Out-Null
 # 主程序
 Copy-Item -LiteralPath $exe -Destination (Join-Path $Payload 'WuwaTappo.Local.exe')
 
-# 本地素材服务（冻结版）
+# 本地素材服务（共享 Rust 版）
 Copy-Item -LiteralPath $frozen -Destination (Join-Path $Payload 'host') -Recurse
 Copy-Item -LiteralPath (Join-Path $Payload 'host\LocalGalleryHost.exe') -Destination (Join-Path $Payload 'LocalGalleryHost.exe')
-Copy-Item -LiteralPath (Join-Path $Payload 'host\_internal') -Destination (Join-Path $Payload '_internal') -Recurse
 
 # 素材缓存（CI 或未拉缓存时可缺省，运行时按需回源）
 $assets = Join-Path $Root 'assets\cache'
@@ -72,8 +71,8 @@ foreach ($f in @('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
   $src = Join-Path $Root "src\$f"
   if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $Payload $f) }
 }
-if (Test-Path -LiteralPath (Join-Path $Root 'docs')) {
-  Copy-Item -LiteralPath (Join-Path $Root 'docs') -Destination (Join-Path $Payload 'docs') -Recurse
+if (Test-Path -LiteralPath (Join-Path $Root '..\docs\windows')) {
+  Copy-Item -LiteralPath (Join-Path $Root '..\docs\windows') -Destination (Join-Path $Payload 'docs') -Recurse
 }
 Copy-Item -LiteralPath (Join-Path $R.WorkDir 'local_config.json') -Destination (Join-Path $Payload 'package_config.json')
 # 运行期必需（含 token）；robocopy 会跳过它，保留目标目录里已有的 token 与计数
