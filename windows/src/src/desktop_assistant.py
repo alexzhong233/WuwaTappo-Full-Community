@@ -60,6 +60,7 @@ class PhysicalInput:
 
 class Assistant:
     DEFAULTS = {'enabled': False, 'speed': 5, 'auto_chest': False, 'threshold': 1000,
+                'auto_click_balance': False, 'auto_click_below': 10000, 'auto_click_above': 40000,
                 'remember_monitor': True, 'prerelease_updates': False, 'auto_emote': False}
 
     def __init__(self, root, physical=None, clock=time.time):
@@ -149,14 +150,19 @@ class Assistant:
                 if not isinstance(changes, dict) or set(changes) - self.DEFAULTS.keys():
                     raise ValueError('Unknown setting')
                 for key, val in changes.items():
-                    if key in ('enabled', 'auto_chest', 'remember_monitor',
+                    if key in ('enabled', 'auto_chest', 'auto_click_balance', 'remember_monitor',
                                'prerelease_updates', 'auto_emote') and type(val) is not bool:
                         raise ValueError('Expected boolean')
                     if key == 'speed' and (type(val) is not int or val not in (1, 5, 10)):
                         raise ValueError('Speed must be 1, 5 or 10')
                     if key == 'threshold' and (type(val) is not int or not 1 <= val <= 1000000000):
                         raise ValueError('Invalid chest threshold')
-                self.state['settings'].update(changes)
+                    if key in ('auto_click_below', 'auto_click_above') and (type(val) is not int or not 0 <= val <= 1000000000):
+                        raise ValueError('Invalid automatic click balance threshold')
+                next_settings = {**self.state['settings'], **changes}
+                if next_settings['auto_click_below'] >= next_settings['auto_click_above']:
+                    raise ValueError('Automatic click lower threshold must be below the upper threshold')
+                self.state['settings'] = next_settings
                 self.save(True)
             elif action == 'typing-context':
                 # 打字自动表情的焦点判定：开关关掉直接回不可编辑，省一次 UIA 往返。
@@ -172,6 +178,14 @@ class Assistant:
             elif action == 'renderer-start':
                 self.runtime = {'seen_at': self.clock(), 'connected': True}
             elif action in ('tick', 'observe'):
+                if action == 'tick' and self.state['settings']['auto_click_balance']:
+                    balance = body.get('balance')
+                    if type(balance) is int:
+                        settings = self.state['settings']
+                        if balance < settings['auto_click_below']:
+                            settings['enabled'] = True
+                        elif balance > settings['auto_click_above']:
+                            settings['enabled'] = False
                 if 'total' in body:
                     scope = 'normal:' + str(body.get('account', 'guest'))[:200]
                     self.observe(scope, body['total'])

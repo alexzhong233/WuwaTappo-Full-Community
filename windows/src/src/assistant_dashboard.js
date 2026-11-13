@@ -76,6 +76,7 @@ function createAssistantUpdateGate({window,result,retry,install,quit}){
 function createAssistantDashboard(d){
   const {window}=d,{el,button}=assistantUi(window),doc=window.document;
   let closed=false,timer=null,officialTimer=null,installTimer=null,refreshing=false,tab='overview',value=null,renderView=()=>{},pending=0,saveQueue=Promise.resolve();
+  function withTimeout(promise,label,ms=10000){let timeout;return Promise.race([promise,new Promise((_,reject)=>{timeout=window.setTimeout(()=>reject(new Error(label+'超时，请检查网络后重试')),ms);})]).finally(()=>window.clearTimeout(timeout));}
   const root=el('section',undefined,d.mount||doc.body,'wt-console');root.tabIndex=-1;root.setAttribute('role','dialog');root.setAttribute('aria-label','桌宠控制台');
   // 挂进官方面板的「控制台」页时改成流式布局：外框、圆角和阴影都由面板提供。
   if(d.mount)root.setAttribute('data-embedded','true');
@@ -93,7 +94,7 @@ function createAssistantDashboard(d){
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
   const fmt=n=>Number(n||0).toLocaleString('zh-CN');
   function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);window.clearInterval(installTimer);root.remove();d.onClose?.();}
-  function checkOfficialNotice(){d.atlas.request('/official/update-check',{}).then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「更新」查看，或到官方桌宠页下载原版。';}).catch(()=>{});}
+  function checkOfficialNotice(){withTimeout(d.atlas.request('/official/update-check',{}),'官方版本检查').then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「更新」查看，或到官方桌宠页下载原版。';}).catch(()=>{});}
   async function change(changes){
     pending++;
     saveQueue=saveQueue.catch(()=>{}).then(async()=>{try{value=await d.configure(changes);notice.textContent='设置已保存';}catch(e){notice.textContent='保存失败：'+e.message;}finally{pending--;if(!closed)paint();}});
@@ -228,7 +229,7 @@ function createAssistantDashboard(d){
       button('打开官方桌宠下载页',actions,openPetSite,'wt-primary');
       // 拿不到发布号就说「未知」，不要一直挂着「检测中」——那看着像还在等网络。
       d.atlas.request('/community/version',{}).then(r=>{modValue.textContent=r.current||'未知';}).catch(()=>{modValue.textContent=d.version||'未知';});
-      d.atlas.request('/official/update-check',{}).then(paintOfficial).catch(()=>{baseValue.textContent='未知';updates.textContent='无法读取官方基底版本；不影响全图鉴版本检查。';});
+      withTimeout(d.atlas.request('/official/update-check',{}),'官方版本检查').then(paintOfficial).catch(e=>{baseValue.textContent='未知';updates.textContent='官方版本检查失败：'+e.message+'；不影响全图鉴版本检查。';});
       // 官方清单偶尔会落后于我们已整合的基底（CDN 缓存或发布节奏差），
       // 这时说「已是最新（旧号）」会让人以为检查坏了，改成把两个号都摆出来。
       function versionParts(value){return String(value||'').split(/[.+-]/).map(n=>parseInt(n,10)||0).slice(0,3);}
@@ -255,7 +256,7 @@ function createAssistantDashboard(d){
       async function checkCommunity(){
         check.disabled=true;updates.textContent='正在对比 GitHub 最新发布…';
         try{
-          const r=await d.atlas.request('/community/update-check',{});
+          const r=await withTimeout(d.atlas.request('/community/update-check',{}),'GitHub 版本检查');
           if(r.current)modValue.textContent=r.current;
           if(r.latest)remoteValue.textContent=r.latest;
           if(r.updateAvailable){updates.textContent='发现新版本 '+r.latest+'（当前 '+r.current+'）。';confirmUpdate(r);}
@@ -319,8 +320,12 @@ function createAssistantDashboard(d){
       renderView=()=>{pollInstall();if(!installTimer)installTimer=window.setInterval(pollInstall,2000);};
     }else{
       const c=card();el('h3','自动化设置',c);const fields={};
-      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；真实文字输入时偶尔随机弹出，联机沿用手动发送，后台连点不触发'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
+      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','低于下限开启自动点击，高于上限关闭；中间区间保持当前状态'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；真实文字输入时偶尔随机弹出，联机沿用手动发送，后台连点不触发'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
         const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
+      }
+      for(const[key,title]of [['auto_click_below','低于此可用点数时开启'],['auto_click_above','高于此可用点数时关闭']]){
+        const row=el('label',undefined,c,'wt-setting'),t=el('div',undefined,row);el('h3',title,t);el('p',key==='auto_click_below'?'严格低于下限后自动开始点击':'严格高于上限后自动停止点击',t,'wt-muted');
+        const input=el('input',undefined,row);input.type='number';input.min=0;input.max=1000000000;input.step=1;input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:Number(input.value)});fields[key]=input;
       }
       const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
       // 本地全图鉴的开关在控制台里也放一份：改了外观想切回官方，不用再跑回设置页。
@@ -343,7 +348,7 @@ function createAssistantDashboard(d){
           :stats.reason==='no-selection'?'请先在背包装备至少一个表情'
           :stats.reason==='no-access'?'需要「系统设置 → 隐私与安全性 → 辅助功能」里允许本应用'
           :stats.reason==='not-editable'?'尚未识别到文字输入框（当前焦点不在输入框）'
-          :stats.sent?'本次已触发 '+stats.sent+' 次 · 持续打字间隔 2～4 秒'
+          :stats.sent?'本次已触发 '+stats.sent+' 次 · 持续打字间隔约 1.2～2.4 秒'
           :'待命中：真实文字输入时会随机弹出，走路/组合键不触发';};
     }
     if(value)paint();

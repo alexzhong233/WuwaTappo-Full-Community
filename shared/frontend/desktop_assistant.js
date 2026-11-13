@@ -1,7 +1,7 @@
 /* Main-renderer driver. No signal enters the __WUWA_PLATFORM__ input queue. */
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
-  const VERSION='1.3.0', updateRequired=ref(false);
-  const state=ref({settings:{enabled:false,speed:5,auto_chest:false,threshold:1000,remember_monitor:true,prerelease_updates:false,auto_emote:false}});
+  const VERSION='1.3.1', updateRequired=ref(false);
+  const state=ref({settings:{enabled:false,speed:5,auto_chest:false,threshold:1000,auto_click_balance:false,auto_click_below:10000,auto_click_above:40000,remember_monitor:true,prerelease_updates:false,auto_emote:false}});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
   const ready=atlas.ready.then(()=>request('state')).then(v=>{state.value=v;updateRequired.value=!!v.update_required;});
   let started=false,disposed=false,timer=null,mainDependencies=null,sent=0,confirmed=0,lastObserve=0;
@@ -47,7 +47,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       if(!current.length)return;
       mainDependencies.sendEmote(current[Math.floor(Math.random()*current.length)]);
       emoteStats.sent++;emoteStats.reason='sent';typedKeys=0;
-      nextEmoteAt=Date.now()+2000+Math.floor(Math.random()*2000);
+      nextEmoteAt=Date.now()+1200+Math.floor(Math.random()*1200);
     }catch(error){emoteStats.reason='error';console.warn('[assistant] typing emote skipped',error);}
     finally{emoteBusy=false;}
   }

@@ -91,7 +91,7 @@ MAX_OFFICIAL_INSTALLER = 512 * 1024 * 1024
 _NAME_INDEX = None
 
 
-def _http_json(url, timeout=12):
+def _http_json(url, timeout=8):
     """直连官方站点，不经过系统代理（与 check-update.ps1 保持同一链路）。"""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     request = urllib.request.Request(
@@ -303,7 +303,7 @@ def check_community(include_prerelease=False):
             'https://api.github.com/repos/alexzhong233/WuwaTappo-Full-Community/releases?per_page=20',
             headers={'User-Agent': 'WuwaTappo-Full-Community-Win',
                      'Accept': 'application/vnd.github+json'})
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=8) as response:
             releases = json.loads(response.read(512 * 1024).decode('utf-8'))
         best = None
         skipped = 0

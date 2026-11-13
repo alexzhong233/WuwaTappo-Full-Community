@@ -87,11 +87,25 @@ class AssistantTests(unittest.TestCase):
         self.assertTrue(other.snapshot()['settings']['enabled'])
         self.assertEqual(other.snapshot()['monitor']['name'],'DISPLAY2')
     def test_setting_validation_and_private_scope(self):
-        for changes in [{'speed':1000},{'enabled':1},{'threshold':0},{'unknown':True}]:
+        for changes in [{'speed':1000},{'enabled':1},{'threshold':0},{'unknown':True},
+                        {'auto_click_below':40000},{'auto_click_above':10000},
+                        {'auto_click_below':-1},{'auto_click_balance':1}]:
             with self.assertRaises(ValueError):self.call('configure',{'settings':changes})
+        self.assertEqual(self.call('state')['settings']['auto_click_below'],10000)
+        self.assertEqual(self.call('state')['settings']['auto_click_above'],40000)
         self.call('observe',{'total':1,'account':'private-account-id'})
         self.a.save(True)
         self.assertNotIn('private-account-id',self.a.path.read_text())
+
+    def test_balance_threshold_automation_uses_hysteresis(self):
+        self.call('configure',{'settings':{'auto_click_balance':True}})
+        self.assertFalse(self.call('tick',{'balance':10000})['allowed'])
+        self.assertTrue(self.call('tick',{'balance':9999})['allowed'])
+        self.assertTrue(self.call('tick',{'balance':25000})['settings']['enabled'])
+        self.assertFalse(self.call('tick',{'balance':40001})['settings']['enabled'])
+        self.call('configure',{'settings':{'enabled':True}})
+        self.assertTrue(self.call('tick',{'balance':40000})['settings']['enabled'])
+        self.assertFalse(self.call('tick',{'balance':40001})['settings']['enabled'])
     def test_flush_handshake_and_mode_switch(self):
         self.call('configure',{'settings':{'enabled':True}})
         self.assertTrue(self.call('tick',{'mode':'normal'},True)['allowed'])

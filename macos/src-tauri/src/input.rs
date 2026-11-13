@@ -1082,6 +1082,9 @@ unsafe extern "C" {
     static kCFRunLoopDefaultMode: *mut c_void;
     fn CFRetain(object: *mut c_void) -> *mut c_void;
     fn CFRelease(object: *mut c_void);
+    fn CFGetTypeID(object: *mut c_void) -> usize;
+    fn CFBooleanGetTypeID() -> usize;
+    fn CFBooleanGetValue(value: *mut c_void) -> bool;
     fn CFMachPortCreateRunLoopSource(
         allocator: *mut c_void,
         tap: *mut c_void,
@@ -1179,7 +1182,6 @@ pub fn focused_text_context() -> serde_json::Value {
         if !role_attribute.is_null() {
             CFRelease(role_attribute);
         }
-        CFRelease(focused);
         let role = if role_status == 0 {
             let text = cf_to_string(role_value);
             if !role_value.is_null() {
@@ -1189,7 +1191,25 @@ pub fn focused_text_context() -> serde_json::Value {
         } else {
             String::new()
         };
-        let editable = matches!(
+        let editable_attribute = cf_string("AXIsEditable");
+        let mut editable_value: *mut c_void = std::ptr::null_mut();
+        let editable_status = AXUIElementCopyAttributeValue(
+            focused,
+            editable_attribute,
+            &mut editable_value,
+        );
+        if !editable_attribute.is_null() {
+            CFRelease(editable_attribute);
+        }
+        CFRelease(focused);
+        let ax_editable = editable_status == 0
+            && !editable_value.is_null()
+            && CFGetTypeID(editable_value) == CFBooleanGetTypeID()
+            && CFBooleanGetValue(editable_value);
+        if !editable_value.is_null() {
+            CFRelease(editable_value);
+        }
+        let editable = ax_editable || matches!(
             role.as_str(),
             "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField" | "AXEditableText"
         );

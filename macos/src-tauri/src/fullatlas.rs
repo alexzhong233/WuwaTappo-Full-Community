@@ -30,6 +30,9 @@ struct Settings {
     speed: u32,
     auto_chest: bool,
     threshold: u64,
+    auto_click_balance: bool,
+    auto_click_below: u64,
+    auto_click_above: u64,
     remember_monitor: bool,
     /// 更新检查是否把预发布（alpha/beta）算进候选。默认关闭：只提醒正式版。
     prerelease_updates: bool,
@@ -43,6 +46,9 @@ impl Default for Settings {
             speed: 5,
             auto_chest: false,
             threshold: 1000,
+            auto_click_balance: false,
+            auto_click_below: 10_000,
+            auto_click_above: 40_000,
             remember_monitor: true,
             prerelease_updates: false,
             auto_emote: false,
@@ -338,7 +344,7 @@ fn release_notes_text(body: &str) -> String {
 
 fn community_update_status(include_prerelease: bool) -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(8))
         .user_agent("WuwaTappo-Full-Community-Mac")
         .build()
         .map_err(|e| e.to_string())?;
@@ -397,7 +403,7 @@ fn community_update_status(include_prerelease: bool) -> Result<Value, String> {
 
 fn official_update_status(region: crate::profile::Region) -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("WuwaTappo-FullAtlas-Mac")
         .build()
@@ -800,6 +806,22 @@ impl FullAtlasState {
                         "auto_chest" => {
                             next.auto_chest = val.as_bool().ok_or("auto_chest 必须是布尔值")?
                         }
+                        "auto_click_balance" => {
+                            next.auto_click_balance =
+                                val.as_bool().ok_or("auto_click_balance 必须是布尔值")?
+                        }
+                        "auto_click_below" => {
+                            next.auto_click_below = val
+                                .as_u64()
+                                .filter(|v| *v <= 1_000_000_000)
+                                .ok_or("自动点击下限无效")?
+                        }
+                        "auto_click_above" => {
+                            next.auto_click_above = val
+                                .as_u64()
+                                .filter(|v| *v <= 1_000_000_000)
+                                .ok_or("自动点击上限无效")?
+                        }
                         "remember_monitor" => {
                             next.remember_monitor =
                                 val.as_bool().ok_or("remember_monitor 必须是布尔值")?
@@ -827,9 +849,21 @@ impl FullAtlasState {
                         _ => return Err(format!("未知设置：{key}")),
                     }
                 }
+                if next.auto_click_below >= next.auto_click_above {
+                    return Err("自动点击下限必须低于上限".into());
+                }
                 inner.saved.settings = next;
             }
             "tick" | "observe" => {
+                if action == "tick" && inner.saved.settings.auto_click_balance {
+                    if let Some(balance) = body.get("balance").and_then(Value::as_u64) {
+                        if balance < inner.saved.settings.auto_click_below {
+                            inner.saved.settings.enabled = true;
+                        } else if balance > inner.saved.settings.auto_click_above {
+                            inner.saved.settings.enabled = false;
+                        }
+                    }
+                }
                 let sent = body.get("sent").and_then(Value::as_u64).unwrap_or(0);
                 let confirmed = body.get("confirmed").and_then(Value::as_u64).unwrap_or(0);
                 if sent > 1 || confirmed > sent {
@@ -1373,6 +1407,19 @@ mod tests {
         assert!(s
             .assistant("configure", &json!({"settings":{"speed":20}}), true)
             .is_err());
+    }
+    #[test]
+    fn balance_threshold_automation_uses_hysteresis() {
+        let s = state();
+        s.assistant("configure", &json!({"settings":{"auto_click_balance":true}}), true)
+            .unwrap();
+        assert_eq!(s.assistant("tick", &json!({"balance":10_000}), true).unwrap()["allowed"], false);
+        assert_eq!(s.assistant("tick", &json!({"balance":9_999}), true).unwrap()["allowed"], true);
+        assert_eq!(s.assistant("tick", &json!({"balance":25_000}), true).unwrap()["settings"]["enabled"], true);
+        assert_eq!(s.assistant("tick", &json!({"balance":40_001}), true).unwrap()["settings"]["enabled"], false);
+        s.assistant("configure", &json!({"settings":{"enabled":true}}), true).unwrap();
+        assert_eq!(s.assistant("tick", &json!({"balance":40_000}), true).unwrap()["settings"]["enabled"], true);
+        assert!(s.assistant("configure", &json!({"settings":{"auto_click_below":40_000}}), true).is_err());
     }
     #[test]
     fn rewards_require_confirmation_and_deduplicate() {
