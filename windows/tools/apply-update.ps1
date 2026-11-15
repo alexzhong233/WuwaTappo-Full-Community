@@ -93,7 +93,7 @@ try {
 
   # -------------------------------------------------------------- 校验中转
   Say "== 5/6 校验中转产物 =="
-  $must = @('WuwaTappo.Local.exe', 'LocalGalleryHost.exe', '_internal', 'cache', 'runtime')
+  $must = @('WuwaTappo.Local.exe', 'LocalGalleryHost.exe', 'cache', 'runtime')
   foreach ($m in $must) {
     if (-not (Test-Path -LiteralPath (Join-Path $stage $m))) { throw "中转产物缺少 $m，已中止，未改动 app\" }
   }

@@ -9,7 +9,8 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     os::windows::{ffi::OsStrExt, process::CommandExt},
-    process::Command,
+    path::PathBuf,
+    process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -108,9 +109,21 @@ fn run() -> Result<(), String> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     if !ready(address) {
         let host = root.join("LocalGalleryHost.exe");
+        // 启动器是 GUI 子系统，子进程的 stdout/stderr 没有控制台可去。
+        // 落到日志里，宿主启动失败时才有东西可查。
+        let capture = |name: &str| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(root.join(name))
+                .map(Stdio::from)
+                .unwrap_or_else(|_| Stdio::null())
+        };
         Command::new(&host)
             .current_dir(&root)
             .creation_flags(CREATE_NO_WINDOW)
+            .stdout(capture("host.stdout.log"))
+            .stderr(capture("host.stderr.log"))
             .spawn()
             .map_err(|error| format!("无法启动本地服务：{error}"))?;
     }

@@ -10,7 +10,7 @@ npm run test:rust
 npm run sync:frontend
 ```
 
-`npm test` runs the repository's Node test suite and shared frontend regression checks. Run both native Rust suites with `cargo test --offline --manifest-path shared/backend/Cargo.toml` and `cargo test --offline --manifest-path macos/src-tauri/Cargo.toml --lib`. Windows Python tests currently cover legacy host behavior and build-time injection tools; the shipped Windows local host and launcher are Rust binaries.
+`npm test` runs the repository's Node test suite and shared frontend regression checks. It also cross-checks every local API path the injected page and the injector call against the routes declared in `shared/backend/src/local_gallery_host.rs`, so a ported client cannot silently lose an endpoint. Run both native Rust suites with `cargo test --offline --manifest-path shared/backend/Cargo.toml` and `cargo test --offline --manifest-path macos/src-tauri/Cargo.toml --lib`. Windows Python tests currently cover legacy host behavior and build-time injection tools; the shipped Windows local host and launcher are Rust binaries.
 
 To change assistant UI or shared browser behavior, edit `shared/frontend/`, run `npm run sync:frontend`, then run `npm test`. The generated copies under each platform are consumed by their respective injection and packaging chains. Shared Python injection logic belongs in `shared/tools/`; do not add business rules to the legacy Windows Python host. Port required behavior to `shared/backend` and keep the Rust host as the shipped runtime.
 

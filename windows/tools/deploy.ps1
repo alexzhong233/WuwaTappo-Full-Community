@@ -33,6 +33,16 @@ Copy-Item -LiteralPath $exe -Destination (Join-Path $Payload 'WuwaTappo.Local.ex
 Copy-Item -LiteralPath $frozen -Destination (Join-Path $Payload 'host') -Recurse
 Copy-Item -LiteralPath (Join-Path $Payload 'host\LocalGalleryHost.exe') -Destination (Join-Path $Payload 'LocalGalleryHost.exe')
 
+# 旧版宿主是 PyInstaller 打的，产物旁边会留 _internal\（约 20 MB），可能落在 app\ 根，
+# 也可能落在 app\host\ 里。现在的宿主是单文件 Rust 产物，这两个位置都不再需要；
+# app\ 只在同步时增量覆盖，不主动删就会一直留着，所以装配前先清掉再整目录铺一遍。
+foreach ($stale in @((Join-Path $App '_internal'), (Join-Path $App 'host'))) {
+  if (Test-Path -LiteralPath $stale) {
+    Remove-Item -LiteralPath $stale -Recurse -Force -ErrorAction SilentlyContinue
+    "已清理旧版宿主残留：$stale"
+  }
+}
+
 # 素材缓存（CI 或未拉缓存时可缺省，运行时按需回源）
 $assets = Join-Path $Root 'assets\cache'
 if (-not $NoAssets -and (Test-Path -LiteralPath $assets)) {
@@ -135,3 +145,7 @@ if (-not (Test-Path -LiteralPath $launchLnk)) {
 $total = (Get-ChildItem -LiteralPath $App -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum)
 "部署完成 -> $App"
 "合计 {0:N0} MB / {1} 个文件" -f ($total.Sum / 1MB), $total.Count
+
+# robocopy 的成功码是 0~7（1=有复制、3=还发现多余文件），这个值留在 $LASTEXITCODE 里
+# 会让调用方（build.ps1 / build-platform.mjs / CI）把成功当失败。装配走到这里就算成功。
+$global:LASTEXITCODE = 0

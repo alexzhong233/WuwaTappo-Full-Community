@@ -4,7 +4,7 @@
  *
  * 为什么不能真正「一条命令出两个平台」：
  *   macOS 侧   Tauri + Rust，必须 macOS + Xcode，产物是 .app/.dmg
- *   Windows 侧 给官方 Windows 客户端打补丁并重打包 PE，必须 Windows + PyInstaller + 官方安装包
+ *   Windows 侧 给官方 Windows 客户端打补丁并重打包 PE，必须 Windows + Rust 工具链 + 官方安装包
  * 两者都无法交叉编译。所以这里的 "all" 是「构建当前系统能构建的那一平台，并明确告知另一平台
  * 该在哪里构建」，而不是假装在本机产出两个平台。真正的双平台并行发生在 CI（两个 runner）。
  *
@@ -104,6 +104,10 @@ function checkWin() {
   const py = process.env.WUWA_PYTHON ?? which('python3.13') ?? which('python3.12') ?? which('python');
   rows.push(['平台', process.platform === 'win32' ? `win32/${process.arch}` : `当前是 ${process.platform}`, process.platform === 'win32']);
   rows.push(['Node', process.version, true]);
+  // 本地服务与启动器都是 shared/backend 的 Rust 产物；缺 cargo 时 build.ps1 会停在
+  // 第 3 步，所以这里必须挡住，别让前置检查报「可以构建」。
+  const cargo = which('cargo');
+  rows.push(['cargo', cargo ?? '未找到（装 Rust stable）', Boolean(cargo)]);
   rows.push(['Python', py ?? '未找到', Boolean(py)]);
   const venv = join(WINDOWS, '.venv', 'Scripts', 'python.exe');
   rows.push(['windows\\.venv', existsSync(venv) ? '已就绪' : '未创建（setup-env.ps1 会自动建）', true]);

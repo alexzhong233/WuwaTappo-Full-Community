@@ -13,7 +13,14 @@ import time
 import urllib.request
 import uuid
 import zipfile
-from desktop_assistant import atomic_json
+
+
+def atomic_json(path, value):
+    """写临时文件再替换，避免升级中途断电留下半个 JSON。"""
+    temp = path.with_suffix('.tmp')
+    temp.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+    temp.replace(path)
+
 
 try:
     import psutil
@@ -28,7 +35,7 @@ TOP_LEVEL = {'WuwaTappo.Local.exe', 'LocalGalleryHost.exe', 'WuwaTappoLauncher.e
              'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'}
 # host\ 是早期布局里冻结服务的副本，运行期只读根目录那份；更新包不带它，
 # 免得每个用户白下二十多兆。
-DIRECTORIES = {'_internal', 'licenses', 'docs'}
+DIRECTORIES = {'licenses', 'docs'}
 PROTECTED = {'local_config.json', 'offline_state.json', 'assistant_state.json', 'update_policy.json',
              'update_hint.json', 'official_update.json', 'profile', 'cache', 'custom-atlas', 'runtime'}
 
@@ -591,7 +598,6 @@ class Updater:
             helper = folder/'helper'
             helper.mkdir()
             shutil.copy2(self.root/'LocalGalleryHost.exe',helper/'LocalGalleryHost.exe')
-            shutil.copytree(self.root/'_internal',helper/'_internal')
             atomic_json(folder/'pending.json',{'version':manifest['version'],'id':folder.name})
             write_progress(folder, 'replace', 100, '正在退出桌宠并替换文件…')
             # 先把响应交回前端，再拉起助手：助手第一步就是结束本宿主，

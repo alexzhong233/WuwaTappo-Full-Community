@@ -72,7 +72,7 @@ cd mod-examples && python make_demo_pack.py           # 重新生成包与预览
 cd windows/src && python -m unittest discover -s tests -p "test_custom*.py"
 ```
 
-导入时的 ZIP 校验（路径逃逸、符号链接、Windows 保留名、图片魔数、压缩比、大小上限）在 `windows/src/src/custom_resources.py`，两侧行为一致。包的格式规范见 [Mod 制作说明](../MODS.md)。
+导入时的 ZIP 校验（路径逃逸、符号链接、Windows 保留名、图片魔数、压缩比、大小上限）在 `shared/backend/src/custom_resources.rs`，两侧共用同一份实现。包的格式规范见 [Mod 制作说明](../MODS.md)。
 
 ## 挂饰包与表情包
 

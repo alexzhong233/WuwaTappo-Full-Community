@@ -2,7 +2,7 @@
  * 结构索引器的冒烟测试
  *
  * `shared/tools/inspect_js.cjs` 是两平台共用的解包分析器（macOS 的
- * `fullatlas-frontend.mjs`、Windows 的 `build.py` 与两个 ps1 都调它），
+ * `fullatlas-frontend.mjs`、Windows 的 `tools/build.ps1` 都调它），
  * 输出 js_structure.json 供注入器按结构定位锚点。它原来是两份拷贝，
  * 合并后路径与 acorn 来源都变过，所以这里用最小夹具直接跑一遍：
  * 走不到就等于两个平台的注入链都断在第一步。

@@ -3,14 +3,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { syncFrontend } from './sync-frontend.mjs';
 
-// 版本号在这个仓库里有八处副本，少改一处就会在打包那一步炸：
+// 版本号在这个仓库里有十处副本，少改一处就会在打包那一步炸：
 //   package.json / package-lock.json（顶层 + packages.""）/ 两个 tauri.conf /
-//   Cargo.toml / Cargo.lock / 共用前端的 desktop_assistant.js 的 VERSION 常量。
+//   macos 的 Cargo.toml + Cargo.lock / shared/backend 的 Cargo.toml + Cargo.lock /
+//   共用前端的 desktop_assistant.js 的 VERSION 常量。
 // macOS 的 dmg 名字取自 CFBundleShortVersionString（即 tauri.conf），
 // release.yml 校验 tag 与 package.json 一致，Cargo 侧又因为 --locked 构建不允许
-// Cargo.toml 与 Cargo.lock 打架；面板「全图鉴版本」读的就是 desktop_assistant.js 的
-// VERSION，漏改会让界面显示的版本和实际发出去的包对不上。
-// 所以这里一次性全改，并在改之前先确认它们本来是齐的。
+// Cargo.toml 与 Cargo.lock 打架；窗口端的本地服务来自 shared/backend，
+// 那份 Cargo.toml/Cargo.lock 不同步同样会让 Windows 构建停在 --locked。
+// 面板「全图鉴版本」读的就是 desktop_assistant.js 的 VERSION，漏改会让界面显示的
+// 版本和实际发出去的包对不上。所以这里一次性全改，并在改之前先确认它们本来是齐的。
 // VERSION 常量现在只存在于 shared/frontend/，改完必须重跑生成器把两侧副本刷出来。
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -22,6 +24,8 @@ export const versionFiles = [
   'macos/src-tauri/tauri.global.conf.json',
   'macos/src-tauri/Cargo.toml',
   'macos/src-tauri/Cargo.lock',
+  'shared/backend/Cargo.toml',
+  'shared/backend/Cargo.lock',
   'shared/frontend/desktop_assistant.js',
 ];
 
@@ -30,6 +34,7 @@ export const versionFiles = [
 const jsonVersion = /"version":\s*"([^"]*)"/;
 const cargoPackageVersion = /^version = "([^"]+)"/m;
 const cargoLockVersion = /name = "wuwatappo-mac"\r?\nversion = "([^"]+)"/;
+const backendCargoLockVersion = /name = "wuwatappo-assistant-core"\r?\nversion = "([^"]+)"/;
 const moduleVersion = /const VERSION='([^']+)'/;
 
 const patterns = {
@@ -39,6 +44,8 @@ const patterns = {
   'macos/src-tauri/tauri.global.conf.json': jsonVersion,
   'macos/src-tauri/Cargo.toml': cargoPackageVersion,
   'macos/src-tauri/Cargo.lock': cargoLockVersion,
+  'shared/backend/Cargo.toml': cargoPackageVersion,
+  'shared/backend/Cargo.lock': backendCargoLockVersion,
   'shared/frontend/desktop_assistant.js': moduleVersion,
 };
 
@@ -117,12 +124,20 @@ export async function currentVersion(projectRoot = root) {
   return assertConsistent(readVersions(await readSources(projectRoot)));
 }
 
-export async function bumpVersion({ projectRoot = root, dryRun = false } = {}) {
+// 预发布线不一定总是 alpha：跨标签（alpha → beta → 正式）时传 target 直接指定，
+// 否则按 nextPrerelease 在同一条标签上自增。
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/;
+
+export async function bumpVersion({ projectRoot = root, dryRun = false, target } = {}) {
+  if (target !== undefined && !RELEASE_VERSION.test(String(target))) {
+    throw new Error(`目标版本号不合法：${target}，期望形如 1.3.2 或 1.3.2-beta.1`);
+  }
   const sources = await readSources(projectRoot);
   const previous = assertConsistent(readVersions(sources));
-  const next = nextPrerelease(previous);
+  const next = target === undefined ? nextPrerelease(previous) : String(target);
+  if (next === previous) throw new Error(`目标版本号与当前一致（${previous}），没有可改的内容`);
   const updated = rewriteSources(sources, previous, next);
-  // 改完再读一遍，确认八处都真的落到了新版本上（而不是替换到别的地方去了）。
+  // 改完再读一遍，确认全部副本都真的落到了新版本上（而不是替换到别的地方去了）。
   assertConsistent(readVersions(updated));
   if (!dryRun) {
     for (const file of versionFiles) await writeFile(path.join(projectRoot, file), updated[file]);
@@ -134,7 +149,9 @@ export async function bumpVersion({ projectRoot = root, dryRun = false } = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const dryRun = process.argv.includes('--dry-run');
-  bumpVersion({ dryRun })
+  // 用法：node scripts/bump-version.mjs [1.3.2-beta.1] [--dry-run]
+  const target = process.argv.slice(2).find(arg => !arg.startsWith('--'));
+  bumpVersion({ dryRun, target })
     .then(result => console.log(JSON.stringify({ ...result, dryRun })))
     .catch(error => { console.error(error.message); process.exitCode = 1; });
 }

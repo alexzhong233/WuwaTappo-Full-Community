@@ -7,7 +7,7 @@
 | 做法 | Rust / Tauri 原生壳重写 | 给官方客户端打补丁并重打包 PE |
 | 为什么 | 官方没有 Mac 包 | 官方包本来能跑，重写没有收益 |
 | 运行时 | 原生 IPC 绑定 | Python 本地服务 + 本机 HTTP（端口 43229） |
-| 工具链 | Node + Rust + Xcode CLT + 7-Zip | PowerShell + Python + PyInstaller |
+| 工具链 | Node + Rust + Xcode CLT + 7-Zip | PowerShell + Python + Rust（本地服务与启动器都是 Rust 产物） |
 | 产物 | `.dmg`（约 130 MiB，拖入「应用程序」） | `.exe` 安装包（NSIS，装完双击快捷方式即用） |
 
 两侧共用同一套构建链，但各自锁定自己那一条上游：国服 `upstream-cn.json`、国际服 `upstream-global.json`（都在本目录，安装包直链与 SHA-256 一并锁住）。服务区域由 `scripts/regions.mjs` 单点定义，构建脚本一律通过 `WUWA_REGION` 取，不各写一份。

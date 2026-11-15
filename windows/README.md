@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 做法 | 用 Rust / Tauri 重写壳 | 给官方 Windows 客户端打补丁并重打包 |
 | 为什么 | 官方没有 Mac 包 | 官方包本来就能跑，重写没有收益 |
-| 运行时 | 原生 IPC 绑定 | Python 本地服务 + 本机 HTTP（端口 43229） |
+| 运行时 | 原生 IPC 绑定 | Rust 本地服务 + 本机 HTTP（端口 43229），产物来自 `shared/backend` |
 | 产物 | `.app` / `.dmg`（约 70 MiB） | 绿色目录（约 1.1 GB，含 3098 张图） |
 
 两侧共用同一条上游：库洛官方国服客户端（同一个安装包，SHA-256 在 [`macos/upstream-cn.json`](../macos/upstream-cn.json) 里锁着）。
@@ -39,7 +39,8 @@ node scripts/build-platform.mjs --platform=win --region=global --package --no-ru
 
 ## 从零构建
 
-需要 Windows 10/11 x64、Python 3.13、PowerShell 5.1、Node 18+。
+需要 Windows 10/11 x64、Python 3.13、PowerShell 5.1、Node 18+，以及 Rust stable
+（`cargo` + MSVC 链接器 + Windows SDK —— 本地服务和启动器都是 Rust 产物）。
 
 **推荐走仓库根的统一入口**（会自动建 `.venv`、取官方基底、注入、装配、打包）：
 
@@ -63,7 +64,7 @@ powershell -File tools\fetch-official.ps1
 #    本机已装官方客户端、只是不想再下 192 MB 安装包时（可选，不是必须）
 powershell -File tools\fetch-official.ps1 -OfficialExe D:\path\WuwaTappo.exe
 
-# 3. 全量重建：解包 → 注入全图鉴 → 冻结本地服务 → 装配
+# 3. 全量重建：解包 → 注入全图鉴 → 编译 Rust 本地服务与启动器 → 装配
 powershell -File tools\build.ps1 -Extract -Base build\official\1.0.3\base
 
 # 4. 打安装包到 dist\（NSIS；首次先装：winget install -e --id NSIS.NSIS 或 choco install nsis -y）
@@ -106,7 +107,7 @@ powershell -File tools\package-win.ps1 -NoRuntime
 ```
 windows\
 ├─ src\              注入用的 FullAtlas 源码（原上游仓库内容 + 1.0.3 适配改动）
-│   ├─ src\          本地服务 local_host.py、助手后端、3 个前端模块
+│   ├─ src\          前端模块（shared/frontend 生成的副本）与注入钩子
 │   ├─ tools\        build_integration.py（注入）、extract_static.py（解包）、pe_packer.py（重打包）
 │   └─ installer\    提权脚本存档（本机策略会删 .ps1，见「已知限制」）
 ├─ tools\
@@ -115,7 +116,7 @@ windows\
 │   ├─ check-update.ps1 / update-watch.ps1         官方版本检查与跟进
 │   ├─ manager.py / build-manager.ps1              更新管理器 GUI
 │   ├─ apply-update.ps1                            替换运行目录（带备份与回滚）
-│   ├─ launcher.py / build-launcher.ps1            无控制台启动器
+│   ├─ build-launcher.ps1                          无控制台启动器（编译 shared/backend 的 Rust 产物）
 │   ├─ make_shortcut.py / make-shortcut.ps1        桌面快捷方式（本机禁 COM，手写 .lnk）
 │   └─ patches\                                    1.0.3 适配差异存档
 └─ upstream-win.json 注入适配锁定的官方版本与安装包直链
@@ -129,8 +130,8 @@ windows\
 
 | | macOS（`macos/`） | Windows（本目录） | 能否共用 |
 | --- | --- | --- | --- |
-| 运行时 | `macos\src-tauri\src\*.rs`，Rust + Tauri IPC | `src\src\*.py`，Python 本机 HTTP 服务 | 不能。范式不同 |
-| 构建层 | `macos\scripts\*.mjs`、`package-macos.sh`、dmg | `tools\*.ps1`、PyInstaller、PE 重打包 | 不能。工具链不同 |
+| 运行时 | `macos\src-tauri\src\*.rs`，Rust + Tauri IPC | `shared\backend`，Rust 本机 HTTP 服务 + 原生适配（Rust 产物在两侧共用） | 共用域逻辑，平台适配各自实现 |
+| 构建层 | `macos\scripts\*.mjs`、`package-macos.sh`、dmg | `tools\*.ps1`、Cargo、PE 重打包、NSIS | 不能。工具链不同 |
 | 注入器 | `macos\tools\fullatlas-integration.py`（改 Tauri 资源） | `src\tools\build_integration.py`（改 PE 资源段） | 不能。注入目标不同 |
 | 前端模块 | `macos\fullatlas-source\*.js` | `src\src\*.js` | **共用**，见下 |
 

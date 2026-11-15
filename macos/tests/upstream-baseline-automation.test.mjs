@@ -23,7 +23,7 @@ test('预发布号顺着同一条标签递增，正式版才另开 alpha 线', (
   }
 });
 
-test('仓库里的八处版本号当前是齐的', async () => {
+test('仓库里的十处版本号当前是齐的', async () => {
   const versions = readVersions(await readSources(repoRoot));
   assert.deepEqual(Object.keys(versions), versionFiles);
   // 少对齐一处，打包（CFBundleShortVersionString 校验）或 Cargo --locked 就会失败。
@@ -38,7 +38,7 @@ test('漂移的版本号必须在递增前被挡住', () => {
   assert.equal(Object.keys(sources).length, versionFiles.length);
 });
 
-test('一次改写覆盖全部八处，且只动版本号本身', async () => {
+test('一次改写覆盖全部十处，且只动版本号本身', async () => {
   const sources = await readSources(repoRoot);
   const previous = assertConsistent(readVersions(sources));
   const next = nextPrerelease(previous);

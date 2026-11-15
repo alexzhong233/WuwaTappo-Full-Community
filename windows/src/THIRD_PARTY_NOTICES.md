@@ -8,7 +8,7 @@
 | Microsoft Edge WebView2 Fixed Version Runtime x64 | Microsoft 的第三方运行时，适用其独立许可条款。下载及分发文档：https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution 。原始随包许可和第三方说明保留在 `runtime/` 内。 |
 | Python | 冻结本地服务内包含 Python 运行时，适用 Python Software Foundation License；许可文件随发行包保留。 |
 | psutil 7.2.2 | 原地更新辅助进程使用的进程查询依赖，BSD 3-Clause License；许可随包保留在 `licenses/PSUTIL_LICENSE.txt`。 |
-| PyInstaller | 构建工具，GPL with exception，允许生成的应用按自己的许可证分发。https://pyinstaller.org/en/stable/license.html 。相关依赖和许可保留在冻结服务中。 |
+| PyInstaller | 构建工具，GPL with exception，允许生成的应用按自己的许可证分发。https://pyinstaller.org/en/stable/license.html 。仅用于打包 Tk 版更新管理器（`tools\manager.py`），不参与发行包内的本地服务。 |
 | Acorn 8.15.0 | 构建时的 JavaScript 解析器，MIT License，许可见 `tools/ACORN_LICENSE`。 |
 | Brotli、pefile、jsbeautifier | 仅为构建依赖，不改变它们各自的授权；安装依赖时获取其原有许可证。 |
 | Inno Setup | 用于生成安装包的构建工具，保留其安装器自身标识；https://jrsoftware.org/ 。 |

@@ -6,6 +6,11 @@
 
 结论先说：**上游有、我们既没有也没等价实现的，是 0 项。** 下面 8 条都是「单 exe 架构的产物」或「代码拆法不同」——其中第 3 条（更新说明 HTML 兜底）已于 2026-11-08 补齐，剩 7 条维持不搬。
 
+> 注意：本文提到的 `windows/src/src/local_host.py` 及其同目录的 Python 运行时模块，已在
+> 「本地服务改用 `shared/backend` Rust 产物」那轮整合后删除。文中这些路径与行号只作历史对照，
+> 现在的实现位置是 `shared/backend/src/local_gallery_host.rs`（本机 HTTP 路由）、
+> `windows_startup.rs`（开机自启托管）和 `windows_menu.rs`（桌宠右键原生菜单）。
+
 ---
 
 ## 1. 独立的「更新中」置顶小窗口

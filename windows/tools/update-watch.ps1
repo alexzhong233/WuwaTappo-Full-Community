@@ -82,7 +82,7 @@ New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 $env:WUWA_EXTRACT_ROOT = $newBase
 & $Py (Join-Path $Root 'src\tools\extract_static.py') (Join-Path $newBase 'WuwaTappo.official.exe')
 if ($LASTEXITCODE -ne 0) { throw '解包失败（extract_static.py）' }
-# 与 build.py 相同：解包后必须跑 inspect_js.cjs 生成 js_structure.json
+# 与 tools\build.ps1 相同：解包后必须跑 inspect_js.cjs 生成 js_structure.json
 if (-not (Test-Path -LiteralPath (Join-Path $newBase 'js_structure.json'))) {
   $shared = Get-ChildItem -LiteralPath (Join-Path $newBase 'readable_js\assets') -Filter *.js |
     Where-Object { (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8) -match 'function applyCatalog\(' } |

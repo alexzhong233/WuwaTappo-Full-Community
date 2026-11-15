@@ -63,8 +63,8 @@ if ($Extract) {
 $env:WUWA_BUILD_ROOT = $R.WorkDir
 $env:WUWA_EXTRACT_ROOT = $Base
 
-# build_integration.py 与运行期都要读 build\local_config.json，之前它靠上游 build.py 生成，
-# 现在这一步由本脚本负责。素材缓存缺失时计数为 0，程序仍可启动，图鉴按需回源官方 CDN。
+# build_integration.py 与运行期都要读 build\local_config.json，这一步由本脚本负责。
+# 素材缓存缺失时计数为 0，程序仍可启动，图鉴按需回源官方 CDN。
 $cacheDir = Join-Path $Root 'assets\cache'
 $assetCount = 0
 $atlasCount = 0
@@ -82,13 +82,9 @@ if ($assetCount -eq 0) { Write-Warning '未找到素材缓存（assets\cache）�
 
 $clientVersion = (Get-Item -LiteralPath $Official).VersionInfo.ProductVersion
 if (-not $clientVersion) { $clientVersion = '0.0.0' }
-# 整合版本沿用注入源码里声明的值，避免面板显示与实际补丁版本不一致
+# 整合版本（上游 MOD 补丁号）：与「全图鉴版本」是两个概念，改补丁时手动抬这里。
+# 以前是读上游 build.py 里的 MOD_VERSION，那份脚本已随 Python 宿主一起删掉。
 $modVersion = '1.2'
-$buildPy = Join-Path $Patched 'build.py'
-if (Test-Path -LiteralPath $buildPy) {
-  $hit = Select-String -LiteralPath $buildPy -Pattern "MOD_VERSION\s*=\s*'([^']+)'" | Select-Object -First 1
-  if ($hit) { $modVersion = $hit.Matches[0].Groups[1].Value }
-}
 # 面板「全图鉴版本」跟本仓库 package.json 走，和 GitHub Release 的 tag 同源
 $communityVersion = ''
 $packageJson = Join-Path (Split-Path $Root -Parent) 'package.json'
@@ -171,3 +167,7 @@ if ($NoDeploy) {
 "== 5/5 装配并同步到 app\ =="
 if ($NoRuntime) { & (Join-Path $PSScriptRoot 'deploy.ps1') -Region $R.Id -NoRuntime }
 else { & (Join-Path $PSScriptRoot 'deploy.ps1') -Region $R.Id }
+
+# deploy.ps1 末尾已经归零 $LASTEXITCODE，这里再显式收口：
+# 构建脚本只要走到结束就算成功，不能让内部原生命令的返回码透传给调用方。
+exit 0

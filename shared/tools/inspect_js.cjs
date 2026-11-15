@@ -2,7 +2,7 @@
  * 官方前端的结构索引器：把解包后的 readable_js 解析成 js_structure.json
  *
  * 两平台共用同一份：macOS 走 `macos/scripts/fullatlas-frontend.mjs`，
- * Windows 走 `windows/src/build.py` 与 `windows/tools/*.ps1`，
+ * Windows 走 `windows/tools/build.ps1` 与 `windows/src/tools/*.py`，
  * 以前两处各放一份 29 行的拷贝，只有 acorn 的引入路径不同，改一处忘另一处就会
  * 出现「一个平台能注入、另一个平台找不到锚点」。现在只有这一份。
  *

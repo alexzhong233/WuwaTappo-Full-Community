@@ -60,7 +60,11 @@ test('unknown regions fail rather than silently selecting an account environment
   assert.throws(() => tauriArguments('install', getRegionProfile('cn')), /未知构建操作/);
 });
 
-test('Rust test entry point applies Global configuration without changing existing CN overrides', async () => {
+test('Rust test entry point applies Global configuration without changing existing CN overrides', {
+  // 用 PATH 里的假 `cargo`（#!/bin/sh 脚本）拦截调用，Windows 上拿不到可执行的 cargo，
+  // 这条只在 macOS/Linux 上有意义。
+  skip: process.platform === 'win32' ? '仅在 POSIX 上可验证（假 cargo 脚本）' : false,
+}, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'wuwa-cargo-entry-'));
   try {
     await writeFile(path.join(directory, 'cargo'), '#!/bin/sh\nprintf \'%s\' "${TAURI_CONFIG:-null}"\n', { mode: 0o755 });

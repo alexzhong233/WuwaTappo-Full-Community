@@ -39,7 +39,7 @@
 
 ## 构建
 
-两个平台都无法交叉编译（macOS 侧要 Xcode，Windows 侧要官方 Windows 客户端 + PyInstaller），
+两个平台都无法交叉编译（macOS 侧要 Xcode，Windows 侧要官方 Windows 客户端 + Rust 工具链），
 所以统一入口按当前系统分派，真正的双平台并行发生在 CI。
 
 ```bash

@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use std::{
     env, fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, TryLockError},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -11,6 +11,13 @@ use std::{
 use std::{os::windows::process::CommandExt, process::Command};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use wuwatappo_assistant_core::{custom_resources, AssistantCore};
+
+// 原生菜单与开机自启只有 Windows 有实现；其他平台保留同名入口，应答明确的错误而不是 404，
+// 免得前端把「平台不支持」和「接口不存在」混成一种失败。
+#[cfg(windows)]
+mod windows_menu;
+#[cfg(windows)]
+mod windows_startup;
 
 const MAX_BODY: usize = 64 * 1024;
 const MAX_CUSTOM_BODY: usize = 16 * 1024;
@@ -490,6 +497,103 @@ fn start_sync(app: &Arc<App>, force: bool) -> Value {
     snapshot
 }
 
+/// 诊断行只追加不重写：出错时能顺着时间看现场，也不怕并发写坏整份记录。
+fn append_diagnostic(app: &App, value: &Value) {
+    let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(app.root.join("client_diagnostics.jsonl"))
+    else {
+        return;
+    };
+    let _ = file.write_all(format!("{value}\n").as_bytes());
+}
+
+const COMMUNITY_RELEASES_URL: &str =
+    "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
+
+/// 官方桌宠下载页：国服 / 国际服各一个入口，跟着构建时锁定的区域走。
+fn pet_site_url(app: &App) -> String {
+    let region = config_value(app, "region");
+    if region.as_str().unwrap_or("cn").eq_ignore_ascii_case("global") {
+        "https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/zh-tw/".into()
+    } else {
+        "https://download-mc-wuwatappo.kurogames-global.com/download/".into()
+    }
+}
+
+/// 地址一律由服务端决定，不接受前端传参：能传地址就等于让页面能拉起任意程序。
+#[cfg(windows)]
+fn open_url(url: &str) -> Value {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show: i32,
+        ) -> isize;
+    }
+    let wide = |text: &str| -> Vec<u16> {
+        std::ffi::OsStr::new(text)
+            .encode_wide()
+            .chain(Some(0))
+            .collect()
+    };
+    let verb = wide("open");
+    let target = wide(url);
+    let code = unsafe {
+        ShellExecuteW(
+            0,
+            verb.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        )
+    };
+    // ShellExecuteW 大于 32 才算成功，小于等于 32 是 SE_ERR_* 错误码
+    if code > 32 {
+        json!({"ok":true,"url":url})
+    } else {
+        json!({"ok":false,"url":url,"error":format!("系统没有打开浏览器（错误 {code}）")})
+    }
+}
+
+#[cfg(not(windows))]
+fn open_url(url: &str) -> Value {
+    let opened = std::process::Command::new("open")
+        .arg(url)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    json!({"ok":opened,"url":url})
+}
+
+#[cfg(windows)]
+fn context_menu(body: &Value) -> Result<Value, String> {
+    windows_menu::popup(body.get("items").unwrap_or(&Value::Null))
+}
+
+#[cfg(not(windows))]
+fn context_menu(_body: &Value) -> Result<Value, String> {
+    Err("原生右键菜单只能在 Windows 上使用".into())
+}
+
+#[cfg(windows)]
+fn startup_action(app: &App, action: &str) -> Result<Value, String> {
+    windows_startup::run(&app.root, action)
+}
+
+#[cfg(not(windows))]
+fn startup_action(_app: &App, _action: &str) -> Result<Value, String> {
+    Err("开机自启托管只能在 Windows 上使用".into())
+}
+
 fn send_file(request: tiny_http::Request, file: Option<PathBuf>) {
     let Some(file) = file else {
         return response(request, 404, json!({"error":"Not found"}));
@@ -563,10 +667,12 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
             if !safe_relative(name) || name.contains('/') {
                 return response(request, 400, json!({"error":"Invalid path"}));
             }
-            send_file(
-                request,
-                contained_file(&cache_dir(app).join("assets"), name),
-            );
+            let file = contained_file(&cache_dir(app).join("assets"), name);
+            if file.is_none() {
+                // 缺图是「缓存没同步全」的主要症状，逐行记下来才能定位是哪一张。
+                append_diagnostic(app, &json!({"kind":"asset_not_found","path":name}));
+            }
+            send_file(request, file);
         }
         _ if [
             "/character/",
@@ -602,6 +708,18 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
     if !body.is_object() {
         return response(request, 400, json!({"error":"Object required"}));
     }
+    if path == "/assistant/context-menu" {
+        // 原生菜单是阻塞调用（要等用户点完或收起），必须单开一条路由：
+        // 它不该占着 Assistant 的锁，否则菜单开着时看板读不到状态。
+        return match context_menu(&body) {
+            Ok(value) => response(request, 200, value),
+            Err(error) => response(
+                request,
+                400,
+                json!({"action":Value::Null,"error":error}),
+            ),
+        };
+    }
     if path.starts_with("/assistant/") {
         if path == "/assistant/typing-context" {
             return response(request, 200, typing_context(app));
@@ -631,6 +749,12 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         "/community/update-check" => response(request, 200, community_update(app)),
         "/official/update-check" | "/official/check" => {
             response(request, 200, official_update(app))
+        }
+        // 面板上的两个「打开官方页面」按钮：地址写死在服务端，页面拿不到入口就无法诱导跳转。
+        "/official/releases" => response(request, 200, open_url(COMMUNITY_RELEASES_URL)),
+        "/official/pet-site" => {
+            let url = pet_site_url(app);
+            response(request, 200, open_url(&url))
         }
         "/update/status" | "/update/check" => {
             let check = community_update(app);
@@ -718,7 +842,20 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
                 json!({"enabled":enabled,"firewall_verified":false,"mode_verified":true,"network_policy":"rooms-only","ready":cache_ready(app)}),
             );
         }
-        "/diagnostic" => response(request, 200, json!({"ok":true})),
+        "/diagnostic" => {
+            // 页面通过 d.report() 上报的就是排障用的现场；丢掉了就只能靠猜。
+            append_diagnostic(app, &body);
+            response(request, 200, json!({"ok":true}))
+        }
+        "/startup" => {
+            // 开机自启改由本机服务托管：计划任务跑 launch.ps1，先起本地服务再起桌宠。
+            // 官方原来的自启项直接拉桌宠 exe，开机后图鉴和控制台连不上服务。
+            let action = body.get("action").and_then(Value::as_str).unwrap_or("status");
+            match startup_action(app, action) {
+                Ok(value) => response(request, 200, value),
+                Err(error) => response(request, 409, json!({"error":error,"enabled":false})),
+            }
+        }
         "/sync" => {
             let force = body.get("force") == Some(&Value::Bool(true));
             let state = start_sync(app, force);
