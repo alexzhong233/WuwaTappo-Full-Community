@@ -33,8 +33,6 @@ export const versionFiles = [
 // 这样替换时可以直接用字符串替换，不会误伤同名的其他字段。
 const jsonVersion = /"version":\s*"([^"]*)"/;
 const cargoPackageVersion = /^version = "([^"]+)"/m;
-const cargoLockVersion = /name = "wuwatappo-mac"\r?\nversion = "([^"]+)"/;
-const backendCargoLockVersion = /name = "wuwatappo-assistant-core"\r?\nversion = "([^"]+)"/;
 const moduleVersion = /const VERSION='([^']+)'/;
 
 const patterns = {
@@ -43,11 +41,14 @@ const patterns = {
   'macos/src-tauri/tauri.conf.json': jsonVersion,
   'macos/src-tauri/tauri.global.conf.json': jsonVersion,
   'macos/src-tauri/Cargo.toml': cargoPackageVersion,
-  'macos/src-tauri/Cargo.lock': cargoLockVersion,
   'shared/backend/Cargo.toml': cargoPackageVersion,
-  'shared/backend/Cargo.lock': backendCargoLockVersion,
   'shared/frontend/desktop_assistant.js': moduleVersion,
 };
+
+// Cargo.lock 里本仓库自己的包都要跟着版本走。macOS 的锁除了 app 自己，
+// 还带着 shared/backend 作为路径依赖的条目；只改前者会让 `--locked` 构建直接失败
+// （1.3.2-beta.1 就栽在这里：cargo 拒绝在锁定模式下改锁文件）。
+const ownLockPackages = /name = "(?:wuwatappo-mac|wuwatappo-assistant-core)"\r?\nversion = "([^"]+)"/g;
 
 export function nextPrerelease(version) {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+)\.(\d+))?$/.exec(String(version || ''));
@@ -59,7 +60,18 @@ export function nextPrerelease(version) {
   return `${major}.${minor}.${Number(patch) + 1}-alpha.1`;
 }
 
+function readLock(file, text) {
+  const versions = [...text.matchAll(ownLockPackages)].map(match => match[1]);
+  if (!versions.length) throw new Error(`${file} 里找不到本仓库的包版本号`);
+  const unique = new Set(versions);
+  if (unique.size !== 1) {
+    throw new Error(`${file} 里本仓库的包版本号已经不一致：${versions.join(' / ')}`);
+  }
+  return versions[0];
+}
+
 function readOne(file, text) {
+  if (file.endsWith('Cargo.lock')) return readLock(file, text);
   const match = patterns[file].exec(text);
   if (!match) throw new Error(`${file} 里找不到版本号`);
   return match[1];
@@ -103,13 +115,25 @@ function rewriteLockfile(text, previous, next) {
   return result;
 }
 
+// Cargo.lock 可能同时含 app 与共享 crate 两条本仓库条目，两处都要改。
+function rewriteCargoLock(text, previous, next, file) {
+  let done = 0;
+  const result = text.replace(ownLockPackages, (whole, value) => {
+    if (value !== previous) return whole;
+    done += 1;
+    return whole.replace(value, next);
+  });
+  if (done === 0) throw new Error(`${file} 里没有找到本仓库的包版本号`);
+  return result;
+}
+
 export function rewriteSources(sources, previous, next) {
   const updated = {};
   for (const file of versionFiles) {
     const text = sources[file];
-    updated[file] = file === 'package-lock.json'
-      ? rewriteLockfile(text, previous, next)
-      : rewriteOne(text, patterns[file], previous, next, 1, file);
+    if (file === 'package-lock.json') updated[file] = rewriteLockfile(text, previous, next);
+    else if (file.endsWith('Cargo.lock')) updated[file] = rewriteCargoLock(text, previous, next, file);
+    else updated[file] = rewriteOne(text, patterns[file], previous, next, 1, file);
   }
   return updated;
 }

@@ -30,6 +30,19 @@ test('仓库里的十处版本号当前是齐的', async () => {
   assert.equal(new Set(Object.values(versions)).size, 1, JSON.stringify(versions, null, 2));
 });
 
+test('两个 Cargo.lock 里本仓库的包版本都与 package.json 一致', () => {
+  // macOS 的锁除了 app 自己，还带 shared/backend（路径依赖）的条目；只改一个，
+  // `--locked` 构建就会报「cannot update the lock file」直接失败。
+  const version = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+  const own = /name = "(?:wuwatappo-mac|wuwatappo-assistant-core)"\r?\nversion = "([^"]+)"/g;
+  for (const file of ['macos/src-tauri/Cargo.lock', 'shared/backend/Cargo.lock']) {
+    const text = readFileSync(path.join(repoRoot, file), 'utf8');
+    const found = [...text.matchAll(own)].map(match => match[1]);
+    assert.ok(found.length > 0, `${file} 里没有本仓库的包条目`);
+    for (const value of found) assert.equal(value, version, `${file} 里的包版本是 ${value}`);
+  }
+});
+
 test('漂移的版本号必须在递增前被挡住', () => {
   const sources = Object.fromEntries(versionFiles.map(file => [file, '']));
   const versions = Object.fromEntries(versionFiles.map(file => [file, '1.3.0-alpha.1']));

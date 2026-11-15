@@ -141,7 +141,7 @@ class UpdaterTests(unittest.TestCase):
         target,folder,stage=self.helper_fixture()
         with patch('desktop_updater.processes',return_value=[]),patch('desktop_updater.launch',side_effect=lambda root:(folder/'healthy').write_text('1.1')):
             apply_update(target,stage)
-        self.assertTrue(json.loads((folder/'result.json').read_text())['ok'])
+        self.assertTrue(json.loads((folder/'result.json').read_text(encoding='utf-8'))['ok'])
         self.assertFalse((folder/'backup').exists())
         self.assertFalse(stage.exists())
         self.assertEqual((target/'local_config.json').read_text(),'private')
@@ -151,7 +151,7 @@ class UpdaterTests(unittest.TestCase):
         # 前五个 0 给「写进度/等退出/替换/启动」这几步，之后跳到 91 让启动检查超时。
         with patch('desktop_updater.processes',return_value=[]),patch('desktop_updater.launch') as launch,patch('desktop_updater.psutil',MagicMock()),patch('desktop_updater.time.monotonic',side_effect=[0,0,0,0,0,91,91,91,91]):
             apply_update(target,stage)
-        self.assertFalse(json.loads((folder/'result.json').read_text())['ok'])
+        self.assertFalse(json.loads((folder/'result.json').read_text(encoding='utf-8'))['ok'])
         self.assertEqual((target/'WuwaTappo.Local.exe').read_bytes(),b'old-pet')
         self.assertEqual(launch.call_count,2)
         self.assertEqual((target/'local_config.json').read_text(),'private')

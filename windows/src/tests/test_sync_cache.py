@@ -44,7 +44,7 @@ class CacheSyncTests(unittest.TestCase):
             result = self.run_sync(lambda done, total: progress.append((done, total)))
         self.assertEqual(result, {'changed': True, 'atlas_count': 1, 'asset_count': 3, 'assets_json_ts': 2})
         self.assertEqual(progress[-1], (3, 3))
-        manifest = json.loads((self.cache / 'asset_manifest.json').read_text())
+        manifest = json.loads((self.cache / 'asset_manifest.json').read_text(encoding='utf-8'))
         for item in manifest['records']:
             self.assertEqual(hashlib.sha256((self.cache / 'assets' / item['file']).read_bytes()).hexdigest(), item['sha256'])
         self.assertEqual(len(list(self.root.glob('cache_previous_*'))), 1)
@@ -60,7 +60,7 @@ class CacheSyncTests(unittest.TestCase):
         self.catalog['character_skin_atlas']['2']['height_light_id'] = 999
         with patch.object(sync_cache, 'get_json', side_effect=self.get_json):
             with self.assertRaisesRegex(ValueError, '映射缺失'): self.run_sync()
-        self.assertEqual(json.loads((self.cache / 'atlas.json').read_text()), self.old_atlas)
+        self.assertEqual(json.loads((self.cache / 'atlas.json').read_text(encoding='utf-8')), self.old_atlas)
 
     def test_unchanged_version_downloads_no_images(self):
         self.activity = self.old_activity
@@ -81,7 +81,7 @@ class CacheSyncTests(unittest.TestCase):
             result = self.run_sync(lambda done, total: progress.append((done, total)))
         self.assertTrue(result['changed'])
         self.assertEqual(progress[-1], (3, 3))
-        manifest = json.loads((self.cache / 'asset_manifest.json').read_text())
+        manifest = json.loads((self.cache / 'asset_manifest.json').read_text(encoding='utf-8'))
         self.assertEqual(len(manifest['records']), 3)
         self.assertFalse(list(self.root.glob('cache_previous_*')))
 
