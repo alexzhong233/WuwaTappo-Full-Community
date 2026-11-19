@@ -52,9 +52,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          CN=$(node -p "require('./macos/upstream-cn.json').version")
-          GLOBAL=$(node -p "require('./macos/upstream-global.json').version")
-          OFFICIAL_WIN=$(node -p "require('./windows/upstream-win.json').client_version")
+          CN=$(node -p "require('./shared/upstream/cn.json').version")
+          GLOBAL=$(node -p "require('./shared/upstream/global.json').version")
+          OFFICIAL_WIN=$(node -p "require('./shared/upstream/cn.json').version")
           SHORT_SHA="${HEAD_SHA:0:12}"
           cat > /tmp/dev-release-notes.md <<EOF
           # WuwaTappo 社区版 Dev
@@ -67,11 +67,8 @@ jobs:
           这是随 dev 分支持续更新的开发预发布版本，仅用于测试。
           macOS 产物为 dmg（拖入「应用程序」）；Windows 产物为 exe 安装包（装完双击快捷方式即用，不含 WebView2 运行时）。
           EOF
-          FILES=(dist/*.dmg dist/*.exe)
-          for FILE in "${FILES[@]}"; do [[ -f "$FILE" ]] || { echo "缺少产物：$FILE" >&2; exit 1; }; done
-          if compgen -G 'dist/*.sha256' > /dev/null; then
-            FILES+=(dist/*.sha256)
-          fi
+          node scripts/release-assets.mjs prepare --version "$VERSION"
+          mapfile -t FILES < <(node scripts/release-assets.mjs files --version "$VERSION")
           if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release upload "$TAG" "${FILES[@]}" --repo "$GH_REPO" --clobber
             gh release edit "$TAG" --repo "$GH_REPO" \

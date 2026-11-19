@@ -3,8 +3,9 @@ use reqwest::{blocking::Client, redirect::Policy, Url};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::{self, File},
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -148,6 +149,96 @@ fn download_one(client: &Client, url: &str, target: &Path) -> Result<(u64, Strin
     Ok((bytes.len() as u64, hash_hex(&bytes)))
 }
 
+fn download_one_with_retry(
+    client: &Client,
+    url: &str,
+    target: &Path,
+) -> Result<(u64, String), String> {
+    let mut last_error = String::new();
+    for attempt in 0..3 {
+        match download_one(client, url, target) {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                last_error = error;
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(250 * (attempt as u64 + 1)));
+                }
+            }
+        }
+    }
+    Err(last_error)
+}
+
+fn id_text(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(text)) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        }
+        Some(Value::Number(number)) => number.as_u64().map(|v| v.to_string()),
+        _ => None,
+    }
+}
+
+/// 校验官方图鉴列表与外观映射表完整性，避免写入半残缓存。
+pub fn validate_catalog(value: &Value) -> Result<(), String> {
+    let atlas = value
+        .get("atlas")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .ok_or("官方图鉴列表为空")?;
+    let catalog = value.get("catalog").ok_or("缺少外观目录")?;
+    for kind in ["character_skin", "accessory", "emote"] {
+        if !catalog.get(kind).is_some_and(Value::is_object)
+            || !catalog
+                .get(format!("{kind}_atlas"))
+                .is_some_and(Value::is_object)
+        {
+            return Err("外观目录结构不兼容，原缓存保留".into());
+        }
+    }
+    for row in atlas {
+        let kind = row
+            .get("asset_type")
+            .and_then(Value::as_str)
+            .ok_or("图鉴类型缺失")?;
+        if !matches!(
+            kind,
+            "character_skin_atlas" | "accessory_atlas" | "emote_atlas"
+        ) {
+            return Err("图鉴条目类型不受支持".into());
+        }
+        let id = id_text(row.get("asset_id")).ok_or("图鉴 ID 无效")?;
+        let usable = id_text(
+            catalog
+                .get(kind)
+                .and_then(|v| v.get(&id))
+                .and_then(|v| v.get("height_light_id")),
+        )
+        .ok_or("图鉴缺少外观 ID 映射")?;
+        if !catalog
+            .get(kind.trim_end_matches("_atlas"))
+            .is_some_and(|v| v.get(&usable).is_some())
+        {
+            return Err("图鉴外观映射不完整，原缓存保留".into());
+        }
+    }
+    Ok(())
+}
+
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    for attempt in 0..5 {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::PermissionDenied && attempt < 4 => {
+                thread::sleep(Duration::from_millis(300));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!()
+}
+
 fn atomic_replace(root: &Path, stage: &Path) -> Result<(), String> {
     let cache = root.join("cache");
     let stamp = SystemTime::now()
@@ -156,11 +247,12 @@ fn atomic_replace(root: &Path, stage: &Path) -> Result<(), String> {
         .as_nanos();
     let previous = root.join(format!("cache_previous_{stamp}"));
     if cache.exists() {
-        fs::rename(&cache, &previous).map_err(|error| format!("无法保留旧素材缓存：{error}"))?;
+        rename_with_retry(&cache, &previous)
+            .map_err(|error| format!("无法保留旧素材缓存：{error}"))?;
     }
-    if let Err(error) = fs::rename(stage, &cache) {
+    if let Err(error) = rename_with_retry(stage, &cache) {
         if previous.exists() {
-            let _ = fs::rename(&previous, &cache);
+            let _ = rename_with_retry(&previous, &cache);
         }
         return Err(format!("无法启用新素材缓存：{error}"));
     }
@@ -185,18 +277,10 @@ fn atomic_replace(root: &Path, stage: &Path) -> Result<(), String> {
 
 /// Fetch and validate the selected region's official atlas and appearance catalog.
 pub fn fetch_catalog(region: &str) -> Result<OfficialCatalog, String> {
-    let (api_base, assets_host) = match region {
-        "cn" => (
-            "https://api-mc-wuwatappo.kurogames-global.com",
-            "https://mc-wuwatappo.kurogames-global.com",
-        ),
-        "global" => (
-            "https://api-wutheringwaves-wuwatappo.kurogames-global.com",
-            "https://wutheringwaves-wuwatappo.kurogames-global.com",
-        ),
-        _ => return Err("未知官方服务区域".into()),
-    };
-    let api = Url::parse(api_base).map_err(|_| "官方 API 地址无效")?;
+    let profile = crate::regions::profile(region).ok_or("未知官方服务区域")?;
+    let api_base = format!("https://{}", profile.api_host);
+    let assets_host = profile.assets_origin.as_str();
+    let api = Url::parse(&api_base).map_err(|_| "官方 API 地址无效")?;
     let host = Url::parse(assets_host).map_err(|_| "官方素材地址无效")?;
     if api.scheme() != "https"
         || host.scheme() != "https"
@@ -257,35 +341,7 @@ pub fn fetch_catalog(region: &str) -> Result<OfficialCatalog, String> {
         host.host_str().unwrap(),
     )?;
     let catalog = get_json(&client, manifest_url)?;
-    let kinds = ["character_skin", "accessory", "emote"];
-    for kind in kinds {
-        if !catalog[kind].is_object() || !catalog[format!("{kind}_atlas")].is_object() {
-            return Err("新版素材结构不兼容，保留旧缓存".into());
-        }
-    }
-    let atlas_rows = atlas["data"].as_array().unwrap();
-    for row in atlas_rows {
-        let kind = row["asset_type"].as_str().ok_or("图鉴条目缺少类型")?;
-        let id = row["asset_id"]
-            .as_u64()
-            .ok_or("图鉴条目 ID 无效")?
-            .to_string();
-        if !kinds.contains(&kind) {
-            return Err("图鉴条目类型不受支持".into());
-        }
-        let entry = catalog[kind]
-            .get(&id)
-            .ok_or("图鉴到资源映射缺失，保留旧缓存")?;
-        let highlight = entry["height_light_id"]
-            .as_str()
-            .ok_or("图鉴资源映射缺少外观 ID")?;
-        if !catalog[kind.trim_end_matches("_atlas")]
-            .get(highlight)
-            .is_some()
-        {
-            return Err("图鉴到外观映射缺失，保留旧缓存".into());
-        }
-    }
+    validate_catalog(&json!({"atlas": atlas["data"], "catalog": catalog}))?;
     Ok(OfficialCatalog {
         activity,
         atlas,
@@ -295,8 +351,56 @@ pub fn fetch_catalog(region: &str) -> Result<OfficialCatalog, String> {
     })
 }
 
-/// Download and verify the complete selected-region catalog before replacing cache/.
-pub fn sync(root: &Path, region: &str) -> Result<SyncSummary, String> {
+fn read_cached_json(path: &Path) -> Option<Value> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+fn reuse_cached_asset(
+    cache_assets: &Path,
+    name: &str,
+    target: &Path,
+    expected: Option<&(u64, String)>,
+) -> Option<(u64, String)> {
+    let source = cache_assets.join(name);
+    let meta = fs::metadata(&source).ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_IMAGE {
+        return None;
+    }
+    if let Some((expected_size, expected_sha)) = expected {
+        if meta.len() != *expected_size {
+            return None;
+        }
+        let bytes = fs::read(&source).ok()?;
+        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || hash_hex(&bytes) != *expected_sha {
+            return None;
+        }
+        if fs::hard_link(&source, target).is_err() {
+            fs::copy(&source, target).ok()?;
+        }
+        return Some((*expected_size, expected_sha.clone()));
+    }
+    let bytes = fs::read(&source).ok()?;
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let digest = hash_hex(&bytes);
+    let len = bytes.len() as u64;
+    if fs::hard_link(&source, target).is_err() {
+        fs::copy(&source, target).ok()?;
+    }
+    Some((len, digest))
+}
+
+/// 下载并校验选定区域完整图鉴缓存，支持增量复用与实时进度回调。
+pub fn sync_with_progress<F>(
+    root: &Path,
+    region: &str,
+    force: bool,
+    on_progress: F,
+) -> Result<SyncSummary, String>
+where
+    F: Fn(usize, usize) + Send + Sync,
+{
     let OfficialCatalog {
         activity,
         atlas,
@@ -308,6 +412,68 @@ pub fn sync(root: &Path, region: &str) -> Result<SyncSummary, String> {
     let atlas_rows = atlas["data"].as_array().ok_or("官方图鉴列表无效")?;
     let root = root.to_path_buf();
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.filter_map(Result::ok) {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("cache_staging_")
+            {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+
+    let mut jobs = Map::new();
+    rewrite_urls(&mut catalog, &host, &mut jobs)?;
+    let total = jobs.len();
+    let cache_dir = root.join("cache");
+    let cache_assets = cache_dir.join("assets");
+
+    let mut existing_records: HashMap<String, (u64, String)> = HashMap::new();
+    if let Some(manifest) = read_cached_json(&cache_dir.join("asset_manifest.json")) {
+        if let Some(items) = manifest.get("records").and_then(Value::as_array) {
+            for item in items {
+                if let (Some(file), Some(size), Some(sha)) = (
+                    item.get("file").and_then(Value::as_str),
+                    item.get("size").and_then(Value::as_u64),
+                    item.get("sha256").and_then(Value::as_str),
+                ) {
+                    existing_records.insert(file.to_owned(), (size, sha.to_owned()));
+                }
+            }
+        }
+    }
+
+    if !force {
+        let same_ts = read_cached_json(&cache_dir.join("activity-config.json"))
+            .is_some_and(|cached| cached.pointer("/data/assets_json_ts") == activity.pointer("/data/assets_json_ts"));
+        let same_atlas = read_cached_json(&cache_dir.join("atlas.json"))
+            .is_some_and(|cached| cached.get("data") == atlas.get("data"));
+        let same_catalog = read_cached_json(&cache_dir.join("offline_catalog.json"))
+            .is_some_and(|cached| cached == catalog);
+        let all_files_present = !jobs.is_empty()
+            && existing_records.len() == total
+            && jobs.keys().all(|name| {
+                existing_records
+                    .get(name)
+                    .and_then(|(size, _)| {
+                        fs::metadata(cache_assets.join(name))
+                            .ok()
+                            .filter(|meta| meta.is_file() && meta.len() == *size && *size > 0)
+                    })
+                    .is_some()
+            });
+        if same_ts && same_atlas && same_catalog && all_files_present {
+            on_progress(total, total);
+            return Ok(SyncSummary {
+                changed: false,
+                atlas_count: atlas_rows.len(),
+                asset_count: total,
+            });
+        }
+    }
+
     let stage = root.join(format!(
         "cache_staging_{}",
         SystemTime::now()
@@ -316,38 +482,57 @@ pub fn sync(root: &Path, region: &str) -> Result<SyncSummary, String> {
             .as_nanos()
     ));
     fs::create_dir_all(stage.join("assets")).map_err(|error| error.to_string())?;
-    let mut jobs = Map::new();
-    rewrite_urls(&mut catalog, &host, &mut jobs)?;
     let jobs = Arc::new(jobs.into_iter().collect::<Vec<_>>());
     let next = Arc::new(AtomicUsize::new(0));
+    let completed = Arc::new(AtomicUsize::new(0));
     let records = Arc::new(Mutex::new(Vec::<Value>::new()));
     let failures = Arc::new(Mutex::new(Vec::<String>::new()));
-    let mut workers = Vec::new();
-    for _ in 0..8.min(jobs.len().max(1)) {
-        let client = client.clone();
-        let jobs = Arc::clone(&jobs);
-        let next = Arc::clone(&next);
-        let records = Arc::clone(&records);
-        let failures = Arc::clone(&failures);
-        let assets = stage.join("assets");
-        workers.push(thread::spawn(move || loop {
-            let index = next.fetch_add(1, Ordering::Relaxed);
-            let Some((name, source)) = jobs.get(index) else {
-                break;
-            };
-            let source = source.as_str().unwrap();
-            match download_one(&client, source, &assets.join(name)) {
-                Ok((size, sha256)) => records
-                    .lock()
-                    .unwrap()
-                    .push(json!({"file":name,"source":source,"size":size,"sha256":sha256})),
-                Err(error) => failures.lock().unwrap().push(format!("{name}: {error}")),
-            }
-        }));
-    }
-    for worker in workers {
-        let _ = worker.join();
-    }
+    let existing_records = Arc::new(existing_records);
+    let callback = Arc::new(on_progress);
+    let cache_assets = Arc::new(cache_assets);
+    callback(0, total);
+
+    std::thread::scope(|scope| {
+        for _ in 0..8.min(jobs.len().max(1)) {
+            let client = client.clone();
+            let jobs = Arc::clone(&jobs);
+            let next = Arc::clone(&next);
+            let completed = Arc::clone(&completed);
+            let records = Arc::clone(&records);
+            let failures = Arc::clone(&failures);
+            let existing_records = Arc::clone(&existing_records);
+            let callback = Arc::clone(&callback);
+            let cache_assets = Arc::clone(&cache_assets);
+            let assets = stage.join("assets");
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some((name, source)) = jobs.get(index) else {
+                    break;
+                };
+                let source = source.as_str().unwrap();
+                let target = assets.join(name);
+                let reused = if !force {
+                    reuse_cached_asset(&cache_assets, name, &target, existing_records.get(name))
+                } else {
+                    None
+                };
+                let outcome = match reused {
+                    Some(hit) => Ok(hit),
+                    None => download_one_with_retry(&client, source, &target),
+                };
+                match outcome {
+                    Ok((size, sha256)) => records
+                        .lock()
+                        .unwrap()
+                        .push(json!({"file":name,"source":source,"size":size,"sha256":sha256})),
+                    Err(error) => failures.lock().unwrap().push(format!("{name}: {error}")),
+                }
+                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                callback(done, total);
+            });
+        }
+    });
+
     let failures = failures.lock().unwrap();
     if !failures.is_empty() {
         let _ = fs::remove_dir_all(&stage);
@@ -379,6 +564,11 @@ pub fn sync(root: &Path, region: &str) -> Result<SyncSummary, String> {
     };
     atomic_replace(&root, &stage)?;
     Ok(summary)
+}
+
+/// Download and verify the complete selected-region catalog before replacing cache/.
+pub fn sync(root: &Path, region: &str) -> Result<SyncSummary, String> {
+    sync_with_progress(root, region, false, |_, _| {})
 }
 
 #[cfg(test)]
@@ -417,5 +607,41 @@ mod tests {
         );
         let mut external = json!({"url":"https://example.com/asset.png"});
         assert!(rewrite_urls(&mut external, &base, &mut Map::new()).is_err());
+    }
+
+    #[test]
+    fn catalog_validation_accepts_numeric_or_string_ids_and_rejects_broken_links() {
+        let valid_numeric = json!({
+            "atlas": [{"asset_type": "character_skin_atlas", "asset_id": 43}],
+            "catalog": {
+                "character_skin": {"42": {"url": "a.png"}},
+                "character_skin_atlas": {"43": {"height_light_id": 42}},
+                "accessory": {},
+                "accessory_atlas": {},
+                "emote": {},
+                "emote_atlas": {}
+            }
+        });
+        assert!(validate_catalog(&valid_numeric).is_ok());
+
+        let valid_string = json!({
+            "atlas": [{"asset_type": "emote_atlas", "asset_id": "101"}],
+            "catalog": {
+                "character_skin": {},
+                "character_skin_atlas": {},
+                "accessory": {},
+                "accessory_atlas": {},
+                "emote": {"202": {"url": "b.png"}},
+                "emote_atlas": {"101": {"height_light_id": "202"}}
+            }
+        });
+        assert!(validate_catalog(&valid_string).is_ok());
+
+        let mut broken = valid_numeric.clone();
+        broken["catalog"]["character_skin"]
+            .as_object_mut()
+            .unwrap()
+            .remove("42");
+        assert!(validate_catalog(&broken).is_err());
     }
 }

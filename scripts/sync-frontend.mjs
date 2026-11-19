@@ -7,10 +7,12 @@
  * 锁「差异不超过 4 行」来兜底；但每加一个功能都要两边各改一遍，改漏了就是静默分叉，
  * 所以改成生成：谁改功能只改唯一源，副本由这里产出，`frontend-sync.test.mjs` 卡住手改副本。
  *
- * 生成时只做三件事，其余逐字节相同：
+ * 生成时只做两件事，其余逐字节相同：
  *   1. `__WUWA_BRAND__`  → 各平台标题栏文案
  *   2. `__WUWA_PLATFORM__` → 各平台名（只出现在首行注释里）
- *   3. `const VERSION=` → Windows 侧沿用上游 FullAtlas 的 1.2，Mac 侧跟随本仓库发版号
+ *
+ * 两端都跟随 `package.json` 的统一发布号（即唯一源 `desktop_assistant.js` 里的
+ * `VERSION`），不再为 Windows 单独覆盖历史版本号 `'1.2'`。
  *
  * 构建链没变：两个注入器仍然读各自目录下的副本，不需要认识 shared/。
  */
@@ -27,16 +29,13 @@ export const TARGETS = {
     dir: 'macos/fullatlas-source',
     brand: 'WUWA TAPPO FULLATLAS / MAC',
     platform: 'macOS',
-    // 跟随 package.json 的发版号，也就是唯一源里写的那个值，这里不覆盖。
     version: null,
   },
   win: {
     dir: 'windows/src/src',
     brand: 'WUWA TAPPO / 后台助手',
     platform: 'Windows',
-    // 上游 FullAtlas 的 MOD 版本号：Windows 侧 VERSION 用于 /update/healthy，
-    // 语义和 Mac 的发版号不同，历史上一直是 1.2，保持不动。
-    version: '1.2',
+    version: null,
   },
 };
 

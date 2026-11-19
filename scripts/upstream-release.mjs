@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CHECKSUM_FILE, releaseAssetNames, releaseFiles, writeReleaseChecksums } from './release-assets.mjs';
 
 // 官方基线跟新的最后两公里：全绿就自动发预发布，任何一环红了就开草稿 PR 等人改适配。
 // 之所以要判"红了"和"绿了"两条路，是因为这里的目标是「版本号不设限」——
@@ -15,16 +16,6 @@ const stageLabels = {
   'build-windows': 'Windows 编译与打包',
   publish: '合并基线、打 tag 与发布',
 };
-
-export function releaseAssetNames(version) {
-  // 与 release.yml 的 expected 保持同一份清单：两服 × 两平台，格式各自唯一。
-  return [
-    `WuwaTappo-Full-CN-Community-${version}-macOS-arm64.dmg`,
-    `WuwaTappo-Full-Global-Community-${version}-macOS-arm64.dmg`,
-    `WuwaTappo-Full-CN-Community-Windows-x64-${version}.exe`,
-    `WuwaTappo-Full-Global-Community-Windows-x64-${version}.exe`,
-  ];
-}
 
 export function releaseNotes({ version, cn, global, winCn, winGlobal }) {
   return `# WuwaTappo Full Community ${version}
@@ -76,8 +67,7 @@ function releaseExists(tag, projectRoot, execute) {
 
 export function publishUpstream({ version, branch, projectRoot = root, environment = process.env, execute = run }) {
   const names = releaseAssetNames(version);
-  const missing = names.filter(name => !existsSync(path.join(projectRoot, 'dist', name)));
-  if (missing.length) throw new Error(`缺少产物，不能发布：${missing.join(', ')}`);
+  writeReleaseChecksums(version, projectRoot);
 
   // 分支是在构建前从 main 切出来的。构建要跑一个多小时，期间 main 可能又前进了——
   // 这时候如果 rebase 一把再发，tag 指的源码就和刚刚编出来的产物不是同一份了。
@@ -96,14 +86,16 @@ export function publishUpstream({ version, branch, projectRoot = root, environme
   // 所以这里自己发，避免同一份产物被构建两次。
   execute('git', ['push', '-f', 'origin', `refs/tags/${tag}`], { cwd: projectRoot, stdio: 'inherit' });
 
-  const cn = JSON.parse(readFileSync(path.join(projectRoot, 'macos/upstream-cn.json'), 'utf8')).version;
-  const global = JSON.parse(readFileSync(path.join(projectRoot, 'macos/upstream-global.json'), 'utf8')).version;
-  const winCn = JSON.parse(readFileSync(path.join(projectRoot, 'windows/upstream-win.json'), 'utf8')).client_version;
-  const winGlobal = JSON.parse(readFileSync(path.join(projectRoot, 'windows/upstream-win-global.json'), 'utf8')).client_version;
+  const cnLock = JSON.parse(readFileSync(path.join(projectRoot, 'shared/upstream/cn.json'), 'utf8'));
+  const globalLock = JSON.parse(readFileSync(path.join(projectRoot, 'shared/upstream/global.json'), 'utf8'));
+  const cn = cnLock.version;
+  const global = globalLock.version;
+  const winCn = cnLock.version;
+  const winGlobal = globalLock.version;
   const notesFile = path.join(environment.RUNNER_TEMP || '/tmp', 'upstream-release-notes.md');
   writeFileSync(notesFile, releaseNotes({ version, cn, global, winCn, winGlobal }));
 
-  const files = names.map(name => path.join('dist', name));
+  const files = releaseFiles(version, projectRoot);
   const common = ['--title', `WuwaTappo Full Community ${tag}`, '--notes-file', notesFile];
   if (releaseExists(tag, projectRoot, execute)) {
     execute('gh', ['release', 'upload', tag, ...files, '--clobber'], { cwd: projectRoot, stdio: 'inherit' });
@@ -111,7 +103,7 @@ export function publishUpstream({ version, branch, projectRoot = root, environme
   } else {
     execute('gh', ['release', 'create', tag, ...files, '--verify-tag', ...common, '--prerelease', '--latest=false'], { cwd: projectRoot, stdio: 'inherit' });
   }
-  return { tag, version, assets: names };
+  return { tag, version, assets: [...names, CHECKSUM_FILE] };
 }
 
 function openBaselinePr(branch, projectRoot, execute) {

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assetsOrigin, compareUpstream, configUrl, discoverUpstream, fetchOfficial, officialAssetUrl, parseManifest, parseOptions, syncUpstream, validateLock, verifyInstaller } from '../scripts/sync-upstream.mjs';
+import { assetsOrigin, compareUpstream, configUrl, discoverUpstream, fetchOfficial, officialAssetUrl, parseManifest, parseOptions, syncUpstream, validateLock, verifyInstaller } from '../../scripts/sync-upstream.mjs';
 import { getRegionProfile } from '../scripts/regions.mjs';
 
 const url = `${assetsOrigin}/app/release/WuwaTappo-cn_1.0.0_x64-setup.exe`;
@@ -33,7 +33,7 @@ test('accepts only exact official HTTPS origin and CN versioned installers', () 
 test('lock requires CN identity, installer size and content digest', () => {
   assert.equal(validateLock(lock()).version, '1.0.0');
   for (const invalid of [
-    { ...lock(), region: 'GLOBAL' }, { ...lock(), schemaVersion: 2 },
+    { ...lock(), region: 'GLOBAL' }, { ...lock(), schemaVersion: 1 },
     { ...lock(), installer: { ...lock().installer, size: 0 } },
     { ...lock(), installer: { ...lock().installer, size: 1.5 } },
     { ...lock(), installer: { ...lock().installer, sha256: 'invalid' } },
@@ -169,7 +169,7 @@ test('CLI keeps read-only check separate from downloads and extracts', () => {
 });
 
 test('checked-in resource lock remains a valid pinned CN artifact', async () => {
-  const current = JSON.parse(await readFile(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
+  const current = JSON.parse(await readFile(new URL('../../shared/upstream/cn.json', import.meta.url), 'utf8'));
   assert.equal(validateLock(current).region, 'CN');
 });
 
@@ -224,7 +224,7 @@ test('WUWA_REGION selects a separate lock while check remains read-only', async 
     process.env.WUWA_REGION = 'global';
     const responses = [{ code: 0, data: { assets_host: globalProfile.assetsOrigin } }, { url: globalManifestUrl }, globalManifest];
     globalThis.fetch = async () => ({ ok: true, json: async () => responses.shift() });
-    const result = await syncUpstream({ check: true }, directory);
+    const result = await syncUpstream({ check: true, profile: { ...globalProfile, upstreamLock: 'upstream-global.json' } }, directory);
     assert.equal(result.region, 'GLOBAL');
     assert.equal(result.regionId, 'global');
     assert.equal(result.changed, false);
@@ -239,6 +239,6 @@ test('WUWA_REGION selects a separate lock while check remains read-only', async 
 });
 
 test('checked-in Global resource lock remains separate from CN', async () => {
-  const current = JSON.parse(await readFile(new URL('../upstream-global.json', import.meta.url), 'utf8'));
+  const current = JSON.parse(await readFile(new URL('../../shared/upstream/global.json', import.meta.url), 'utf8'));
   assert.equal(validateLock(current, globalProfile).region, 'GLOBAL');
 });

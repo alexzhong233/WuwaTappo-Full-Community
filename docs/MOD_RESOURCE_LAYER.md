@@ -1,7 +1,6 @@
 # 本地资源层（mod）设计评估与实施方案
 
-> 状态：**提案，未实施**。基于 `main`（1.2.7 / 官方 1.0.4 适配）当前代码实测。
-> 目标分支建议：从 `main` 开 `feature/mod-resource-layer`（现有 `feature/custom-local-resources` 与 main 零差异，可直接复用或废弃）。
+> 状态：**已实施**。本文保留原始设计依据；当前实现与边界以代码、[架构说明](ARCHITECTURE.md) 和测试为准。
 
 ---
 
@@ -13,7 +12,7 @@
 - 官方前端解析图片地址时，**`http(s)://` 开头的绝对地址会被原样使用**，不做任何拼接。
 - 所以：mod 不需要插件系统、不需要改前端 JS、不需要新协议栈。**只要在两处服务端的应答里，把被覆盖条目的 `url` 改写成指向本机的绝对地址**，前端自动生效。
 
-反过来说，如果按「mod loader / 代码注入」去做，会同时踩三堵墙：3 个共享 JS 模块被 `platform-parity` 锁死在 ≤4 行差异、官方前端每次重建压缩名全漂、账号写回通道被 `restricted()` 硬拦。**不要走那条路。**
+反过来说，如果按「mod loader / 代码注入」去做，会同时踩三堵墙：助手前端必须从 `shared/frontend/` 单一源生成、官方前端每次重建压缩名全漂、账号写回通道被 `restricted()` 硬拦。**不要走那条路。**
 
 ---
 
@@ -33,8 +32,8 @@
 
 关键位置：
 
-- `windows/src/src/local_host.py:353-361` `cached_asset()` —— 唯一的图片出口，已带 `resolve().is_relative_to(ROOT)` 逃逸防护。**加 mod 就是在这一个函数前插一次查找。**
-- `windows/src/src/local_host.py:431-439` `/assets/<name>`：拒绝 `/ \ ..`，未命中写 `client_diagnostics.jsonl`。
+- `shared/backend/src/local_gallery_host.rs` 的 `send_file()` / `contained_file()` —— Windows 图片出口，继续使用相对路径与规范路径双重校验。
+- `shared/backend/src/custom_resources.rs` —— 两端共用的 Mod ZIP 校验、ID 生成、目录合并与回滚。
 - `macos/build/frontend/assets/index-CM6qA69G.js` `resolveAppearanceAssetUrl()`：`if(/^https?:\/\//i.test(n))return n;` —— **绝对地址直通，官方代码，白送一个注入点**。
 - `macos/tools/fullatlas-integration.py:85` `applyOfflineCatalog` 固定用 `offlineData.assets_host` 作为 host，而 `applyCatalog` 的守卫是 `t !== assetsHost 则 return`。**推论：catalog 顶层的 `assets_host` 不能动，只能逐条改 entry 的 `url`。**
 
@@ -46,8 +45,8 @@
 
 ### 2.3 不能碰的东西
 
-`macos/tests/platform-parity.test.mjs:49-61` 锁住 `local_atlas_controller.js` / `desktop_assistant.js` / `assistant_dashboard.js` 两侧差异 ≤4 行，当前实际用到 2 行（`d.request` 两处 + 文案 + VERSION）。
-→ **任何 mod 逻辑都不进这 3 个文件**，否则要么涨上限（丧失"防静默分叉"的意义），要么两侧同步改（Windows 侧是上游快照，会失去可比性）。
+`shared/frontend/` 是 `local_atlas_controller.js` / `desktop_assistant.js` / `assistant_dashboard.js` 的唯一源，平台副本由 `scripts/sync-frontend.mjs` 生成并由测试逐字节校验。
+→ **任何 mod 逻辑只进共享源和 `shared/backend`**，不要手改平台生成副本。
 
 ---
 

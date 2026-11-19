@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import sys
 
 
 # 每次 replace 命中的锚点记在这里，最终由 pe_packer 写进 build_report.json 的 patches。
@@ -154,11 +155,48 @@ def patch_invoke_guard(text, strict=False):
     return text
 
 
+ACTIVITY_LOADING_GUARD = (
+    '\n // 活动配置是后台刷新（挂机开箱、切页、重连都会触发），不该用全屏遮罩。\n'
+    ' if (t && typeof t.url === "string" && t.url.indexOf("api/common/activity-config") !== -1) t.loading = !1;'
+)
+
+
+def patch_taskbar_default(text):
+    """默认不占任务栏 / 程序坞图标；存过设置的老用户迁移一次。
+
+    官方默认是显示（showTaskbarIcon: !0）。这里改默认值并保留官方设置开关；
+    改版后锚点漂移时只跳过这一项，不阻断整条构建链。
+    """
+    taskbar_default = 'showTaskbarIcon: !0'
+    clamp_anchor = 'function clampPetScale(e) {'
+    if text.count(taskbar_default) != 1 or text.count(clamp_anchor) != 1:
+        print('warn: 官方前端里找不到任务栏图标默认值，跳过「默认隐藏」这一项', file=sys.stderr)
+        return text
+    text = replace(text, taskbar_default, 'showTaskbarIcon: !1')
+    return replace(text, clamp_anchor, '''// 社区版：默认不占任务栏/程序坞图标；历史设置只迁移一次，避免每次启动覆盖用户选择。
+(function () {
+  try {
+    const key = "wuwatappo-settings", marker = "wuwatappo-settings-community-taskbar-v1";
+    if (window.localStorage.getItem(marker)) return;
+    const saved = JSON.parse(window.localStorage.getItem(key) || "null");
+    if (saved && typeof saved === "object" && "showTaskbarIcon" in saved) {
+      saved.showTaskbarIcon = false;
+      window.localStorage.setItem(key, JSON.stringify(saved));
+    }
+    window.localStorage.setItem(marker, "1");
+  } catch (error) {
+    console.warn("[community] taskbar default skipped", error);
+  }
+})();
+
+function clampPetScale(e) {''')
+
+
 def patch_atlas_guards(text, extra_interceptor=''):
     """四处「本地模式短路」：素材目录、图鉴列表、请求拦截器。
 
-    `extra_interceptor` 给平台追加自己的拦截器语句（Windows 用它压掉活动配置
-    请求的全屏遮罩），插在同一条 use() 里，不额外增加锚点。
+    `extra_interceptor` 允许平台在同一个 request interceptor 里追加逻辑。
+    activity-config 后台刷新不触发全屏遮罩已在共享层内建，两端一致生效。
     """
     text = replace(text, 'async function ensureAppearanceAssetCatalog(e) {',
                    'async function ensureAppearanceAssetCatalog(e) {\n'
@@ -168,5 +206,5 @@ def patch_atlas_guards(text, extra_interceptor=''):
     text = replace(text, 'function atlas() {', '''function atlas() {
  if (window.__WUWA_LOCAL_ATLAS__?.enabled.value) return Promise.resolve({code: 0, data: window.__WUWA_LOCAL_ATLAS__.offlineData.value.atlas});''')
     text = replace(text, 'this.instance.interceptors.request.use(t => {', '''this.instance.interceptors.request.use(t => {
- if (window.__WUWA_LOCAL_ATLAS__?.enabled.value && window.__WUWA_LOCAL_ATLAS__.restricted(t.url,t.method)) throw window.__WUWA_LOCAL_ATLAS__.offlineError();''' + extra_interceptor)
+ if (window.__WUWA_LOCAL_ATLAS__?.enabled.value && window.__WUWA_LOCAL_ATLAS__.restricted(t.url,t.method)) throw window.__WUWA_LOCAL_ATLAS__.offlineError();''' + ACTIVITY_LOADING_GUARD + extra_interceptor)
     return text

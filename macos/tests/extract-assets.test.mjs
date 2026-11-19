@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { profile } from './frontend-context.mjs';
 import { brotliCompressSync } from 'node:zlib';
-import { extractAssets, findAssetEntries, findEmbeddedNsis, inspectStaticReferences, readPe, safeAssetPath, selectApplicationPayload } from '../scripts/extract-assets.mjs';
+import { extractAssets, findAssetEntries, findEmbeddedNsis, inspectStaticReferences, readPe, safeAssetPath, selectApplicationPayload } from '../../scripts/extract-assets.mjs';
 
 function fixture(assets) {
   const bytes = Buffer.alloc(8192);

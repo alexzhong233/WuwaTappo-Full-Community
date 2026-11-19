@@ -57,44 +57,22 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-          import { createHash } from 'node:crypto';
+          import { releaseAssetNames, writeReleaseChecksums } from './scripts/release-assets.mjs';
           const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
-          const cnLock = JSON.parse(readFileSync('macos/upstream-cn.json', 'utf8'));
-          const globalLock = JSON.parse(readFileSync('macos/upstream-global.json', 'utf8'));
+          const cnLock = JSON.parse(readFileSync('shared/upstream/cn.json', 'utf8'));
+          const globalLock = JSON.parse(readFileSync('shared/upstream/global.json', 'utf8'));
           const cn = cnLock.version;
           const global = globalLock.version;
           if (process.env.TAG !== `v${version}`) throw new Error('Tag does not match integration version');
-          // 手工发版时最容易踩的坑：macOS 已经跟到新版、Windows 锁还停在上一版，
-          // 于是同一个 Release 里两个平台的客户端不是同一代（alpha.1 就是这样）。
-          // 同步工作流会一起改，这里再兜一层，宁可拒绝发版也不要发出半套基线。
-          const windowsLocks = [
-            ['国服', JSON.parse(readFileSync('windows/upstream-win.json', 'utf8')), cnLock],
-            ['国际服', JSON.parse(readFileSync('windows/upstream-win-global.json', 'utf8')), globalLock],
-          ];
-          for (const [label, win, mac] of windowsLocks) {
-            if (win.client_version !== mac.version) {
-              throw new Error(`Windows ${label}基线 ${win.client_version} 与 macOS ${mac.version} 不一致：先让同步工作流把两平台锁对齐再发版`);
-            }
-            if (win.installer_sha256 !== mac.installer.sha256) {
-              throw new Error(`Windows ${label}锁里的安装包哈希与 macOS 不是同一个官方包：镜像回退与完整性校验会各对各错`);
+          for (const [label, lock] of [['国服', cnLock], ['国际服', globalLock]]) {
+            if (!lock.platforms?.windows?.executable?.sha256) {
+              throw new Error(`${label} canonical lock 缺少 Windows 主程序指纹，先跑同步工作流再发版`);
             }
           }
           // 六个产物缺一不可：两服 × 两平台（mac=dmg / win=exe），
           // Windows 每个服再带一个程序内升级 zip（桌宠里「一键更新」下载的就是它）。
-          const expected = [
-            `WuwaTappo-Full-CN-Community-${version}-macOS-arm64.dmg`,
-            `WuwaTappo-Full-Global-Community-${version}-macOS-arm64.dmg`,
-            `WuwaTappo-Full-CN-Community-Windows-x64-${version}.exe`,
-            `WuwaTappo-Full-Global-Community-Windows-x64-${version}.exe`,
-            `WuwaTappo-Full-CN-Community-${version}-win-x64-update.zip`,
-            `WuwaTappo-Full-Global-Community-${version}-win-x64-update.zip`,
-          ];
-          const missing = expected.filter(name => !existsSync(`dist/${name}`));
-          if (missing.length) throw new Error(`Release 缺少产物，两个平台都必须构建成功：${missing.join(', ')}`);
-          // 升级包的身份写在 SHA256SUMS.txt 里，更新器下载完会按这个名字核对哈希。
-          const sumLines = expected.map(name =>
-            `${createHash('sha256').update(readFileSync(`dist/${name}`)).digest('hex')}  ${name}`);
-          writeFileSync('dist/SHA256SUMS.txt', sumLines.join('\n') + '\n');
+          const expected = releaseAssetNames(version);
+          writeReleaseChecksums(version, process.cwd());
           // 发布说明按版本号取；docs 合并到根 docs/ 之后路径变了，找不到就退回通用正文。
           const notes = `docs/RELEASE_NOTES_${version}.md`;
           const body = existsSync(notes)

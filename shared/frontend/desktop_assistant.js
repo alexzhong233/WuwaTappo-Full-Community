@@ -44,10 +44,14 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     emoteBusy=true;
     try{
       const context=await request('typing-context');
+      // 宿主自己都判不出来（UIA 起不来/超时/正忙）时不能静默跳过：那样这类机器上
+      // 功能等于没开。降级成「连续打字就弹」，宁可偶尔多弹一次，也别一直不弹。
+      const undecidable=/^uia-(unavailable|timeout|busy)$/.test(String(context.source||''));
       emoteStats.reason=context.editable?'ready'
+        :undecidable?'unverified'
         :context.reason==='accessibility-denied'?'no-access'
         :context.reason==='disabled'?'disabled':'not-editable';
-      if(!context.editable){nextEmoteAt=Date.now()+500;return;}
+      if(!context.editable&&!undecidable){nextEmoteAt=Date.now()+500;return;}
       // 焦点判定和真正发出去之间有几十毫秒：这期间停了手、关了开关或锁了更新，就放弃这次。
       if(disposed||!state.value.settings.auto_emote||updateRequired.value||mainDependencies.blocked()||Date.now()-lastTypedAt>500)return;
       const current=(mainDependencies.emotes?.()||[]).filter(x=>x.id&&x.src);
@@ -171,9 +175,9 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     await d.listenJoin(async code=>{if(atlas.enabled.value){d.toast('本地全图鉴开启时无法进入联机');return;}if(!updateRequired.value)await d.join(code);});
     window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);});
   }
-  let dashGen=0,requestedTab='overview',lastTab='overview';
+  let requestedTab='overview',lastTab='overview';
   // 关面板时记下停在哪一页：右键「控制台」再打开时回到那一页，而不是永远回概览。
-  function closePanel(){dashGen++;if(dashboard)lastTab=dashboard.currentTab?.()||lastTab;dashboard?.close();dashboard=null;}
+  function closePanel(){if(dashboard)lastTab=dashboard.currentTab?.()||lastTab;dashboard?.close();dashboard=null;}
   async function deleteRoom(code){await ready;return (await request('delete-room',{code})).rooms||[];}
   // 「控制台」在支持面板页签的壳里是面板的一页（联机下方、设置上方）；
   // 壳没提供就退回桌宠窗口内的浮层，两种都拿到同一套界面。
@@ -188,7 +192,8 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     // 先关再取：面板正开着时，「当前页」比「上次关面板那页」更准。
     closePanel();
     requestedTab=initialTab=initialTab||lastTab;
-    await ready;
+    try { await ready; }
+    catch (error) { console.warn('[console] 本地服务未就绪', error); }
     const openTab=window.__WUWA_OPEN_PANEL_TAB__;
     if(openTab){
       try{if(await openTab('console')!==false)return;}
@@ -207,9 +212,13 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   // 面板「控制台」页挂载点：把同一套界面内嵌进去，不再叠一层浮层。
   async function mountConsole(mount){
     closePanel();
-    const generation=dashGen;
-    await ready;
-    if(generation!==dashGen||!mount?.isConnected)return;
+    try { await ready; }
+    catch (error) { console.warn('[console] 本地服务未就绪', error); }
+    // 这里不能拿"代数"判断该不该继续挂：官方面板每次切页都会触发 closePanel，
+    // 而挂载和它是并发的，代数一旦对不上就永久放弃——「控制台」页会一直空着，
+    // 表现为卡 loading，而且不会自己恢复。挂载点还连着 DOM，就说明用户仍在这一页。
+    if (!mount?.isConnected) return;
+    dashboard?.close();
     dashboard=createAssistantDashboard({window,version:VERSION,atlas,mount,initialTab:requestedTab,
       getState:async()=>{const v=await request('state');state.value=v;return v;},
       configure:async changes=>{state.value=await request('configure',{settings:changes});return state.value;},

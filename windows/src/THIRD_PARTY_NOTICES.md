@@ -4,13 +4,11 @@
 
 | 内容 | 说明 |
 | --- | --- |
-| WuwaTappo 原程序、原界面及其美术素材 | 权利归原权利人。仓库不包含原版二进制及完整提取前端。1.2 使用经过修改的官方 1.0.2 程序和从其公开素材接口准备的离线缓存；不声称拥有这些内容，也不以 MIT 重新授权。 |
-| Microsoft Edge WebView2 Fixed Version Runtime x64 | Microsoft 的第三方运行时，适用其独立许可条款。下载及分发文档：https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution 。原始随包许可和第三方说明保留在 `runtime/` 内。 |
-| Python | 冻结本地服务内包含 Python 运行时，适用 Python Software Foundation License；许可文件随发行包保留。 |
-| psutil 7.2.2 | 原地更新辅助进程使用的进程查询依赖，BSD 3-Clause License；许可随包保留在 `licenses/PSUTIL_LICENSE.txt`。 |
-| PyInstaller | 构建工具，GPL with exception，允许生成的应用按自己的许可证分发。https://pyinstaller.org/en/stable/license.html 。仅用于打包 Tk 版更新管理器（`tools\manager.py`），不参与发行包内的本地服务。 |
-| Acorn 8.15.0 | 构建时的 JavaScript 解析器，MIT License，许可见 `tools/ACORN_LICENSE`。 |
-| Brotli、pefile、jsbeautifier | 仅为构建依赖，不改变它们各自的授权；安装依赖时获取其原有许可证。 |
-| Inno Setup | 用于生成安装包的构建工具，保留其安装器自身标识；https://jrsoftware.org/ 。 |
+| WuwaTappo 原程序、原界面及其美术素材 | 权利归原权利人。仓库不包含原版二进制及完整提取前端。使用经过修改的官方客户端及从其公开素材接口拉取的离线缓存；不声称拥有这些内容，也不以 MIT 重新授权。 |
+| Microsoft Edge WebView2 Fixed Version Runtime x64 | Microsoft 的第三方运行时，仅在离线完整构建内嵌，默认发行包回退系统 Evergreen 运行时，适用其独立许可条款。文档：https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution 。 |
+| Rust crates（`shared/backend`） | Windows 本地服务 `LocalGalleryHost.exe` 与启动器 `WuwaTappoLauncher.exe` 由共享 Rust 工作区编译（`reqwest`、`serde`、`sha2`、`tiny_http`、`zip` 等），适用各自 MIT / Apache-2.0 等开源许可，版本锁定在 `shared/backend/Cargo.lock`。 |
+| Acorn 8.15.0 | 构建时的 JavaScript 解析器，MIT License，许可见仓库根目录依赖锁及上游许可。 |
+| Brotli、pefile | 仅为构建期解包/注入依赖（不随发行包分发），不改变它们各自的授权；安装依赖时获取其原有许可证。 |
+| NSIS | 用于生成 Windows 用户级安装包的构建工具，保留其安装器自身标识；https://nsis.sourceforge.io/ 。 |
 
 MIT 许可证只覆盖本项目新编写的修改逻辑、工具和文档，不构成对第三方内容的额外授权。

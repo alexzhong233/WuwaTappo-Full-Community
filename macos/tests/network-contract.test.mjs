@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { getRegionProfile } from '../scripts/regions.mjs';
 import { contract, verifyDomesticSdkAssetBinding, verifyGlobalCallbackBridge, verifySourceContract } from '../scripts/network-smoke.mjs';
+import { hasExtractedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 
 const profile = getRegionProfile();
 const root = path.resolve(import.meta.dirname, '..');
@@ -42,7 +43,8 @@ test('OAuth callback transport rejects URL-bearing wake payloads, wrong events a
   assert.throws(() => verifyGlobalCallbackBridge(privateCallback, { prepared: true }), /native get_current command/);
 });
 
-test('selected regional network contract matches the locked official frontend', async () => {
+test('selected regional network contract matches the locked official frontend', async t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过网络契约检查');
   const lock = JSON.parse(await readFile(path.join(root, profile.upstreamLock), 'utf8'));
   assert.equal(contract.region, profile.region);
   assert.equal(contract.application, `WuwaTappo-${profile.id} ${lock.version}`);
@@ -75,7 +77,8 @@ test('regional login semantics remain domestic SDK or state-bound global browser
   }
 });
 
-test('verification rejects mismatched regional frontend rather than accepting the other service', async () => {
+test('verification rejects mismatched regional frontend rather than accepting the other service', async t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过区域错配检查');
   const directory = await mkdtemp(path.join(tmpdir(), 'wuwa-regional-network-'));
   try {
     for (const filename of new Set(Object.values(contract.source))) {

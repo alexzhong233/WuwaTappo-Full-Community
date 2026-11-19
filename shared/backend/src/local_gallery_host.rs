@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use std::{
     env, fs,
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, TryLockError},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -47,11 +47,32 @@ struct LastInputInfo {
     dw_time: u32,
 }
 
+/// `GUITHREADINFO`：桌面输入法、输入增强工具判「是否正在打字」用的就是它。
+/// `hwnd_caret` 非空意味着目标线程当前有插入符，等价于处于文本输入上下文。
+/// HWND 统一用 `isize`，与 `windows_menu.rs` 里同一批函数保持一致——
+/// 同名 FFI 声明两种签名会让调用约定对不上。
+#[cfg(windows)]
+#[repr(C)]
+struct GuiThreadInfo {
+    cb_size: u32,
+    flags: u32,
+    hwnd_active: isize,
+    hwnd_focus: isize,
+    hwnd_capture: isize,
+    hwnd_menu_owner: isize,
+    hwnd_move_size: isize,
+    hwnd_caret: isize,
+    rc_caret: [i32; 4],
+}
+
 #[cfg(windows)]
 #[link(name = "user32")]
 unsafe extern "system" {
     fn GetLastInputInfo(info: *mut LastInputInfo) -> i32;
     fn GetAsyncKeyState(key: i32) -> i16;
+    fn GetForegroundWindow() -> isize;
+    fn GetWindowThreadProcessId(window: isize, pid: *mut u32) -> u32;
+    fn GetGUIThreadInfo(thread: u32, info: *mut GuiThreadInfo) -> i32;
 }
 
 #[cfg(windows)]
@@ -76,42 +97,82 @@ fn physical_quiet() -> bool {
     false
 }
 
+/// 快判：前台线程当前有没有插入符。
+///
+/// 输入法、输入增强工具判「是否正在打字」用的就是这个——`GetGUIThreadInfo` 是
+/// 微秒级的本机调用，不建进程，覆盖记事本、浏览器地址栏、大多数原生聊天框。
+#[cfg(windows)]
+fn caret_context() -> Option<Value> {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground == 0 {
+            return Some(json!({"editable":false,"source":"no-foreground"}));
+        }
+        let mut pid = 0u32;
+        let thread = GetWindowThreadProcessId(foreground, &mut pid);
+        // 自己的窗口（桌宠、控制台里的输入框）不是打字场景，否则会自己触发自己。
+        if pid == std::process::id() {
+            return Some(json!({"editable":false,"source":"own-window"}));
+        }
+        let mut info: GuiThreadInfo = std::mem::zeroed();
+        info.cb_size = std::mem::size_of::<GuiThreadInfo>() as u32;
+        if GetGUIThreadInfo(thread, &mut info) != 0 && info.hwnd_caret != 0 {
+            return Some(json!({"editable":true,"source":"win32-caret"}));
+        }
+    }
+    None
+}
+
+/// 兜底：WebView2 / Electron 这类自绘控件拿不到 caret，只能问 UIA。
+///
+/// 每次探测都要起一个 PowerShell，冷启动就要 200ms 以上，所以超时必须给足。
+/// 之前写的是 300ms，判定永远超时，表情从不触发。
+#[cfg(windows)]
+fn uia_typing_context() -> Value {
+    // 用 Pattern 判定而不是一堆硬编码的属性 ID：ValuePattern/TextPattern 才是
+    // 「这个控件能不能输入文字」的权威答案，属性 ID 会随 UIA 版本变，取错就抛 MethodException。
+    const SCRIPT: &str = r#"$ErrorActionPreference='Stop';try{Add-Type -AssemblyName UIAutomationClient;[void][System.Reflection.Assembly]::LoadWithPartialName('UIAutomationTypes');$e=[System.Windows.Automation.AutomationElement]::FocusedElement;if($null -eq $e){@{editable=$false;source='uia';reason='no-focus'}|ConvertTo-Json -Compress;exit};$type=$e.Current.ControlType.ProgrammaticName;$p=$null;if($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$p)){$vp=[System.Windows.Automation.ValuePattern]$p;if(-not $vp.Current.IsReadOnly){@{editable=$true;source='uia-value';control=$type}|ConvertTo-Json -Compress;exit}};$p=$null;if($e.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern,[ref]$p)){@{editable=$true;source='uia-text';control=$type}|ConvertTo-Json -Compress;exit};@{editable=$false;source='uia';reason='no-editable-pattern';control=$type}|ConvertTo-Json -Compress}catch{@{editable=$false;source='uia-unavailable';error=($_.Exception.GetType().Name+': '+$_.Exception.Message)}|ConvertTo-Json -Compress}"#;
+    let spawned = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        return json!({"editable":false,"source":"uia-unavailable","error":"PowerShellUnavailable"});
+    };
+    let deadline = Instant::now() + Duration::from_millis(2500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return json!({"editable":false,"source":"uia-timeout"});
+            }
+        }
+    }
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(_) => {
+            return json!({"editable":false,"source":"uia-unavailable","error":"ProbeFailed"})
+        }
+    };
+    serde_json::from_slice(&output.stdout).unwrap_or_else(
+        |_| json!({"editable":false,"source":"uia-unavailable","error":"InvalidProbeResult"}),
+    )
+}
+
 fn native_typing_context() -> Value {
     #[cfg(windows)]
     {
-        const SCRIPT: &str = r#"$ErrorActionPreference='Stop';try{Add-Type -AssemblyName UIAutomationClient;$e=[System.Windows.Automation.AutomationElement]::FocusedElement;if($null -eq $e){@{editable=$false;source='uia'}|ConvertTo-Json -Compress;exit};$t=$e.Current.ControlType.Id;$r=$e.GetCurrentPropertyValue(30046);$v=$e.GetCurrentPropertyValue(30043);$x=$e.GetCurrentPropertyValue(30149);$ok=($r -ne $true -and (($t -eq 50004)-or($t -eq 50003 -and $v -eq $true)-or($t -eq 50030 -and $x -eq $true)));@{editable=[bool]$ok;source='uia';control_type=$t}|ConvertTo-Json -Compress}catch{@{editable=$false;source='uia-unavailable';error=$_.Exception.GetType().Name}|ConvertTo-Json -Compress}"#;
-        let spawned = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let Ok(mut child) = spawned else {
-            return json!({"editable":false,"source":"uia-unavailable","error":"PowerShellUnavailable"});
-        };
-        let deadline = Instant::now() + Duration::from_millis(300);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10))
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return json!({"editable":false,"source":"uia-timeout"});
-                }
-            }
+        if let Some(value) = caret_context() {
+            return value;
         }
-        let output = match child.wait_with_output() {
-            Ok(output) => output,
-            Err(_) => {
-                return json!({"editable":false,"source":"uia-unavailable","error":"ProbeFailed"})
-            }
-        };
-        return serde_json::from_slice(&output.stdout).unwrap_or_else(
-            |_| json!({"editable":false,"source":"uia-unavailable","error":"InvalidProbeResult"}),
-        );
+        return uia_typing_context();
     }
     #[cfg(not(windows))]
     json!({"editable":false,"source":"native-adapter"})
@@ -137,7 +198,9 @@ fn typing_context(app: &App) -> Value {
         }
     };
     if let Some((at, value)) = cached.as_ref() {
-        if at.elapsed() < Duration::from_millis(200) {
+        // UIA 兜底一次要几百毫秒到两秒多，缓存太短会变成连续打字时反复探测，
+        // 把宿主线程占住；三秒内复用同一结果。
+        if at.elapsed() < Duration::from_millis(3000) {
             return value.clone();
         }
     }
@@ -352,11 +415,10 @@ fn cache_ready(app: &App) -> bool {
 }
 
 fn region(app: &App) -> &'static str {
-    if config_value(app, "region").as_str() == Some("global") {
-        "GLOBAL"
-    } else {
-        "CN"
-    }
+    let configured = config_value(app, "region");
+    wuwatappo_assistant_core::regions::profile(configured.as_str().unwrap_or("cn"))
+        .map(|profile| profile.region.as_str())
+        .unwrap_or("CN")
 }
 
 fn custom_root(app: &App) -> PathBuf {
@@ -364,27 +426,21 @@ fn custom_root(app: &App) -> PathBuf {
 }
 
 fn custom_status(app: &App) -> Value {
-    let packs = custom_resources::list_details(&custom_root(app), region(app)).unwrap_or_default();
-    let item_count: usize = packs
-        .iter()
-        .map(|pack| pack["item_count"].as_u64().unwrap_or(0) as usize)
-        .sum();
-    let asset_count: usize = packs
-        .iter()
-        .map(|pack| pack["asset_count"].as_u64().unwrap_or(0) as usize)
-        .sum();
-    json!({
-        "installed": !packs.is_empty(),
-        "enabled": *app.offline.lock().unwrap(),
-        "name": packs.iter().filter_map(|pack| pack["name"].as_str()).collect::<Vec<_>>().join("、"),
-        "atlas_count": item_count,
-        "asset_count": asset_count,
-        "packs": packs,
-        "region": region(app),
-        "error": app.custom_error.lock().unwrap().clone(),
+    let enabled = *app.offline.lock().unwrap();
+    let error = app.custom_error.lock().unwrap().clone();
+    custom_resources::status(&custom_root(app), region(app), enabled, error).unwrap_or_else(|error| {
+        json!({
+            "installed": false,
+            "enabled": enabled,
+            "name": "",
+            "atlas_count": 0,
+            "asset_count": 0,
+            "packs": [],
+            "region": region(app),
+            "error": error,
+        })
     })
 }
-
 fn offline_bundle(app: &App) -> Result<Value, String> {
     let cache = cache_dir(app);
     let catalog = read_value(&cache.join("offline_catalog.json"))?;
@@ -399,16 +455,9 @@ fn offline_bundle(app: &App) -> Result<Value, String> {
         "atlas_count": atlas.len(),
         "asset_count": config_value(app, "asset_count").as_u64().unwrap_or(0),
     });
-    match custom_resources::merge_official(&official, &custom_root(app), region(app)) {
-        Ok(merged) => {
-            *app.custom_error.lock().unwrap() = None;
-            Ok(merged)
-        }
-        Err(error) => {
-            *app.custom_error.lock().unwrap() = Some(error);
-            Ok(official)
-        }
-    }
+    let (merged, error) = custom_resources::merge_or_official(&official, &custom_root(app), region(app));
+    *app.custom_error.lock().unwrap() = error;
+    Ok(merged)
 }
 
 fn safe_relative(raw: &str) -> bool {
@@ -476,17 +525,28 @@ fn start_sync(app: &Arc<App>, force: bool) -> Value {
             .as_str()
             .unwrap_or("cn")
             .to_owned();
-        let result = wuwatappo_assistant_core::resource_cache::sync(&app.root, &selected_region);
+        let progress_app = Arc::clone(&app);
+        let result = wuwatappo_assistant_core::resource_cache::sync_with_progress(
+            &app.root,
+            &selected_region,
+            force,
+            move |done, total| {
+                let mut guard = progress_app.sync.lock().unwrap();
+                *guard = json!({"status":"running","done":done,"total":total,"checked_at":now()});
+            },
+        );
         let mut state = app.sync.lock().unwrap();
         *state = match result {
             Ok(summary) => {
                 let mut config = app.config.lock().unwrap();
                 config["asset_count"] = json!(summary.asset_count);
                 config["atlas_count"] = json!(summary.atlas_count);
-                let _ = fs::write(
-                    app.root.join("local_config.json"),
-                    serde_json::to_vec_pretty(&*config).unwrap_or_default(),
-                );
+                let cfg_path = app.root.join("local_config.json");
+                let temp = cfg_path.with_extension("tmp");
+                if fs::write(&temp, serde_json::to_vec_pretty(&*config).unwrap_or_default()).is_ok()
+                {
+                    let _ = fs::rename(temp, cfg_path);
+                }
                 json!({"status":"complete","done":summary.asset_count,"total":summary.asset_count,"checked_at":now(),"result":{"changed":summary.changed,"atlas_count":summary.atlas_count,"asset_count":summary.asset_count}})
             }
             Err(error) => {
@@ -497,29 +557,15 @@ fn start_sync(app: &Arc<App>, force: bool) -> Value {
     snapshot
 }
 
-/// 诊断行只追加不重写：出错时能顺着时间看现场，也不怕并发写坏整份记录。
-fn append_diagnostic(app: &App, value: &Value) {
-    let Ok(mut file) = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(app.root.join("client_diagnostics.jsonl"))
-    else {
-        return;
-    };
-    let _ = file.write_all(format!("{value}\n").as_bytes());
-}
-
 const COMMUNITY_RELEASES_URL: &str =
     "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 
 /// 官方桌宠下载页：国服 / 国际服各一个入口，跟着构建时锁定的区域走。
 fn pet_site_url(app: &App) -> String {
-    let region = config_value(app, "region");
-    if region.as_str().unwrap_or("cn").eq_ignore_ascii_case("global") {
-        "https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/zh-tw/".into()
-    } else {
-        "https://download-mc-wuwatappo.kurogames-global.com/download/".into()
-    }
+    let configured = config_value(app, "region");
+    wuwatappo_assistant_core::regions::profile(configured.as_str().unwrap_or("cn"))
+        .map(|profile| profile.pet_site.clone())
+        .unwrap_or_else(|| "https://download-mc-wuwatappo.kurogames-global.com/download/".into())
 }
 
 /// 地址一律由服务端决定，不接受前端传参：能传地址就等于让页面能拉起任意程序。
@@ -594,14 +640,18 @@ fn startup_action(_app: &App, _action: &str) -> Result<Value, String> {
     Err("开机自启托管只能在 Windows 上使用".into())
 }
 
-fn send_file(request: tiny_http::Request, file: Option<PathBuf>) {
+fn send_file_as(request: tiny_http::Request, file: Option<PathBuf>, kind: fn(&Path) -> &'static str) {
     let Some(file) = file else {
         return response(request, 404, json!({"error":"Not found"}));
     };
     match fs::read(&file) {
-        Ok(bytes) => response_with_type(request, 200, bytes, mime_type(&file)),
+        Ok(bytes) => response_with_type(request, 200, bytes, kind(&file)),
         Err(_) => response(request, 404, json!({"error":"Not found"})),
     }
+}
+
+fn send_file(request: tiny_http::Request, file: Option<PathBuf>) {
+    send_file_as(request, file, mime_type);
 }
 
 fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
@@ -659,8 +709,11 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
             if !safe_relative(pack) || pack.contains('/') || !safe_relative(asset) {
                 return response(request, 400, json!({"error":"Invalid path"}));
             }
-            let file = contained_file(&custom_root(app), &format!("{pack}/assets/{asset}"));
-            send_file(request, file);
+            let file = custom_resources::resolve_asset_file(
+                &custom_root(app),
+                path.trim_start_matches('/'),
+            );
+            send_file_as(request, file, custom_resources::asset_mime_type);
         }
         _ if path.starts_with("/assets/") => {
             let name = &path["/assets/".len()..];
@@ -670,7 +723,10 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
             let file = contained_file(&cache_dir(app).join("assets"), name);
             if file.is_none() {
                 // 缺图是「缓存没同步全」的主要症状，逐行记下来才能定位是哪一张。
-                append_diagnostic(app, &json!({"kind":"asset_not_found","path":name}));
+                wuwatappo_assistant_core::append_diagnostic(
+                    &app.root,
+                    &json!({"kind":"asset_not_found","path":name}),
+                );
             }
             send_file(request, file);
         }
@@ -750,6 +806,29 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         "/official/update-check" | "/official/check" => {
             response(request, 200, official_update(app))
         }
+        "/official/download" => {
+            let selected_region = config_value(app, "region")
+                .as_str()
+                .unwrap_or("cn")
+                .to_owned();
+            let current = config_value(app, "client_version")
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
+            let download_dir = env::var_os("USERPROFILE")
+                .or_else(|| env::var_os("HOME"))
+                .map(|home| PathBuf::from(home).join("Downloads"))
+                .unwrap_or_else(|| app.root.join("downloads"));
+            match wuwatappo_assistant_core::release_updates::download_official_installer(
+                &selected_region,
+                &current,
+                &download_dir,
+                false,
+            ) {
+                Ok(value) => response(request, 200, value),
+                Err(error) => response(request, 400, json!({"error":error})),
+            }
+        }
         // 面板上的两个「打开官方页面」按钮：地址写死在服务端，页面拿不到入口就无法诱导跳转。
         "/official/releases" => response(request, 200, open_url(COMMUNITY_RELEASES_URL)),
         "/official/pet-site" => {
@@ -775,17 +854,64 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
                     "required":false,"current":check["current"],"repository":"alexzhong233/WuwaTappo-Full-Community",
                     "checked_at":check["checked_at"],"error":check["error"],
                     "github_version":if latest.is_empty(){check["current"].clone()}else{json!(latest)},
-                    "latest":latest,"available":available,"installable":false,
+                    "latest":latest,"available":available,"installable":available,
                     "release_notes":check["releaseNotes"],"release_url":check["releaseUrl"],"message":message
                 }),
             );
         }
-        "/update/healthy" => response(request, 200, json!({"healthy":true})),
-        "/update/install" => response(
-            request,
-            409,
-            json!({"error":"请从 Releases 下载 Windows 安装包"}),
-        ),
+        "/update/healthy" => {
+            let version = config_value(app, "community_version");
+            wuwatappo_assistant_core::release_installer::ack_healthy(
+                &app.root,
+                version.as_str().unwrap_or(""),
+            );
+            response(request, 200, json!({"healthy":true}))
+        }
+        "/update/install" => {
+            let configured = config_value(app, "community_version");
+            let current = configured
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    config_value(app, "mod_version")
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned()
+                });
+            let include_prerelease = app
+                .assistant
+                .lock()
+                .unwrap()
+                .saved()
+                .pointer("/settings/prerelease_updates")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let region_id = config_value(app, "region")
+                .as_str()
+                .unwrap_or("cn")
+                .to_owned();
+            match wuwatappo_assistant_core::release_updates::community_installer(
+                &current,
+                include_prerelease,
+                &region_id,
+            ) {
+                Ok(candidate) => match wuwatappo_assistant_core::release_installer::prepare(
+                    &app.root,
+                    &candidate,
+                ) {
+                    Ok(value) => {
+                        std::thread::spawn(|| {
+                            std::thread::sleep(Duration::from_millis(1200));
+                            std::process::exit(0);
+                        });
+                        response(request, 200, value)
+                    }
+                    Err(error) => response(request, 409, json!({"error":error})),
+                },
+                Err(error) => response(request, 409, json!({"error":error})),
+            }
+        }
         "/custom/import" => {
             let Some(archive) = body.get("path").and_then(Value::as_str) else {
                 return response(request, 400, json!({"error":"请选择有效的 ZIP 资源包"}));
@@ -844,11 +970,11 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         }
         "/diagnostic" => {
             // 页面通过 d.report() 上报的就是排障用的现场；丢掉了就只能靠猜。
-            append_diagnostic(app, &body);
+            wuwatappo_assistant_core::append_diagnostic(&app.root, &body);
             response(request, 200, json!({"ok":true}))
         }
         "/startup" => {
-            // 开机自启改由本机服务托管：计划任务跑 launch.ps1，先起本地服务再起桌宠。
+            // 开机自启改由本机服务托管：计划任务优先运行 WuwaTappoLauncher.exe（旧安装退回 launch.ps1），先起本地服务再起桌宠。
             // 官方原来的自启项直接拉桌宠 exe，开机后图鉴和控制台连不上服务。
             let action = body.get("action").and_then(Value::as_str).unwrap_or("status");
             match startup_action(app, action) {
@@ -883,14 +1009,85 @@ fn handle(app: &Arc<App>, request: tiny_http::Request) {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--apply-update") {
+        let root = PathBuf::from(args.get(2).cloned().unwrap_or_default());
+        let stage = PathBuf::from(args.get(3).cloned().unwrap_or_default());
+        if let Err(error) = wuwatappo_assistant_core::release_installer::apply_update(&root, &stage) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("--prepare-cache") {
+        let out_dir = PathBuf::from(args.get(2).cloned().unwrap_or_else(|| ".".into()));
+        let region = args
+            .get(3)
+            .cloned()
+            .or_else(|| env::var("WUWA_REGION").ok())
+            .unwrap_or_else(|| "cn".into());
+        match wuwatappo_assistant_core::resource_cache::sync_with_progress(
+            &out_dir,
+            &region,
+            true,
+            |done, total| {
+                println!("{done}/{total}");
+            },
+        ) {
+            Ok(summary) => {
+                println!(
+                    "{}",
+                    json!({
+                        "ok": true,
+                        "changed": summary.changed,
+                        "atlas_count": summary.atlas_count,
+                        "asset_count": summary.asset_count
+                    })
+                );
+                return;
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.get(1).map(String::as_str) == Some("--make-update") {
+        let Some(payload) = args.get(2) else {
+            eprintln!("用法：LocalGalleryHost.exe --make-update <payload_dir> <out_dir> [region]");
+            std::process::exit(1);
+        };
+        let Some(out_dir) = args.get(3) else {
+            eprintln!("用法：LocalGalleryHost.exe --make-update <payload_dir> <out_dir> [region]");
+            std::process::exit(1);
+        };
+        let region = args.get(4).map(String::as_str);
+        match wuwatappo_assistant_core::release_installer::build_update_archive(
+            Path::new(payload),
+            Path::new(out_dir),
+            region,
+        ) {
+            Ok(summary) => {
+                println!("{summary}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
     let root = env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
-    let config = fs::read_to_string(root.join("local_config.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_else(|| json!({"port":0,"token":""}));
+    let config = match wuwatappo_assistant_core::ensure_local_config(&root) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("初始化本机配置失败：{error}");
+            std::process::exit(1);
+        }
+    };
     let port = config.get("port").and_then(Value::as_u64).unwrap_or(0);
     let token = config
         .get("token")
@@ -905,7 +1102,15 @@ fn main() {
         .and_then(|value| serde_json::from_str::<Value>(&value).ok())
         .and_then(|value| value.get("enabled").and_then(Value::as_bool))
         .unwrap_or(false);
-    let server = Server::http(format!("127.0.0.1:{port}")).expect("bind local bridge");
+    // 端口被别的进程占住时不要 panic：panic 只会在 stderr 留一行英文，
+    // 而用户看到的是启动器的「本地服务启动超时」，根本对不上号。
+    let server = match Server::http(format!("127.0.0.1:{port}")) {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("本地服务端口 {port} 无法监听（可能已被占用）：{error}");
+            std::process::exit(2);
+        }
+    };
     let app = Arc::new(App {
         root,
         config: Mutex::new(config),

@@ -34,7 +34,7 @@ test('candidate summaries separate source churn from named command, payload and 
 });
 
 test('candidate inventory is review evidence and never overwrites the accepted fixtures or resource lock', async () => {
-  const profile = getRegionProfile();
+  const profile = { ...getRegionProfile(), upstreamLock: 'upstream-cn.json' };
   const directory = await mkdtemp(path.join(tmpdir(), 'wuwa-upstream-review-'));
   try {
     await mkdir(path.join(directory, 'tests'));
@@ -96,7 +96,7 @@ test('update PR execution commits its regional lock plus the regenerated contrac
         calls.push([command, args]);
         return command === 'git' && args[0] === 'diff' ? (changed ? 'resource diff' : '') : '';
       };
-      await openUpdatePullRequest({ projectRoot: directory, profile: getRegionProfile(region), environment: { ...environment, FRONTEND_OUTCOME: frontend }, execute });
+      await openUpdatePullRequest({ projectRoot: directory, profile: { ...getRegionProfile(region), upstreamLock: `upstream-${region}.json` }, environment: { ...environment, FRONTEND_OUTCOME: frontend }, execute });
       if (!changed) {
         assert.deepEqual(calls, [['git', ['diff', '--', `upstream-${region}.json`]]]);
         continue;
@@ -112,7 +112,7 @@ test('update PR execution commits its regional lock plus the regenerated contrac
 
 test('a stale contract snapshot is regenerated and staged without touching the hand-written network contract', async (t) => {
   // 只有跑过 npm run setup 的机器才有官方前端；CI 两个区域都会先跑 setup。
-  const profile = getRegionProfile('global');
+  const profile = { ...getRegionProfile('global'), upstreamLock: 'upstream-global.json' };
   const assets = path.join(root, profile.frontendDir, 'assets');
   if (!existsSync(assets)) return t.skip(`缺少 ${profile.frontendDir}，先跑 npm run setup`);
   const filename = 'contracts-global.json';
@@ -122,7 +122,7 @@ test('a stale contract snapshot is regenerated and staged without touching the h
     await mkdir(path.join(directory, 'tests'));
     await mkdir(path.join(directory, profile.frontendDir), { recursive: true });
     await symlink(assets, path.join(directory, profile.frontendDir, 'assets'), 'dir');
-    await writeFile(path.join(directory, profile.upstreamLock), await readFile(path.join(root, profile.upstreamLock), 'utf8'));
+    await writeFile(path.join(directory, profile.upstreamLock), await readFile(path.join(repoRoot, 'shared/upstream/global.json'), 'utf8'));
     await writeFile(path.join(directory, '.work/upstream-check.json'), '{"latestVersion":"1.0.4"}');
     const accepted = await readFile(path.join(root, 'tests', filename), 'utf8');
     const stale = accepted.replace(/"version": "[^"]+"/, '"version": "0.0.1"');
@@ -171,8 +171,8 @@ test('sync workflow publishes only when every stage is green and otherwise leave
   assert.match(workflow, /needs\.lock\.result == 'success'/);
   assert.match(workflow, /needs\.build-macos\.result == 'success'/);
   assert.match(workflow, /needs\.build-windows\.result == 'success'/);
-  assert.ok(workflow.includes('node macos/scripts/upstream-release.mjs publish'));
-  assert.ok(workflow.includes('node macos/scripts/upstream-release.mjs report'));
+  assert.ok(workflow.includes('node scripts/upstream-release.mjs publish'));
+  assert.ok(workflow.includes('node scripts/upstream-release.mjs report'));
   assert.match(workflow, /上报需要改适配\n\s+needs:[\s\S]{0,200}?if: failure\(\)/);
   // 失败时也要把分支推上去，否则没有地方可以改适配。
   assert.match(workflow, /Preserve partial baseline work when a step fails\n\s+if: failure\(\)/);

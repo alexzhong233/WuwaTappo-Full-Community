@@ -29,9 +29,8 @@ New-Item -ItemType Directory -Path $Payload | Out-Null
 # 主程序
 Copy-Item -LiteralPath $exe -Destination (Join-Path $Payload 'WuwaTappo.Local.exe')
 
-# 本地素材服务（共享 Rust 版）
-Copy-Item -LiteralPath $frozen -Destination (Join-Path $Payload 'host') -Recurse
-Copy-Item -LiteralPath (Join-Path $Payload 'host\LocalGalleryHost.exe') -Destination (Join-Path $Payload 'LocalGalleryHost.exe')
+# 本地素材服务（共享 Rust 版，单文件直接放根目录，不再额外塞一层 host\）
+Copy-Item -LiteralPath (Join-Path $frozen 'LocalGalleryHost.exe') -Destination (Join-Path $Payload 'LocalGalleryHost.exe')
 
 # 旧版宿主是 PyInstaller 打的，产物旁边会留 _internal\（约 20 MB），可能落在 app\ 根，
 # 也可能落在 app\host\ 里。现在的宿主是单文件 Rust 产物，这两个位置都不再需要；
@@ -84,9 +83,19 @@ foreach ($f in @('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
 if (Test-Path -LiteralPath (Join-Path $Root '..\docs\windows')) {
   Copy-Item -LiteralPath (Join-Path $Root '..\docs\windows') -Destination (Join-Path $Payload 'docs') -Recurse
 }
-Copy-Item -LiteralPath (Join-Path $R.WorkDir 'local_config.json') -Destination (Join-Path $Payload 'package_config.json')
+$localCfgPath = Join-Path $R.WorkDir 'local_config.json'
+$localCfgObj = Get-Content -LiteralPath $localCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$pkgCfgObj = [ordered]@{}
+foreach ($prop in $localCfgObj.PSObject.Properties) {
+  if ($prop.Name -ne 'token') { $pkgCfgObj[$prop.Name] = $prop.Value }
+}
+[IO.File]::WriteAllText(
+  (Join-Path $Payload 'package_config.json'),
+  ($pkgCfgObj | ConvertTo-Json -Depth 10),
+  (New-Object Text.UTF8Encoding($false))
+)
 # 运行期必需（含 token）；robocopy 会跳过它，保留目标目录里已有的 token 与计数
-Copy-Item -LiteralPath (Join-Path $R.WorkDir 'local_config.json') -Destination (Join-Path $Payload 'local_config.json')
+Copy-Item -LiteralPath $localCfgPath -Destination (Join-Path $Payload 'local_config.json')
 
 # 无控制台启动器——安装包的快捷方式就指向它。必须在 robocopy 之前放进 payload，
 # 否则同步不到 app\。build.ps1 的 4/5 步负责编译，这里只在真缺的时候明确报错。
@@ -115,12 +124,16 @@ if (-not (Test-Path -LiteralPath (Join-Path $App 'local_config.json'))) {
   '已写入运行期配置 local_config.json（含新 token）'
 }
 
-# 启动器（相对路径，可随目录搬迁）；start.cmd 用纯 ASCII 名，供桌面快捷方式引用
+# 启动器（相对路径，可随目录搬迁）；prefer 无控制台启动器，缺了才退回直接拉服务 + 桌宠
 $launcher = @'
 @echo off
 chcp 65001 >nul
 setlocal
 set ROOT=%~dp0
+if exist "%ROOT%WuwaTappoLauncher.exe" (
+  start "" "%ROOT%WuwaTappoLauncher.exe"
+  goto :eof
+)
 tasklist /FI "IMAGENAME eq LocalGalleryHost.exe" 2>nul | find /I "LocalGalleryHost.exe" >nul
 if errorlevel 1 (
   start "" /B "%ROOT%LocalGalleryHost.exe"

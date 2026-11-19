@@ -32,8 +32,8 @@ concurrency:
 
 env:
   BASELINE_BRANCH: codex/official-baseline-${{ github.run_id }}
-  LOCK_FILES: macos/upstream-cn.json macos/upstream-global.json windows/upstream-win.json windows/upstream-win-global.json
-  VERSION_FILES: package.json package-lock.json macos/src-tauri/tauri.conf.json macos/src-tauri/tauri.global.conf.json macos/src-tauri/Cargo.toml macos/src-tauri/Cargo.lock shared/frontend/desktop_assistant.js
+  LOCK_FILES: shared/upstream/cn.json shared/upstream/global.json
+  VERSION_FILES: package.json package-lock.json macos/src-tauri/tauri.conf.json macos/src-tauri/tauri.global.conf.json macos/src-tauri/Cargo.toml macos/src-tauri/Cargo.lock shared/backend/Cargo.toml shared/backend/Cargo.lock shared/frontend/desktop_assistant.js macos/fullatlas-source/desktop_assistant.js windows/src/src/desktop_assistant.js
 
 jobs:
   detect:
@@ -55,7 +55,7 @@ jobs:
         id: check
         env:
           TARGET: ${{ github.event.inputs.region || 'both' }}
-        run: node macos/scripts/upstream-detect.mjs
+        run: node scripts/upstream-detect.mjs
 
   lock:
     name: 更新基线锁
@@ -87,19 +87,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$CN_CHANGED" = "true" ]; then
-            WUWA_REGION=cn node macos/scripts/sync-upstream.mjs --update-lock
-            WUWA_REGION=cn node macos/scripts/upstream-windows-lock.mjs
+            WUWA_REGION=cn node scripts/sync-upstream.mjs --update-lock
+            WUWA_REGION=cn node scripts/upstream-windows-lock.mjs
           fi
           if [ "$GLOBAL_CHANGED" = "true" ]; then
-            WUWA_REGION=global node macos/scripts/sync-upstream.mjs --update-lock
-            WUWA_REGION=global node macos/scripts/upstream-windows-lock.mjs
+            WUWA_REGION=global node scripts/sync-upstream.mjs --update-lock
+            WUWA_REGION=global node scripts/upstream-windows-lock.mjs
           fi
       - name: Read resulting baseline versions
         id: versions
         run: |
           {
-            echo "cn=$(node -p 'require("./macos/upstream-cn.json").version')"
-            echo "global=$(node -p 'require("./macos/upstream-global.json").version')"
+            echo "cn=$(node -p 'require("./shared/upstream/cn.json").version')"
+            echo "global=$(node -p 'require("./shared/upstream/global.json").version')"
           } >> "$GITHUB_OUTPUT"
       - name: Publish verified installers to the build mirror
         # 官方 CDN 从 runner 侧会间歇性连不上（2026-11-08 那次发版就是被它打死），
@@ -112,8 +112,8 @@ jobs:
           GLOBAL_CHANGED: ${{ needs.detect.outputs.global_changed }}
         run: |
           set -euo pipefail
-          if [ "$CN_CHANGED" = "true" ]; then WUWA_REGION=cn node macos/scripts/installer-mirror.mjs; fi
-          if [ "$GLOBAL_CHANGED" = "true" ]; then WUWA_REGION=global node macos/scripts/installer-mirror.mjs; fi
+          if [ "$CN_CHANGED" = "true" ]; then WUWA_REGION=cn node scripts/installer-mirror.mjs; fi
+          if [ "$GLOBAL_CHANGED" = "true" ]; then WUWA_REGION=global node scripts/installer-mirror.mjs; fi
       - name: Assert both platforms share one baseline
         # 这条断言以前只在 CI 里跑，现在提前到"改锁的同一个地方"：
         # 两平台锁对不上就没必要再花一小时去编译两个必然不一致的包。
@@ -192,7 +192,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ needs.lock.outputs.version }}
-        run: node macos/scripts/upstream-release.mjs publish
+        run: node scripts/upstream-release.mjs publish
 
   report:
     name: 上报需要改适配
@@ -217,4 +217,4 @@ jobs:
           BASELINE_BRANCH: ${{ env.BASELINE_BRANCH }}
           STAGE_OUTCOMES: >-
             {"lock":"${{ needs.lock.result }}","build-macos":"${{ needs.build-macos.result }}","build-windows":"${{ needs.build-windows.result }}","publish":"${{ needs.publish.result }}"}
-        run: node macos/scripts/upstream-release.mjs report
+        run: node scripts/upstream-release.mjs report

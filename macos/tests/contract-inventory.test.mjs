@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import { parse } from 'acorn';
 import { inventoryAssets } from '../scripts/inventory-contract.mjs';
 
-import { contract, profile, root, assetDirectory } from './frontend-context.mjs';
+import { contract, profile, root, assetDirectory, hasExtractedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 const runtimeCommands = contract.commands.filter(item => item.kind === 'application' && item.scopes.includes('application-runtime'));
 
 test('selected region runtime and Windows installer have separate exhaustive inventories', () => {
@@ -30,7 +30,8 @@ test('selected region runtime and Windows installer have separate exhaustive inv
   assert.ok(contract.commands.find(item => item.name === 'start_silent_nsis_install').scopes.every(scope => scope === 'windows-installer'));
 });
 
-test('committed inventory matches every call site in the selected upstream version', () => {
+test('committed inventory matches every call site in the selected upstream version', t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过契约对照测试');
   const lock = JSON.parse(fs.readFileSync(path.join(root, profile.upstreamLock), 'utf8'));
   assert.deepEqual(inventoryAssets(assetDirectory, { version: lock.version }), contract);
 });
@@ -68,7 +69,8 @@ test('keyboard and mouse payloads cannot accidentally share a count stream', () 
   assert.ok(find('mouse-button').callSites[0].payloadReads.includes('memberId'));
 });
 
-test('official gamepad consumer counts once, keeps feedback and respects both input guards', () => {
+test('official gamepad consumer counts once, keeps feedback and respects both input guards', t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过官方手柄契约测试');
   const event = contract.events.find(item => item.name === 'gamepad-button-press');
   assert.deepEqual(event.payload, { type: 'undefined' });
   assert.deepEqual(event.operations, ['listen']);

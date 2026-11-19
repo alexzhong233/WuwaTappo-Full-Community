@@ -22,22 +22,15 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $RepoRoot = Split-Path $Root -Parent
 . (Join-Path $PSScriptRoot 'region.ps1')
+. (Join-Path $PSScriptRoot 'upstream-common.ps1')
 $R = Get-RegionProfile -Root $Root -Region $Region
-
-# 不依赖 Get-FileHash：从 pwsh 7 环境启动 PS 5.1 时该 cmdlet 可能加载不到
-function Get-Sha256Hex([string]$path) {
-  $algorithm = [Security.Cryptography.SHA256]::Create()
-  $stream = [IO.File]::OpenRead($path)
-  try { $bytes = $algorithm.ComputeHash($stream) } finally { $stream.Dispose(); $algorithm.Dispose() }
-  return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
-}
 
 if (-not $Source) { $Source = $R.AppDir }
 if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
 
 $version = (Get-Content -LiteralPath (Join-Path $RepoRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
-$name = "$($R.ArtifactPrefix)-Windows-x64-$version"
-$zip = Join-Path $OutDir "$name.zip"
+$name = Get-ReleaseAssetName -Profile $R -Kind windowsPortable -Version $version
+$zip = Join-Path $OutDir $name
 
 if (-not (Test-Path -LiteralPath $Source)) { throw "找不到待打包目录：$Source（先跑 build.ps1 / deploy.ps1）" }
 $mainExe = Join-Path $Source 'WuwaTappo.Local.exe'
@@ -100,7 +93,7 @@ if (-not $KeepStaging) { Remove-Item -LiteralPath $staging -Recurse -Force -Erro
 
 $zipSize = (Get-Item -LiteralPath $zip).Length
 $sha = Get-Sha256Hex $zip
-"$sha  $name.zip" | Set-Content -LiteralPath "$zip.sha256" -Encoding ASCII
+"$sha  $name" | Set-Content -LiteralPath "$zip.sha256" -Encoding ASCII
 
 ''
 '打包完成'

@@ -7,7 +7,7 @@ import { compareUpstream, discoverUpstream, validateLock } from './sync-upstream
 // 探测官方是否发新版。这一步刻意不下载安装包（200 MB × 2），
 // 只读清单，让"每天看一眼"的成本可以忽略。
 
-const root = fileURLToPath(new URL('../', import.meta.url));
+const root = fileURLToPath(new URL('../macos/', import.meta.url));
 
 export async function detectUpstream({ regions = ['cn', 'global'], projectRoot = root, fetcher = fetch } = {}) {
   const results = [];

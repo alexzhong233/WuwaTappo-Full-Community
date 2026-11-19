@@ -36,21 +36,24 @@ test('artifact naming is pinned per region and each platform ships exactly one f
   const mac = await readFile(path.join(repo, '.github/workflows/build.yml'), 'utf8');
   const win = await readFile(path.join(repo, '.github/workflows/build-windows.yml'), 'utf8');
   const release = await readFile(path.join(repo, '.github/workflows/release.yml'), 'utf8');
+  const devRelease = await readFile(path.join(repo, '.github/workflows/dev-release.yml'), 'utf8');
+  const releaseManifest = await readFile(path.join(repo, 'scripts/release-assets.mjs'), 'utf8');
   const packager = await readFile(path.join(repo, 'macos/scripts/package-macos.sh'), 'utf8');
   // mac 只出 dmg、win 只出 exe 安装包；zip 不再作为发行物
   assert.ok(mac.includes('dist/*.dmg'));
   assert.ok(!mac.includes('dist/*.zip'));
   assert.ok(win.includes('dist/*Windows-x64*.exe'));
   assert.ok(!win.includes('dist/*Windows-x64*.zip'));
-  assert.match(packager, /NAME="\$ARTIFACT_PREFIX-\$VERSION-macOS-arm64"/);
-  // 发版必须两个平台都构建成功，且四个产物齐全
+  assert.match(packager, /release-assets\.mjs" name --kind=macos --region="\$EXPECTED_REGION" --version="\$VERSION"/);
+  assert.ok(!packager.includes('NAME="$ARTIFACT_PREFIX-$VERSION-macOS-arm64"'));
+  // 发版必须两个平台都构建成功，且六个产物齐全
   assert.match(release, /needs: \[build-macos, build-windows\]/);
-  for (const name of [
-    'WuwaTappo-Full-CN-Community-${version}-macOS-arm64.dmg',
-    'WuwaTappo-Full-Global-Community-${version}-macOS-arm64.dmg',
-    'WuwaTappo-Full-CN-Community-Windows-x64-${version}.exe',
-    'WuwaTappo-Full-Global-Community-Windows-x64-${version}.exe',
-  ]) assert.ok(release.includes(name), name);
+  assert.match(releaseManifest, /shared\/contracts\/release-assets\.json/);
+  assert.match(releaseManifest, /releaseAssetName/);
+  assert.ok(!releaseManifest.includes('WuwaTappo-Full-CN-Community-'));
+  assert.ok(!releaseManifest.includes('WuwaTappo-Full-Global-Community-'));
+  assert.match(release, /writeReleaseChecksums/);
+  assert.match(devRelease, /release-assets\.mjs prepare/);
 });
 
 test('unknown regions fail rather than silently selecting an account environment', () => {

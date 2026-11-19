@@ -1,13 +1,10 @@
 """Windows 侧的助手注入钩子。
 
-主流程在 `shared/tools/assistant_core.py`，与 macOS 共用。Windows 比 macOS 多接
-三样东西，全部通过钩子挂进去，不另外复制一份 `integrate()`：
+主流程在 `shared/tools/assistant_core.py`，与 macOS 共用（包含面板「控制台」页签、
+更新锁放行与页签白名单）。Windows 专属部分只有两项：
 
 1. 桌宠右键原生菜单（`desktop_context_menu.js` + 原生 Win32 弹窗）
-2. 面板里的「控制台」页签（放行更新锁、页签白名单）
-3. 开机自启交给本机服务托管（`/startup`）
-
-这样两份 `integrate_assistant.py` 不会再各改一遍主流程。
+2. 开机自启交给本机服务托管（`/startup`）
 """
 import re
 import sys
@@ -25,14 +22,9 @@ class WindowsHooks(Hooks):
     # 右键菜单的入口要留给 initialize 和 popup 两处，所以存成实例属性。
     context_actions = ''
 
-    FACADE_LOCALS = '''
-localAtlasController.assistant=createDesktopAssistant({ref,window,atlas:localAtlasController,displayName:resolveAssetDisplayName});
-localAtlasController.contextMenu=createDesktopContextMenu({invoke,request:(path,body)=>localAtlasController.request(path,body),settings:loadDesktopCatSettings,visible:()=>petDockVisibleForMenu,labels:async()=>{try{return await getNativeMenuLabels(formatShortcut((await getAppShortcuts()).togglePet));}catch(error){return {};}},report:details=>localAtlasController.request('/diagnostic',details)});
-window.__WUWA_OPEN_PANEL_TAB__=tab=>invoke('open_panel_window',{payload:{tab}}).then(()=>true).catch(()=>false);'''
-
     def facade_locals(self):
-        # 三段一起替换掉 macOS 默认那一行：assistant + contextMenu + 面板页签钩子。
-        return self.FACADE_LOCALS
+        return super().facade_locals() + '''
+if(localAtlasController)localAtlasController.contextMenu=createDesktopContextMenu({invoke,request:(path,body)=>localAtlasController.request(path,body),settings:loadDesktopCatSettings,visible:()=>petDockVisibleForMenu,labels:async()=>{try{return await getNativeMenuLabels(formatShortcut((await getAppShortcuts()).togglePet));}catch(error){return {};}},report:details=>localAtlasController.request('/diagnostic',details)});'''
 
     def before_main_code(self, main, ctx):
         once, mi = ctx['once'], ctx['mi']
@@ -65,34 +57,21 @@ window.__WUWA_OPEN_PANEL_TAB__=tab=>invoke('open_panel_window',{payload:{tab}}).
                                 'after:async()=>{await ' + native_invoke + "('set_main_swallow_mouse',{enabled:false});await " + cancel_gesture + '();}}')
         main = once(main, popup.group(0), f'''try{{await __lg.contextMenu.popup({popup.group(2)},{popup.group(3)},{self.context_actions});}}
             catch(error){{console.warn('[context-menu] native extension unavailable',error);{popup.group(0)};}}''')
-        # 「控制台」页不受更新锁拦截：更新卡住时用户仍要能进来点更新。
-        tab_guard = re.search(r'if \((' + re.escape(mi['globalStore']) + r'|[\w$]+)\(\)\) \{\s*' + re.escape(mi['showToast']) + r'\([\w$]+\(("update_force_lock_hint")\)\)', main)
-        if not tab_guard:
-            tab_guard = re.search(r'if \(([\w$]+)\(\)\) \{\s*' + re.escape(mi['showToast']) + r'\(', main)
-        assert tab_guard, 'panel update-lock guard changed'
-        return main[:tab_guard.start()] + 'if (e !== "console" && ' + tab_guard.group(1) + '()) {' + \
-            main[tab_guard.start() + len('if (' + tab_guard.group(1) + '()) {'):]
+        return main
 
     def code_prefix(self, ctx):
         mi = ctx['mi']
-        return ('\n' + mi['onMounted'] + '(()=>{window.setTimeout(()=>__lg.contextMenu.initialize('
+        return ('\n' + mi['onMounted'] + '(()=>{window.setTimeout(()=>__lg?.contextMenu?.initialize('
                 + self.context_actions
                 + ").catch(error=>console.warn('[context-menu] initialize',error)),1500);});")
 
     def blocked(self, ctx):
-        return '__lg.assistant.updateRequired.value||__lg.contextMenu.isOpen()'
+        return '__lg.assistant.updateRequired.value||Boolean(__lg.contextMenu?.isOpen())'
 
     def after_monitor(self, monitor, ctx):
-        # 面板页签白名单：官方的折叠/切换逻辑只认背包/图鉴/合成/联机/设置四个页。
-        # 新加的「控制台」必须放行，否则点进去会被当成非法页签退回。
-        _tab_guard = 'return e === "bag" || e === "atlas" || e === "exchange" || e === "room" || e === "setting"'
-        if monitor.count(_tab_guard) == 1:
-            monitor = monitor.replace(_tab_guard, _tab_guard + ' || e === "console"', 1)
-        else:
-            print('warn: 面板页签白名单锚点变了，「控制台」页可能被官方逻辑拒掉', file=sys.stderr)
         # 开机自启：官方在 Windows 上注册的是「直接拉桌宠 exe」的计划任务，开机后本地
         # 服务没起，图鉴和控制台会 Failed to fetch。这里改成问本机服务，由它注册一个
-        # 跑 launch.ps1 的任务（先起宿主再起桌宠），并顺手迁移官方旧任务。
+        # 先起宿主再起桌宠的任务，并顺手迁移官方旧任务。
         _auto_status = re.search(r'return Fe\(\) \? await [\w$]+\("is_elevated_autostart_enabled"\) : await [\w$]+\(\)', monitor)
         if _auto_status:
             monitor = monitor[:_auto_status.start()] + \

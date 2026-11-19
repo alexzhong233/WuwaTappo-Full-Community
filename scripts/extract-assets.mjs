@@ -200,23 +200,47 @@ async function main() {
   const options = {};
   const args = process.argv.slice(2);
   for (let index = 0; index < args.length; index += 2) {
-    if (!['--payload', '--installer', '--sevenzip', '--output'].includes(args[index]) || !args[index + 1]) {
-      throw new Error('Usage: node scripts/extract-assets.mjs (--payload app.exe | --installer setup.exe --sevenzip /path/to/7zz) --output frontend');
+    if (!['--payload', '--installer', '--sevenzip', '--output', '--readable', '--executable-output'].includes(args[index]) || !args[index + 1]) {
+      throw new Error('Usage: node scripts/extract-assets.mjs (--payload app.exe | --installer setup.exe --sevenzip /path/to/7zz) [--output frontend] [--readable readable] [--executable-output app.exe]');
     }
-    options[args[index].slice(2)] = args[index + 1];
+    const key = args[index].slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+    options[key] = args[index + 1];
   }
-  if (!options.output || Boolean(options.payload) === Boolean(options.installer)) throw new Error('Choose --payload or --installer and provide --output.');
+  const hasPayload = Boolean(options.payload);
+  const hasInstaller = Boolean(options.installer);
+  if (hasPayload === hasInstaller || (!options.output && !options.executableOutput)) {
+    throw new Error('Choose --payload or --installer and provide --output or --executable-output.');
+  }
   let bytes;
-  if (options.payload) bytes = await readFile(options.payload);
+  if (hasPayload) bytes = await readFile(options.payload);
   else {
     if (!options.sevenzip) throw new Error('--installer requires --sevenzip; the installer is never executed.');
     bytes = (await extractApplicationPayload(await readFile(options.installer), options.sevenzip)).bytes;
   }
+  if (options.executableOutput) {
+    const executable = path.resolve(options.executableOutput);
+    await mkdir(path.dirname(executable), { recursive: true });
+    await writeFile(executable, bytes);
+  }
+  if (!options.output) {
+    console.log(JSON.stringify({ executable: path.resolve(options.executableOutput), size: bytes.length }, null, 2));
+    return;
+  }
   const entries = findAssetEntries(bytes);
   const references = inspectStaticReferences(entries);
   if (references.missing.length) throw new Error(`Unresolved embedded imports: ${JSON.stringify(references.missing)}`);
-  const manifest = await extractAssets(bytes, path.resolve(options.output));
-  console.log(JSON.stringify({ output: path.resolve(options.output), count: manifest.length,
+  const output = path.resolve(options.output);
+  const manifest = await extractAssets(bytes, output);
+  if (options.readable) {
+    const { default: beautify } = await import('js-beautify');
+    for (const entry of entries) {
+      if (!entry.relativePath.endsWith('.js')) continue;
+      const readable = path.join(path.resolve(options.readable), entry.relativePath);
+      await mkdir(path.dirname(readable), { recursive: true });
+      await writeFile(readable, beautify.js(entry.data.toString('utf8'), { indent_size: 2 }));
+    }
+  }
+  console.log(JSON.stringify({ output, readable: options.readable ? path.resolve(options.readable) : null, count: manifest.length,
     staticReferences: references.references.length, assets: manifest }, null, 2));
 }
 

@@ -11,15 +11,16 @@ const script = path.resolve(import.meta.dirname, '../scripts/package-macos.sh');
 const root = path.resolve(import.meta.dirname, '..');
 const repoRoot = path.resolve(root, '..');
 const MIB = 1024 * 1024;
+const packagingTest = process.platform === 'darwin' ? test : test.skip;
 
-test('packaging exposes explicit application and output paths', () => {
+packagingTest('packaging exposes explicit application and output paths', () => {
   const result = spawnSync('bash', [script, '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /--app/);
   assert.match(result.stdout, /--output/);
 });
 
-test('packaging rejects incomplete arguments and missing application bundles', () => {
+packagingTest('packaging rejects incomplete arguments and missing application bundles', () => {
   const incomplete = spawnSync('bash', [script, '--app'], { encoding: 'utf8' });
   assert.equal(incomplete.status, 2);
   const missing = spawnSync('bash', [script, '--app', '/nonexistent/Wuwa Tappo CN Mac.app'], { encoding: 'utf8' });
@@ -27,7 +28,7 @@ test('packaging rejects incomplete arguments and missing application bundles', (
   assert.match(missing.stderr, /未找到完整应用|需要在 Mac/);
 });
 
-test('packaging reports the failing stage and preserves the tool exit status', () => {
+packagingTest('packaging reports the failing stage and preserves the tool exit status', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'wuwa-package-error-'));
   try {
     const app = path.join(directory, 'Broken.app');
@@ -46,13 +47,13 @@ test('packaging reports the failing stage and preserves the tool exit status', (
   }
 });
 
-test('packaging rejects unknown regions instead of silently choosing CN', () => {
+packagingTest('packaging rejects unknown regions instead of silently choosing CN', () => {
   const result = spawnSync('bash', [script], { encoding: 'utf8', env: { ...process.env, WUWA_REGION: 'unknown' } });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /未知服务区域/);
 });
 
-test('both regions reject an application bundle from the other region before reading its binary', () => {
+packagingTest('both regions reject an application bundle from the other region before reading its binary', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'wuwa-package-region-'));
   try {
     const base = JSON.parse(readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'));

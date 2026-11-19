@@ -6,9 +6,7 @@
     2. 本机已知的托管 Python 3.13（开发者机器）
     3. PATH 上的 python3.13 / python3.12 / python
 
-  PyInstaller 6.16 对 3.14 支持不稳，优先 3.12 / 3.13。
-
-  用法： powershell -ExecutionPolicy Bypass -File windows\tools\setup-env.ps1 [-Force]
+  用法： powershell -ExecutionPolicy Bypass -File tools\setup-env.ps1 [-Force]
 #>
 param([switch]$Force)
 
@@ -39,15 +37,6 @@ $verText = (& $Python --version 2>&1) -join ' '
 "Python: $Python"
 "版本  : $verText"
 
-# 按版本号判断，别用 '3\.1[45]' 这种子串匹配：'Python 3.13.14' 里就含 '3.14'
-if ($verText -match 'Python\s+(\d+)\.(\d+)\.') {
-  $major = [int]$Matches[1]
-  $minor = [int]$Matches[2]
-  if ($major -ne 3 -or $minor -gt 13) {
-    Write-Warning "PyInstaller 6.16 对 $verText 支持不稳，建议 3.13。冻结失败时换解释器并加 -Force 重跑。"
-  }
-}
-
 if ($Force -and (Test-Path -LiteralPath $Venv)) {
   Remove-Item -LiteralPath $Venv -Recurse -Force
   '已删除旧 .venv（-Force）'
@@ -65,6 +54,6 @@ if ($LASTEXITCODE -ne 0) { throw '安装依赖失败' }
 
 # 探针只输出 ASCII：CI 的 Python stdout 是 cp1252，打印中文会抛 UnicodeEncodeError，
 # 看起来像依赖没装好，实际 import 早已成功。同时把退出码纳入判定，别让失败被吞掉。
-& $venvPy -c "import PyInstaller, pefile, brotli, jsbeautifier, psutil; print('deps ok: PyInstaller ' + PyInstaller.__version__)"
+& $venvPy -c "import pefile, brotli; print('deps ok: pefile ' + pefile.__version__)"
 if ($LASTEXITCODE -ne 0) { throw '依赖导入失败，看上方 Python 报错' }
 "环境就绪：$Venv"

@@ -1,9 +1,9 @@
 fn main() {
     let region = std::env::var("WUWA_REGION").unwrap_or_else(|_| "cn".into());
     let filename = if region == "global" {
-        "../upstream-global.json"
+        "../../shared/upstream/global.json"
     } else {
-        "../upstream-cn.json"
+        "../../shared/upstream/cn.json"
     };
     let lock = std::fs::read_to_string(filename).expect("official resource lock must be readable");
     let version: serde_json::Value =

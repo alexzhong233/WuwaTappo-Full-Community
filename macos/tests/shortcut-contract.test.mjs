@@ -5,11 +5,19 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { parse } from 'acorn';
 import { patchMacShortcutLabels } from '../scripts/patch-frontend.mjs';
-import { contract, profile, root, findSource } from './frontend-context.mjs';
+import { contract, profile, root, findSource, hasExtractedFrontend, hasPreparedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 
-const main = findSource(source => source.includes('const DEFAULT_APP_SHORTCUTS='));
-const view = findSource(source => source.includes('e==="togglePet"'));
-const settings = findSource(source => source.includes('__name:"ShortcutInput"'));
+let cachedSources = null;
+function sources() {
+  if (!cachedSources) {
+    cachedSources = {
+      main: findSource(source => source.includes('const DEFAULT_APP_SHORTCUTS=')),
+      view: findSource(source => source.includes('e==="togglePet"')),
+      settings: findSource(source => source.includes('__name:"ShortcutInput"')),
+    };
+  }
+  return cachedSources;
+}
 
 function nodes(source) {
   const result = [];
@@ -37,7 +45,9 @@ function constant(source, name) {
   return `const ${source.slice(selected[0].start, selected[0].end)};`;
 }
 
-test('official shortcut bindings retain VK values while macOS displays Option and Command', () => {
+test('official shortcut bindings retain VK values while macOS displays Option and Command', t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过官方前端契约测试');
+  const { main } = sources();
   const patched = patchMacShortcutLabels(main.source);
   const definitions = ['DEFAULT_APP_SHORTCUTS', 'namedKeys', 'keyLabels'].map(name => constant(patched, name)).join('\n');
   const functions = ['formatShortcut', 'formatModifiers', 'eventModifiers', 'keyFromEvent', 'formatPressedShortcut', 'shortcutFromEvent']
@@ -58,11 +68,15 @@ test('official shortcut bindings retain VK values while macOS displays Option an
   assert.equal(api.shortcutFromEvent({ code: 'KeyK', key: 'k' }), null);
   assert.throws(() => patchMacShortcutLabels(''), /modifier labels changed/);
   assert.throws(() => patchMacShortcutLabels(main.source.replace('[8,"Win"]', '[8,"Meta"]')), /modifier labels changed/);
-  const prepared = readFileSync(path.join(root, profile.preparedDir, 'assets', main.name), 'utf8');
-  assert.ok(prepared.includes(declaration(patched, 'formatModifiers')));
+  if (hasPreparedFrontend || requireFrontendAssets) {
+    const prepared = readFileSync(path.join(root, profile.preparedDir, 'assets', main.name), 'utf8');
+    assert.ok(prepared.includes(declaration(patched, 'formatModifiers')));
+  }
 });
 
-test('official settings save the complete shortcut map and retain actionable native errors', async () => {
+test('official settings save the complete shortcut map and retain actionable native errors', async t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过官方前端契约测试');
+  const { settings } = sources();
   // 压缩名漂移（1.0.3: T/qs/ms/B/Oe…，1.0.4: O/Ys/gs/N/Ne…），按 set_app_shortcuts 定位保存函数。
   const saveNodes = nodes(settings.source).filter(node => node.type === 'FunctionDeclaration'
     && settings.source.slice(node.start, node.end).includes('set_app_shortcuts'));
@@ -94,7 +108,9 @@ test('official settings save the complete shortcut map and retain actionable nat
   }
 });
 
-test('official shortcut capture does not reactivate a blurred field after a delayed native reply', async () => {
+test('official shortcut capture does not reactivate a blurred field after a delayed native reply', async t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过官方前端契约测试');
+  const { settings } = sources();
   // 焦点/失焦对共享同一个原生锁调用（1.0.3: M/P/Gt，1.0.4: h/T/zt），按锁调用形态解析。
   const decls = nodes(settings.source).filter(node => node.type === 'FunctionDeclaration');
   const slice = node => settings.source.slice(node.start, node.end);
@@ -124,7 +140,9 @@ test('official shortcut capture does not reactivate a blurred field after a dela
   assert.equal(env.p.value, false);
 });
 
-test('official app-shortcut consumer dispatches exactly one enabled action and honors the lock', () => {
+test('official app-shortcut consumer dispatches exactly one enabled action and honors the lock', t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过官方前端契约测试');
+  const { view } = sources();
   // 压缩名每次官方重建都会漂移（1.0.3: Ch/Ie/ly/mc…，1.0.4: Ip/Pe/py/wc…），按分派形状解析。
   const match = /function ([\w$]+)\(e\)\{([\w$]+)\(\)\|\|\(e==="togglePet"&&([\w$]+)\(\)&&([\w$]+)\(\),e==="gameMode"&&([\w$]+)\(\)&&([\w$]+)\(\),e==="switchScreen"&&([\w$]+)\(\)&&([\w$]+)\(\)\)\}/.exec(view.source);
   assert.ok(match, 'app-shortcut dispatch contract');
@@ -145,7 +163,9 @@ test('official app-shortcut consumer dispatches exactly one enabled action and h
   assert.deepEqual(contract.events.find(event => event.name === 'app-shortcut').payload.enum, ['gameMode', 'switchScreen', 'togglePet']);
 });
 
-test('official fullscreen automation follows transitions without clearing a manually enabled mode when disabled', () => {
+test('official fullscreen automation follows transitions without clearing a manually enabled mode when disabled', t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过官方前端契约测试');
+  const { view } = sources();
   // 1.0.3: Ph/xt/ma/Qt/Ga + 内联通知；1.0.4: Op/Et/_a/tn/$a，通知下沉到 $a 内部。
   const match = /function ([\w$]+)\(e\)\{if\(!([\w$]+)\(\)\.autoGameModeOnFullscreen\)\{([\w$]+)=!1;return\}e!==\3&&\(\3=e,([\w$]+)\.value!==e&&([\w$]+)\(e\)\)\}/.exec(view.source);
   assert.ok(match, 'fullscreen automation contract');
@@ -167,7 +187,8 @@ test('official fullscreen automation follows transitions without clearing a manu
   assert.deepEqual(effects, [true, false]);
 });
 
-test('official desktop-safe-area consumer keeps application fullscreen separate from desktop fullscreen', async () => {
+test('official desktop-safe-area consumer keeps application fullscreen separate from desktop fullscreen', async t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过官方前端契约测试');
   const source = findSource(value => value.includes('typeof e.foregroundApplicationFullscreen=="boolean"')).source;
   const functions = ['zt', 'oe', 'qt', 'ie'].map(name => declaration(source, name)).join('\n');
   const insets = { left: 0, top: 0, right: 0, bottom: 0 };

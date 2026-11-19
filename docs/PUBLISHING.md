@@ -29,7 +29,7 @@ npm run official:update                 # 只检测官方版本
 npm run official:update -- --apply      # 下载、适配、测试、构建并打包
 ```
 
-`--apply` 失败会恢复 `upstream-cn.json` 和已提取前端；未知官方版本会在 FullAtlas 版本 / SHA-256 / 契约门禁处停止。构建成功后检查 `macos/.work/official-update-result.json`，再提交资源锁和适配代码。不要把 Windows EXE 或临时构建缓存上传到源码仓库。
+`--apply` 失败会恢复 `shared/upstream/cn.json` 和已提取前端；未知官方版本会在 FullAtlas 版本 / SHA-256 / 契约门禁处停止。构建成功后检查 `macos/.work/official-update-result.json`，再提交资源锁和适配代码。不要把 Windows EXE 或临时构建缓存上传到源码仓库。
 
 构建工作流的下载镜像指向当前仓库自己的 `upstream-resources` Release。没有镜像时首先从官方源下载；不要复制别人的凭据或私有下载链接。
 
@@ -53,7 +53,7 @@ Release 工作流构建完两个平台后**直接发布**。要人工把关就�
 
 ## 发布整合版
 
-当前整合版版本号为 **1.2.8**，适配内容和待验收项见 [实验记录](macos/OFFICIAL_1.0.3.md)。`dev` 从 `main` 派生并持续构建。
+整合版版本号以根目录 `package.json` 为单一源，可用 `node scripts/bump-version.mjs <ver>`（支持 `--dry-run`）同步修改 `package.json`、`package-lock.json`、`shared/backend/Cargo.*` 与 `macos/src-tauri/` 配置。`dev` 从 `main` 派生并持续构建。
 
 **发版只能靠推标签触发，不要在网页上手动创建 Release。** GitHub 对「创建 Release 时顺带新建的 tag」不发 `push` 事件，工作流根本不会启动；手建的同名 Release 还会占住列表位置，让自动产出的附件藏进草稿里看不见。正确顺序：
 

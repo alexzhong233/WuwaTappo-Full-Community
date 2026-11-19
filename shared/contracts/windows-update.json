@@ -1,0 +1,53 @@
+{
+  "topLevel": [
+    "WuwaTappo.Local.exe",
+    "LocalGalleryHost.exe",
+    "WuwaTappoLauncher.exe",
+    "package_config.json",
+    "app.ico",
+    "initialize.ps1",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "directories": [
+    "licenses",
+    "docs"
+  ],
+  "protected": [
+    "local_config.json",
+    "offline_state.json",
+    "assistant_state.json",
+    "update_policy.json",
+    "update_hint.json",
+    "official_update.json",
+    "profile",
+    "cache",
+    "custom-atlas",
+    "runtime"
+  ],
+  "reservedNames": [
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9"
+  ]
+}

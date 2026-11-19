@@ -1,36 +1,27 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { patchBackgroundLoading } from '../scripts/patch-frontend.mjs';
 
-const GATE = 't.loading&&useLoading().showLoading()';
+const injectCore = await readFile(new URL('../../shared/tools/inject_core.py', import.meta.url), 'utf8');
+const guardLine = injectCore.match(/if \(t && typeof t\.url === "string" && t\.url\.indexOf\("api\/common\/activity-config"\) !== -1\) t\.loading = !1;/)?.[0];
+assert.ok(guardLine, 'shared/tools/inject_core.py 必须包含共用的 activity-config 遮罩抑制规则');
 
-/** 执行补丁后那一小段判断，观察它最终是否调用 showLoading。 */
-function showsOverlay(patched, config) {
-  const start = patched.indexOf('t.loading');
-  const end = patched.lastIndexOf('showLoading()');
-  assert.ok(start >= 0 && end > start, '补丁后应保留相同的遮罩入口');
-  const snippet = patched.slice(start, end + 'showLoading()'.length);
+function showsOverlay(config) {
   const calls = [];
   const useLoading = () => ({ showLoading: () => calls.push(1) });
   // eslint-disable-next-line no-new-func
-  new Function('t', 'useLoading', snippet)(config, useLoading);
+  new Function('t', 'useLoading', `${guardLine}\nif (t.loading) useLoading().showLoading();`)(config, useLoading);
   return calls.length === 1;
 }
 
-test('活动配置的后台刷新不再挂全屏遮罩', () => {
-  const patched = patchBackgroundLoading(`a${GATE}b`);
-  assert.equal(showsOverlay(patched, { loading: true, url: 'api/common/activity-config' }), false);
-  assert.equal(showsOverlay(patched, { loading: true, url: '/api/common/activity-config?x=1' }), false);
+test('活动配置的后台刷新不再挂全屏遮罩（双端共用拦截器）', () => {
+  assert.equal(showsOverlay({ loading: true, url: 'api/common/activity-config' }), false);
+  assert.equal(showsOverlay({ loading: true, url: '/api/common/activity-config?x=1' }), false);
 });
 
 test('图鉴首屏与其它带 loading 的请求照旧显示遮罩', () => {
-  const patched = patchBackgroundLoading(`a${GATE}b`);
-  assert.equal(showsOverlay(patched, { loading: true, url: 'api/common/atlas' }), true);
-  assert.equal(showsOverlay(patched, { loading: true, url: '/api/frontend/user/me' }), true);
-  assert.equal(showsOverlay(patched, { loading: true, url: '' }), true);
-  assert.equal(showsOverlay(patched, { url: 'api/common/activity-config' }), false);
-});
-
-test('入口改动后构建直接失败，而不是静默放过', () => {
-  assert.throws(() => patchBackgroundLoading('console.log(1)'), /reconcile the background loading patch/);
+  assert.equal(showsOverlay({ loading: true, url: 'api/common/atlas' }), true);
+  assert.equal(showsOverlay({ loading: true, url: '/api/frontend/user/me' }), true);
+  assert.equal(showsOverlay({ loading: true, url: '' }), true);
+  assert.equal(showsOverlay({ url: 'api/common/activity-config' }), false);
 });

@@ -1,30 +1,45 @@
-﻿# 区域配置：国服 / 国际服。被 fetch-official / build / deploy / package 共同引用。
-#
-# 两侧的差别只在数据源与命名，构建链本身完全一致：
-#   目录    build|app           vs build-global|app-global
-#   锁定    upstream-win.json   vs upstream-win-global.json
-#   素材源  mc-wuwatappo…       vs wutheringwaves-wuwatappo…
-#   产物    WuwaTappo-Full-CN-Community-Windows-x64-<ver>.exe
-#           WuwaTappo-Full-Global-Community-Windows-x64-<ver>.exe
+﻿# 区域配置来自 shared/config/regions.json；Windows 构建目录与文件名为平台派生值。
 function Get-RegionProfile {
   param([string]$Root, [string]$Region)
 
   if (-not $Region) { $Region = if ($env:WUWA_REGION) { $env:WUWA_REGION } else { 'cn' } }
   $Region = $Region.ToLowerInvariant()
-  if ($Region -notin @('cn', 'global')) { throw "未知区域：$Region（可选 cn / global）" }
+  $configPath = Join-Path $Root '..\shared\config\regions.json'
+  if (-not (Test-Path -LiteralPath $configPath)) { throw "缺少共享区域配置：$configPath" }
+  $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $entry = $config.PSObject.Properties[$Region]
+  if (-not $entry) { throw "未知区域：$Region（可选 cn / global）" }
+  $profile = $entry.Value
   $isGlobal = $Region -eq 'global'
+  $repoRoot = Split-Path $Root -Parent
+  $releasePath = Join-Path $repoRoot 'shared/contracts/release-assets.json'
+  if (-not (Test-Path -LiteralPath $releasePath)) { throw "缺少共享发布契约：$releasePath" }
+  $release = Get-Content -LiteralPath $releasePath -Raw -Encoding UTF8 | ConvertFrom-Json
 
   [pscustomobject]@{
     Id              = $Region
-    Label           = $(if ($isGlobal) { '国际服' } else { '国服' })
+    Label           = [string]$profile.label
     IsGlobal        = $isGlobal
     WorkDir         = Join-Path $Root $(if ($isGlobal) { 'build-global' } else { 'build' })
     AppDir          = Join-Path $Root $(if ($isGlobal) { 'app-global' } else { 'app' })
-    LockFile        = Join-Path $Root $(if ($isGlobal) { 'upstream-win-global.json' } else { 'upstream-win.json' })
-    AssetsHost      = $(if ($isGlobal) { 'https://wutheringwaves-wuwatappo.kurogames-global.com' } else { 'https://mc-wuwatappo.kurogames-global.com' })
-    ApiBase         = $(if ($isGlobal) { 'https://api-wutheringwaves-wuwatappo.kurogames-global.com' } else { 'https://api-mc-wuwatappo.kurogames-global.com' })
-    UpdaterHostFile = $(if ($isGlobal) { 'latest-global_host.json' } else { 'latest_host.json' })
-    ArtifactPrefix  = $(if ($isGlobal) { 'WuwaTappo-Full-Global-Community' } else { 'WuwaTappo-Full-CN-Community' })
-    ProductName     = $(if ($isGlobal) { 'WuwaTappo Global Community' } else { 'WuwaTappo CN Community' })
+    LockFile        = Join-Path $repoRoot ([string]$profile.windowsLock)
+    MacLockFile     = Join-Path $repoRoot ([string]$profile.macLock)
+    AssetsHost      = "https://$($profile.assetsHost)"
+    ApiBase         = "https://$($profile.apiHost)"
+    UpdaterHostFile = [string]$profile.updaterHostFile
+    ArtifactPrefix  = [string]$profile.artifactPrefix
+    ProductName     = [string]$profile.windowsProductName
+    ReleaseFormats  = $release.formats
   }
+}
+
+function Get-ReleaseAssetName {
+  param(
+    [Parameter(Mandatory = $true)][object]$Profile,
+    [Parameter(Mandatory = $true)][ValidateSet('macos', 'windowsInstaller', 'windowsPortable', 'windowsUpdate')][string]$Kind,
+    [Parameter(Mandatory = $true)][string]$Version
+  )
+  $property = $Profile.ReleaseFormats.PSObject.Properties[$Kind]
+  if (-not $property -or -not $property.Value) { throw "共享发布契约缺少产物类型：$Kind" }
+  return ([string]$property.Value).Replace('{prefix}', [string]$Profile.ArtifactPrefix).Replace('{version}', $Version)
 }

@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { getRegionProfile } from '../scripts/regions.mjs';
-import { downloadInstaller, installerMirrorAssetName, installerMirrorUrl, pinnedInstallerCache } from '../scripts/sync-upstream.mjs';
-import { publishPinnedInstaller } from '../scripts/installer-mirror.mjs';
+import { downloadInstaller, installerMirrorAssetName, installerMirrorUrl, pinnedInstallerCache } from '../../scripts/sync-upstream.mjs';
+import { publishPinnedInstaller } from '../../scripts/installer-mirror.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const repoRoot = path.resolve(root, '..');
 const bytes = Buffer.from('official installer public fixture');
+const tempProfile = { ...getRegionProfile('cn'), upstreamLock: 'upstream-cn.json' };
 const environment = {
   GITHUB_ACTIONS: 'true', GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'owner/repo',
   WUWA_INSTALLER_MIRROR_BASE: 'https://github.com/owner/repo/releases/download/upstream-resources',
@@ -18,7 +19,7 @@ const environment = {
 function fixtureLock(region = 'cn') {
   const profile = getRegionProfile(region);
   return {
-    schemaVersion: 1, region: profile.region, version: '1.0.2', manifestUrl: `${profile.assetsOrigin}/app/version-json/latest.json`,
+    schemaVersion: 2, region: profile.region, version: '1.0.2', manifestUrl: `${profile.assetsOrigin}/app/version-json/latest.json`,
     installer: { url: `${profile.assetsOrigin}/app/release/WuwaTappo-${region}_1.0.2_x64-setup.exe`, signature: 'public-signature', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
   };
 }
@@ -148,14 +149,14 @@ test('mirror publishing verifies the local pin and reuses only matching immutabl
     await writeFile(path.join(directory, 'upstream-cn.json'), JSON.stringify(lock));
     for (const existing of [matching, { ...matching, size: bytes.length - 1 }, { ...matching, digest: 'sha256:wrong' }]) {
       const calls = [];
-      const publish = () => publishPinnedInstaller({ projectRoot: directory, profile: getRegionProfile('cn'), environment, execute: (command, args) => { calls.push([command, args]); return releaseResponse([existing]); } });
+      const publish = () => publishPinnedInstaller({ projectRoot: directory, profile: tempProfile, environment, execute: (command, args) => { calls.push([command, args]); return releaseResponse([existing]); } });
       if (existing === matching) assert.equal((await publish()).reused, true);
       else await assert.rejects(publish(), /官方锁不一致/);
       assert.equal(calls.length, 1);
     }
     const calls = [];
     let assets = [];
-    const result = await publishPinnedInstaller({ projectRoot: directory, profile: getRegionProfile('cn'), environment, execute: (command, args) => {
+    const result = await publishPinnedInstaller({ projectRoot: directory, profile: tempProfile, environment, execute: (command, args) => {
       calls.push([command, args]);
       assert.equal(command, 'gh');
       if (args[0] === 'api') return releaseResponse(assets);
@@ -169,7 +170,7 @@ test('mirror publishing verifies the local pin and reuses only matching immutabl
     assert.equal(calls.length, 3);
     assert.deepEqual(await readFile(path.join(directory, '.work/installer-mirror', name)), bytes);
     await writeFile(source, Buffer.alloc(bytes.length));
-    await assert.rejects(publishPinnedInstaller({ projectRoot: directory, profile: getRegionProfile('cn'), environment, execute: () => assert.fail('tampered source must fail before GitHub writes') }), /SHA-256 不匹配/);
+    await assert.rejects(publishPinnedInstaller({ projectRoot: directory, profile: tempProfile, environment, execute: () => assert.fail('tampered source must fail before GitHub writes') }), /SHA-256 不匹配/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -186,12 +187,12 @@ test('first mirror publication creates only a genuinely missing non-latest prere
     await writeFile(path.join(directory, 'upstream-cn.json'), JSON.stringify(lock));
     for (const status of [401, 403, 500]) {
       const calls = [];
-      await assert.rejects(publishPinnedInstaller({ projectRoot: directory, profile: getRegionProfile('cn'), environment: ci, execute: (command, args) => { calls.push([command, args]); throw missing(status); } }), new RegExp(`HTTP ${status}`));
+      await assert.rejects(publishPinnedInstaller({ projectRoot: directory, profile: tempProfile, environment: ci, execute: (command, args) => { calls.push([command, args]); throw missing(status); } }), new RegExp(`HTTP ${status}`));
       assert.equal(calls.length, 1);
     }
     let created = false, assets = [];
     const calls = [];
-    const result = await publishPinnedInstaller({ projectRoot: directory, profile: getRegionProfile('cn'), environment: ci, execute: (command, args) => {
+    const result = await publishPinnedInstaller({ projectRoot: directory, profile: tempProfile, environment: ci, execute: (command, args) => {
       calls.push([command, args]);
       if (args[0] === 'api') { if (!created) throw missing(404); return releaseResponse(assets); }
       if (args[1] === 'create') {
@@ -206,14 +207,14 @@ test('first mirror publication creates only a genuinely missing non-latest prere
     assert.equal(result.reused, false);
     assert.equal(calls.length, 5);
     let deniedCalls = 0;
-    await assert.rejects(publishPinnedInstaller({ projectRoot: directory, profile: getRegionProfile('cn'), environment: ci, execute: (command, args) => {
+    await assert.rejects(publishPinnedInstaller({ projectRoot: directory, profile: tempProfile, environment: ci, execute: (command, args) => {
       deniedCalls += 1;
       if (args[0] === 'api') throw missing(404);
       throw Object.assign(new Error('create forbidden'), { stderr: 'HTTP 403: Forbidden' });
     } }), /create forbidden/);
     assert.equal(deniedCalls, 2);
     let raced = false, racedCalls = 0;
-    assert.equal((await publishPinnedInstaller({ projectRoot: directory, profile: getRegionProfile('cn'), environment: ci, execute: (command, args) => {
+    assert.equal((await publishPinnedInstaller({ projectRoot: directory, profile: tempProfile, environment: ci, execute: (command, args) => {
       racedCalls += 1;
       if (args[0] === 'api') { if (!raced) throw missing(404); return releaseResponse([matching]); }
       assert.equal(args[1], 'create');
@@ -231,7 +232,7 @@ test('only locked build workflow configures the explicit mirror and syncing publ
   assert.ok(!sync.includes('WUWA_INSTALLER_MIRROR_BASE:'));
   // 镜像必须在锁更新之后发布，否则存进去的是旧版本安装包；
   // 失败不阻断发版（安装包已在本地），只影响下次 CDN 抖动时的退路。
-  assert.ok(sync.indexOf('Publish verified installers to the build mirror') > sync.indexOf('node macos/scripts/sync-upstream.mjs --update-lock'));
+  assert.ok(sync.indexOf('Publish verified installers to the build mirror') > sync.indexOf('node scripts/sync-upstream.mjs --update-lock'));
   assert.match(sync, /Publish verified installers to the build mirror[\s\S]{0,400}?continue-on-error: true/);
-  assert.ok(sync.includes('node macos/scripts/installer-mirror.mjs'));
+  assert.ok(sync.includes('node scripts/installer-mirror.mjs'));
 });

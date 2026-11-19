@@ -98,9 +98,16 @@ class SharedPatchTests(unittest.TestCase):
                   'function atlas() {\n}\n'
                   'this.instance.interceptors.request.use(t => {\n')
         out = inject_core.patch_atlas_guards(source, '\n PLATFORM_EXTRA')
+        self.assertIn('api/common/activity-config', out)
         self.assertIn('PLATFORM_EXTRA', out)
         self.assertIn('offlineError()', out)
         self.assertEqual(out.count('this.instance.interceptors.request.use'), 1)
+
+    def test_taskbar_default_flips_flag_and_adds_migration(self):
+        source = 'const defaults = { showTaskbarIcon: !0 };\nfunction clampPetScale(e) {}'
+        out = inject_core.patch_taskbar_default(source)
+        self.assertIn('showTaskbarIcon: !1', out)
+        self.assertIn('wuwatappo-settings-community-taskbar-v1', out)
 
 
 class HooksTests(unittest.TestCase):
@@ -109,6 +116,7 @@ class HooksTests(unittest.TestCase):
     def test_default_hooks_are_the_macos_behaviour(self):
         hooks = assistant_core.Hooks()
         self.assertIn('createDesktopAssistant', hooks.facade_locals())
+        self.assertIn('__WUWA_OPEN_PANEL_TAB__', hooks.facade_locals())
         self.assertEqual(hooks.blocked({}), '__lg.assistant.updateRequired.value')
         self.assertEqual(hooks.before_main_code('main', {}), 'main')
         self.assertEqual(hooks.code_prefix({}), '')
@@ -126,6 +134,18 @@ class HooksTests(unittest.TestCase):
             self.assertIn('integrate', text, f'{relative} 必须导出 integrate')
 
 
+class FullAtlasCoreTests(unittest.TestCase):
+    """平台脚本只提供钩子，锚点主流程必须在 shared/tools/fullatlas_core.py。"""
+
+    def test_fullatlas_platform_scripts_delegate_to_shared_core(self):
+        for relative in ('macos/tools/fullatlas-integration.py',
+                         'windows/src/tools/build_integration.py'):
+            script = (REPO / relative).read_text(encoding='utf-8')
+            self.assertIn('from fullatlas_core import FullAtlasHooks, integrate_fullatlas', script)
+            self.assertIn('integrate_fullatlas(PROJECT', script)
+            self.assertNotIn('function_for(m, main', script)
+            self.assertNotIn('__localRefresh', script)
+
 class PatchLogTests(unittest.TestCase):
     """patch_log 看起来只写不读，实际是被 exec 的打包器写进构建报告的。"""
 
@@ -140,7 +160,8 @@ class PatchLogTests(unittest.TestCase):
         # pe_packer 只取正文、不带 import，靠宿主作用域供名字。这里静态确认宿主
         # 至少写了这些导入，免得再被当成"未使用"精简掉。
         script = (REPO / 'windows/src/tools/build_integration.py').read_text(encoding='utf-8')
-        self.assertRegex(script, r'(?m)^import hashlib,')
+        for name in ('hashlib', 'json', 'base64', 'struct', 'brotli', 'pefile'):
+            self.assertRegex(script, rf'(?m)^import {name}$')
         self.assertIn('patch_log', script.split('exec(compile(packer', 1)[0])
 
 

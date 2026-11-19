@@ -1,6 +1,6 @@
 # WuwaTappo Full Community
 
-> 当前整合版本为 **1.3.1**，Windows / macOS 国服与国际服均锁定官方客户端 **1.0.4**。FullAtlas 1.3.4–1.3.8 中适用于本项目双平台架构的功能已同步；依赖上游 Windows 外壳的功能保留各平台原生实现。`1.2.8` 是上一条正式版本线。详见 [上游同步记录](docs/UPSTREAM_SYNC_2026-11-05.md) 与 [1.0.4 适配记录](docs/RELEASE_NOTES_1.2.7.md)。
+> 当前整合版本为 **1.3.2-beta.1**（与 `package.json` 同步），Windows / macOS 国服与国际服均锁定官方客户端 **1.0.4**。FullAtlas 1.3.4–1.3.8 中适用于本项目双平台架构的功能已同步；前端三模块、注入核、控制台页签与 Rust 领域服务均收敛至根目录单一源码维护。详见 [架构说明](docs/ARCHITECTURE.md) 与 [开发说明](docs/DEVELOPMENT.md)。
 
 让《鸣潮》桌宠在 macOS 和 Windows 上运行，并在原有面板中加入本地全图鉴和桌面助手。
 
@@ -8,14 +8,14 @@
 
 ## 平台
 
-本仓库包含两套平台实现，共用同一个上游（库洛官方国服客户端，安装包与 SHA-256 锁在 `macos/upstream-cn.json`）：
+本仓库包含两套平台实现，共用同一个上游（库洛官方国服客户端，安装包与 SHA-256 锁在 `shared/upstream/cn.json`）：
 
 | | macOS | Windows |
 | --- | --- | --- |
 | 位置 | [`macos/`](macos/README.md)（`src-tauri/`、`scripts/`） | [`windows/`](windows/README.md) |
 | 做法 | Rust / Tauri 原生壳重写 | 给官方客户端打补丁并重打包 PE |
 | 为什么不同 | 官方没有 Mac 包 | 官方包本来能跑，重写没有收益 |
-| 运行时 | 原生 IPC 绑定 | Python 本地服务 + 本机 HTTP |
+| 运行时 | Rust / Tauri 原生 IPC | `shared/backend` Rust 本地服务 + 本机 HTTP |
 | 产物 | `.app` / `.dmg`（约 70 MiB） | 绿色目录（约 1.1 GB） |
 | 文档 | [macOS 指南](macos/README.md) | [Windows 指南](windows/README.md) |
 
@@ -27,8 +27,8 @@
 .
 ├── macos/          macOS 适配器、原生实现、构建与平台专属文档
 ├── windows/        Windows 适配器、上游快照、构建与平台专属文档
-├── shared/         双端共用前端源、注入核心与回归测试
-├── scripts/        跨平台构建分派与共享前端生成器
+├── shared/         双端共用前端、Rust 后端、区域/更新契约、注入核心与回归测试
+├── scripts/        跨平台构建分派、前端生成器、官方解包/镜像与上游同步脚本
 ├── docs/           跨平台架构与开发文档
 ├── dist/           两平台共用的产物目录（不入库）
 ├── package.json    npm 入口与发版号来源，两侧都读它
@@ -57,7 +57,7 @@ npm run build:check -- --platform=win
 | push 到 `main` / `dev` | CI 同时跑 `build.yml`（macos-15）与 `build-windows.yml`（windows-2022），各自上传 artifact |
 | 打 tag `v*` | 两平台都构建成功才直接发布同一个 Release，四件产物缺一件就不发（`-alpha`/`-beta`/`-rc` 自动标 Pre-release） |
 
-Windows 侧版本记录在 `windows/upstream-win.json`，由同步工作流跟随官方最新版自动更新；四份锁始终指向同一个官方安装包，发版前还会再校验一次两平台基线是否对齐。
+国服 / 国际服各一份 canonical lock（`shared/upstream/cn.json`、`shared/upstream/global.json`），同时记录官方安装包和 Windows 主程序指纹；同步工作流一次更新两平台，发版前只校验 canonical lock 自洽。
 
 ## 支持情况
 
@@ -65,7 +65,7 @@ Windows 侧版本记录在 `windows/upstream-win.json`，由同步工作流跟�
 | --- | --- |
 | 服务区域 | 国服与国际服都构建：两个平台锁定同一份官方 1.0.4 基底，产物名带 `Full-CN-Community` / `Full-Global-Community` |
 | 系统 | macOS：Apple Silicon（M 系列），macOS 13 及以上；Windows：10/11 x64 |
-| 整合版本 | 1.3.1，基于官方客户端 1.0.4 与 FullAtlas 1.3.4–1.3.8 兼容功能集；两个平台同一基底 |
+| 整合版本 | 与仓库根 `package.json` 同源（当前 `1.3.2-beta.1`），基于官方客户端 1.0.4 与 FullAtlas 兼容功能集；两个平台同一基底 |
 | 分支 | `main` 为 1.0.4 基底，两个平台同仓共用；`dev` 用于开发版；`official-1.0.3` 保留为历史适配分支 |
 | 验证 | 自动测试、原生构建、签名与 DMG / EXE 校验通过；角色和设置面板可显示，完整业务仍需实机验收 |
 | 应用标识 | 沿用 `dev.w33d.wuwatappo.fullatlas.mac`，改名只动显示名与产物名，既有数据目录和钥匙串不受影响 |
@@ -80,7 +80,7 @@ Windows 侧版本记录在 `windows/upstream-win.json`，由同步工作流跟�
 ## 功能
 
 - 原生透明桌宠、缩放、置顶、鼠标穿透、菜单栏控制和显示器定位。
-- 在官方背包 / 图鉴 / 设置面板中切换「官方 / 全图鉴 + Mod」，可使用账号背包或完整本地图鉴与自制外观。
+- 在官方背包 / 图鉴 / 设置面板中切换「官方 / 全图鉴 + Mod」，并使用双端统一的原生内嵌「控制台」页签与默认隐藏的任务栏/程序坞图标策略（仅首次迁移历史设置）。
 - 桌面助手：后台点击、按可用点数自动启停点击（默认低于 10,000 开启、高于 40,000 关闭）、自动开箱、开箱记录、每日统计、房间历史和显示器记忆。自动任务默认关闭。
 - 后台点击通过桌宠内部事件工作；物理键鼠活动会暂停自动点击。不会向 macOS 系统注入键盘或鼠标事件。
 - 账号登录、计数同步、宝箱冷却、消耗与奖励仍使用官方服务；本地图鉴只改变本地显示，不解锁账号资产。
@@ -133,7 +133,7 @@ npm run package
 
 跨平台共享行为与生成副本检查由 `npm test` 覆盖；平台构建所需的官方前端资源需先执行 `npm run setup`。Mac 专属 Rust 测试使用 `npm run test:rust`，Windows Python 测试见[开发说明](docs/DEVELOPMENT.md)。
 
-`setup` 下载 `upstream-cn.json` 锁定的官方安装包，核对大小和 SHA-256 后静态提取前端；整个过程不运行 Windows 程序。若已有对应官方原包，可用 `npm run assets:sync -- --installer /绝对路径/安装包.exe`，然后执行 `npm run icons` 和 `npm run prepare:frontend`。
+`setup` 下载 `shared/upstream/cn.json` 锁定的官方安装包，核对大小和 SHA-256 后静态提取前端；整个过程不运行 Windows 程序。若已有对应官方原包，可用 `npm run assets:sync -- --installer /绝对路径/安装包.exe`，然后执行 `npm run icons` 和 `npm run prepare:frontend`。
 
 构建应用位于 `macos/src-tauri/target/release/bundle/macos/`，ZIP / DMG 位于仓库根的 `dist/`（两平台共用这个交付目录）。官方解包资源、依赖、安装包和用户数据不提交到源码仓库。清洁检出需要先执行 `setup`，部分测试需要已准备的前端。
 
@@ -145,7 +145,7 @@ npm run package
 - `npm run official:update` 是本地一键编排入口：默认只检测；`npm run official:update -- --apply` 才会下载并校验官方安装包、静态提取、注入 FullAtlas、运行测试、构建和打包 ZIP / DMG。失败会恢复更新前的资源锁和前端；未知前端结构会让注入的结构断言直接失败，而不是靠版本号提前挡下。
 - 应用内更新：Windows 版的 Release 会额外附带 `…-win-x64-update.zip` 与 `SHA256SUMS.txt`，控制台「更新」页发现新版本后可以一键下载、校验、备份并原地替换（失败自动回滚，账号、缓存、导入的 Mod 与设置都不动）。macOS 版受 app 包签名限制不做程序内替换，同一处按钮会提示「因系统原因」并跳转 GitHub 下载安装包。
 - 应用内的「更新本地图鉴」刷新目录数据，不升级程序或接口适配器。
-- `.github/workflows/sync-upstream.yml` 每 6 小时（北京时间 02:17 / 08:17 / 14:17 / 20:17）检查国服与国际服更新（也支持手动触发并指定区域）。发现新版就自动更新四份基线锁、递增整合版本号并编译两平台四产物：**全部通过后自动合并、打 tag 并发预发布**；任一环节失败会保留分支并开草稿 PR，写明是哪个阶段红的、日志在哪。
+- `.github/workflows/sync-upstream.yml` 每 6 小时（北京时间 02:17 / 08:17 / 14:17 / 20:17）检查国服与国际服更新（也支持手动触发并指定区域）。发现新版就自动更新国服 / 国际服两份 canonical lock（`shared/upstream/cn.json` 与 `shared/upstream/global.json`）、递增整合版本号并编译两平台四产物：**全部通过后自动合并、打 tag 并发预发布**；任一环节失败会保留分支并开草稿 PR，写明是哪个阶段红的、日志在哪。
 - FullAtlas 集成器不再用版本白名单做准入：兼容性由结构断言与注入结果判定，版本号只用于记录和产物命名。官方换了版本号但锚点没漂，就不需要改代码。
 - 发版前会校验 Windows 锁与 macOS 锁是同一版本、同一个安装包，避免一个 Release 里两个平台的客户端不是同一代。
 - `main` 和 `dev` 的 CI 按区域矩阵构建：macOS（`cn` / `global`）与 Windows（`cn` / `global`）各出一份产物。`dev` 的 CI 成功后会自动创建或更新 `dev` 滚动预发布版；版本标签触发的 Release 工作流只生成**草稿预发布**，需要维护者验收后手动发布.

@@ -28,16 +28,9 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $RepoRoot = Split-Path $Root -Parent
 . (Join-Path $PSScriptRoot 'region.ps1')
+. (Join-Path $PSScriptRoot 'upstream-common.ps1')
 . (Join-Path $PSScriptRoot 'payload.ps1')
 $R = Get-RegionProfile -Root $Root -Region $Region
-
-# 不依赖 Get-FileHash：从 pwsh 7 环境启动 PS 5.1 时该 cmdlet 可能加载不到
-function Get-Sha256Hex([string]$path) {
-  $algorithm = [Security.Cryptography.SHA256]::Create()
-  $stream = [IO.File]::OpenRead($path)
-  try { $bytes = $algorithm.ComputeHash($stream) } finally { $stream.Dispose(); $algorithm.Dispose() }
-  return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
-}
 
 function Find-Makensis {
   $candidates = @()
@@ -56,8 +49,8 @@ if (-not $Source) { $Source = $R.AppDir }
 if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
 
 $version = (Get-Content -LiteralPath (Join-Path $RepoRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
-$name = "$($R.ArtifactPrefix)-Windows-x64-$version"
-$exe = Join-Path $OutDir "$name.exe"
+$name = Get-ReleaseAssetName -Profile $R -Kind windowsInstaller -Version $version
+$exe = Join-Path $OutDir $name
 
 if (-not (Test-Path -LiteralPath $Source)) { throw "找不到待打包目录：$Source（先跑 build.ps1 / deploy.ps1）" }
 if (-not (Test-Path -LiteralPath (Join-Path $Source 'WuwaTappo.Local.exe'))) { throw "目录里没有 WuwaTappo.Local.exe，可能是空部署：$Source" }
@@ -298,28 +291,24 @@ Write-Host "== 编译安装包（makensis）=="
 if ($LASTEXITCODE -ne 0) { throw "makensis 失败，退出码 $LASTEXITCODE" }
 if (-not (Test-Path -LiteralPath $exe)) { throw "没有生成安装包：$exe" }
 
-if (-not $KeepStaging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
-
 # 程序内升级包：同一份 payload 再打一个带清单的 zip，供桌宠里的「一键更新」下载。
 # 安装包本身仍然是 exe；zip 只走应用内更新，用户不会看到它。
 Write-Host "== 生成程序内升级包 =="
-$py = if ($env:WUWA_PYTHON) { $env:WUWA_PYTHON } else { Join-Path $Root '.venv\Scripts\python.exe' }
-if (-not (Test-Path -LiteralPath $py)) {
-  $command = Get-Command python -ErrorAction SilentlyContinue
-  if (-not $command) { throw "找不到 python，无法生成程序内升级包（先跑 tools\setup-env.ps1）" }
-  $py = $command.Source
-}
-& $py (Join-Path $Root 'src\tools\make_update.py') $R.Id
+$hostExe = Join-Path $payload 'LocalGalleryHost.exe'
+if (-not (Test-Path -LiteralPath $hostExe)) { throw "缺少本地服务产物：$hostExe" }
+& $hostExe --make-update $payload $OutDir $R.Id
 if ($LASTEXITCODE -ne 0) { throw "生成程序内升级包失败，退出码 $LASTEXITCODE" }
-$zip = Join-Path $OutDir "$($R.ArtifactPrefix)-$version-win-x64-update.zip"
+$zip = Join-Path $OutDir (Get-ReleaseAssetName -Profile $R -Kind windowsUpdate -Version $version)
 if (-not (Test-Path -LiteralPath $zip)) { throw "没有生成程序内升级包：$zip" }
 $zipSha = Get-Sha256Hex $zip
 "$zipSha  $(Split-Path $zip -Leaf)" | Set-Content -LiteralPath "$zip.sha256" -Encoding ASCII
 Write-Host ("  升级包: {0}（{1:N1} MB）" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1MB))
 
+if (-not $KeepStaging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+
 $exeSize = (Get-Item -LiteralPath $exe).Length
 $sha = Get-Sha256Hex $exe
-"$sha  $name.exe" | Set-Content -LiteralPath "$exe.sha256" -Encoding ASCII
+"$sha  $name" | Set-Content -LiteralPath "$exe.sha256" -Encoding ASCII
 
 ''
 '打包完成'

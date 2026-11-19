@@ -1,9 +1,18 @@
 use chrono::{Duration, Local, NaiveDate, Utc};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::cmp::Reverse;
+use std::{
+    cmp::Reverse,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 pub mod custom_resources;
+pub mod regions;
+pub mod release_installer;
 pub mod release_updates;
 pub mod resource_cache;
 
@@ -511,9 +520,165 @@ impl AssistantCore {
     }
 }
 
+const MAX_DIAGNOSTIC_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_HOST_PORT: u64 = 38472;
+
+fn unix_time_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// 生成 32 位十六进制随机令牌，供本机图片/控制路由鉴权使用。
+pub fn random_token_hex() -> String {
+    let mut bytes = [0u8; 16];
+    let filled = {
+        #[cfg(windows)]
+        {
+            const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+            #[link(name = "bcrypt")]
+            unsafe extern "system" {
+                fn BCryptGenRandom(
+                    algorithm: *mut std::ffi::c_void,
+                    buffer: *mut u8,
+                    count: u32,
+                    flags: u32,
+                ) -> i32;
+            }
+            unsafe {
+                BCryptGenRandom(
+                    std::ptr::null_mut(),
+                    bytes.as_mut_ptr(),
+                    bytes.len() as u32,
+                    BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+                ) == 0
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            fs::File::open("/dev/urandom")
+                .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes))
+                .is_ok()
+        }
+    };
+    if !filled {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let seed = format!(
+            "{}-{}-{:?}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_nanos())
+                .unwrap_or_default(),
+            std::thread::current().id(),
+            seq
+        );
+        let digest = Sha256::digest(seed.as_bytes());
+        bytes.copy_from_slice(&digest[..16]);
+    }
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// 追加一条客户端诊断事件，超过 8 MiB 自动轮转为 `.jsonl.1`。
+pub fn append_diagnostic(root: &Path, body: &Value) {
+    append_diagnostic_with_limit(root, body, MAX_DIAGNOSTIC_BYTES);
+}
+
+fn append_diagnostic_with_limit(root: &Path, body: &Value, max_bytes: u64) {
+    let _ = fs::create_dir_all(root);
+    let path = root.join("client_diagnostics.jsonl");
+    if fs::metadata(&path).is_ok_and(|meta| meta.len() >= max_bytes) {
+        let rotated = root.join("client_diagnostics.jsonl.1");
+        let _ = fs::remove_file(&rotated);
+        let _ = fs::rename(&path, &rotated);
+    }
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    let line = json!({
+        "time": unix_time_secs(),
+        "event": body,
+    });
+    if let Ok(text) = serde_json::to_string(&line) {
+        let _ = file.write_all(format!("{text}\n").as_bytes());
+    }
+}
+
+fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    serde_json::from_str::<Value>(trimmed)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+}
+
+/// 读取或初始化本机运行配置：从 `package_config.json` 补齐公开字段并确保有效端口与随机令牌。
+pub fn ensure_local_config(root: &Path) -> Result<Value, String> {
+    fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    let local_path = root.join("local_config.json");
+    let mut changed = !local_path.exists();
+    let mut map = read_json_object(&local_path).unwrap_or_default();
+    if let Some(pkg) = read_json_object(&root.join("package_config.json")) {
+        for (key, value) in pkg {
+            if key == "token" {
+                continue;
+            }
+            if !map.contains_key(&key) {
+                map.insert(key, value);
+                changed = true;
+            }
+        }
+    }
+    let valid_port = map
+        .get("port")
+        .and_then(Value::as_u64)
+        .is_some_and(|port| (1..=65535).contains(&port));
+    if !valid_port {
+        map.insert("port".into(), json!(DEFAULT_HOST_PORT));
+        changed = true;
+    }
+    let valid_token = map
+        .get("token")
+        .and_then(Value::as_str)
+        .is_some_and(|token| token.len() >= 32);
+    if !valid_token {
+        map.insert("token".into(), json!(random_token_hex()));
+        changed = true;
+    }
+    let config = Value::Object(map);
+    if changed {
+        let temp = local_path.with_extension("tmp");
+        let bytes = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
+        fs::write(&temp, bytes).map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o600));
+        }
+        fs::rename(&temp, &local_path).map_err(|error| error.to_string())?;
+    }
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "wuwatappo-core-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
     #[test]
     fn shared_core_keeps_settings_and_daily_counts() {
         let mut core = AssistantCore::new(None);
@@ -563,5 +728,51 @@ mod tests {
                 .unwrap()["count"],
             5
         );
+    }
+
+    #[test]
+    fn random_token_hex_generates_distinct_32_char_hex_strings() {
+        let first = random_token_hex();
+        let second = random_token_hex();
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
+        assert!(first.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn diagnostic_log_records_timestamp_and_rotates_on_limit() {
+        let root = temp_root("diag");
+        append_diagnostic_with_limit(&root, &json!({"kind":"first"}), 32);
+        append_diagnostic_with_limit(&root, &json!({"kind":"second"}), 32);
+        let active = fs::read_to_string(root.join("client_diagnostics.jsonl")).unwrap();
+        let rotated = fs::read_to_string(root.join("client_diagnostics.jsonl.1")).unwrap();
+        assert!(rotated.contains("\"first\""));
+        assert!(active.contains("\"second\""));
+        let parsed: Value = serde_json::from_str(active.lines().next().unwrap()).unwrap();
+        assert!(parsed.get("time").and_then(Value::as_u64).is_some());
+        assert_eq!(parsed["event"]["kind"], "second");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_local_config_merges_package_config_and_generates_token() {
+        let root = temp_root("config");
+        fs::write(
+            root.join("package_config.json"),
+            "\u{feff}{\"region\":\"cn\",\"community_version\":\"1.3.2\",\"token\":\"leaked\"}",
+        )
+        .unwrap();
+        let created = ensure_local_config(&root).unwrap();
+        assert_eq!(created["region"], "cn");
+        assert_eq!(created["community_version"], "1.3.2");
+        assert_eq!(created["port"], DEFAULT_HOST_PORT);
+        let token = created["token"].as_str().unwrap().to_owned();
+        assert_eq!(token.len(), 32);
+        assert_ne!(token, "leaked");
+
+        let reloaded = ensure_local_config(&root).unwrap();
+        assert_eq!(reloaded["token"], token);
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -15,33 +15,24 @@
   注意：注入成功 ≠ 功能正常。staging 通过后仍需 tools\build.ps1 -Base <新基底> 全量重建并冒烟，
         再手工替换 app\（旧目录改名留作回滚）。
 #>
-param([switch]$SkipBuild, [string]$Installer, [switch]$Force)
+param([switch]$SkipBuild, [string]$Installer, [switch]$Force, [ValidateSet('cn', 'global')][string]$Region)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot 'region.ps1')
+. (Join-Path $PSScriptRoot 'upstream-common.ps1')
+$R = Get-RegionProfile -Root $Root -Region $Region
 $Py = Join-Path $Root '.venv\Scripts\python.exe'
-$AssetsHost = 'https://mc-wuwatappo.kurogames-global.com'
-
-function Get-Json([string]$url) {
-  # 兼容 Windows PowerShell 5.1 与 PowerShell 7，直连不走系统代理
-  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
-  $wc = New-Object System.Net.WebClient
-  $wc.Proxy = $null
-  $wc.Encoding = [Text.Encoding]::UTF8
-  $wc.Headers.Add('User-Agent', 'WuwaTappo-FullAtlas-UpdateCheck/1.0')
-  try {
-    return ($wc.DownloadString($url) | ConvertFrom-Json)
-  } finally { $wc.Dispose() }
-}
+$AssetsHost = $R.AssetsHost
 
 function Get-LocalBaseVersion {
-  $cfg = Join-Path $Root 'build\local_config.json'
+$cfg = Join-Path $R.WorkDir 'local_config.json'
   if (Test-Path -LiteralPath $cfg) { return [string](Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json).client_version }
   return ''
 }
 
 "== 1/4 查询官方版本 =="
-$hostJson = Get-Json "$AssetsHost/app/json-host/latest_host.json"
+$hostJson = Get-Json "$AssetsHost/app/json-host/$($R.UpdaterHostFile)"
 $manifest = Get-Json ([string]$hostJson.url)
 $remoteVer = [string]$manifest.version
 $localVer = Get-LocalBaseVersion
@@ -59,13 +50,13 @@ if ($SkipBuild) { return }
 
 "== 2/4 获取新版基底（7-Zip 解包，不执行安装器）=="
 $fetch = Join-Path $PSScriptRoot 'fetch-official.ps1'
-$fetchArgs = @('-Version', $remoteVer)
-if ($Installer) { $fetchArgs = @('-Installer', $Installer) }
+$fetchArgs = @('-Version', $remoteVer, '-Region', $R.Id)
+if ($Installer) { $fetchArgs = @('-Installer', $Installer, '-Region', $R.Id) }
 if ($Force) { $fetchArgs += '-Force' }
 & powershell -NoProfile -ExecutionPolicy Bypass -File $fetch @fetchArgs
 if ($LASTEXITCODE -ne 0) { throw '获取基底失败' }
 
-$currentFile = Join-Path $Root 'build\official\current.json'
+$currentFile = Join-Path $R.WorkDir 'official\current.json'
 if (-not (Test-Path -LiteralPath $currentFile)) { throw "fetch-official.ps1 未产出 $currentFile" }
 $current = Get-Content -LiteralPath $currentFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $newBase = [string]$current.base
@@ -74,7 +65,7 @@ if (-not (Test-Path -LiteralPath $officialExe)) { throw "基底主程序不存�
 "基底: $newBase"
 
 "== 3/4 试跑注入（只生成 staging，不动 app\）=="
-$workDir = Join-Path $Root "build\updates\$remoteVer"
+$workDir = Join-Path $R.WorkDir "updates\$remoteVer"
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 $stagingRoot = Join-Path $workDir 'staging'
 if (Test-Path -LiteralPath $stagingRoot) { Remove-Item -LiteralPath $stagingRoot -Recurse -Force }
@@ -96,7 +87,7 @@ $env:WUWA_BUILD_ROOT = $stagingRoot
 # build_integration.py 约定构建根目录内必须有 current_base.txt 与 local_config.json
 # 无 BOM、无尾换行地写，Python 端按 utf-8 直接读，带 BOM 会污染路径/JSON
 [System.IO.File]::WriteAllText((Join-Path $stagingRoot 'current_base.txt'), $newBase, (New-Object System.Text.UTF8Encoding($false)))
-$cfgSrc = Join-Path $Root 'build\local_config.json'
+$cfgSrc = Join-Path $R.WorkDir 'local_config.json'
 if (Test-Path -LiteralPath $cfgSrc) {
   $cfg = Get-Content -LiteralPath $cfgSrc -Raw -Encoding UTF8 | ConvertFrom-Json
   $cfg.client_version = $remoteVer
@@ -123,9 +114,6 @@ if ($code -ne 0) {
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workDir 'stage_result.json') -Encoding UTF8
 
 "下一步（确认要升级时）："
-"  1) powershell -File tools\build.ps1 -Base `"$newBase`""
+"  1) powershell -File tools\build.ps1 -Region $($R.Id) -Base `"$newBase`""
 "  2) 冒烟：双击 app\WuwaTappoLauncher.exe，看设置里图鉴是否正常"
 "  3) 回滚：把 app\ 改名为 app.old，旧目录随时可用"
-
-
-

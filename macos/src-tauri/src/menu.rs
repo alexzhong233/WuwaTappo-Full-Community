@@ -302,6 +302,7 @@ fn event_for_id(id: &str) -> Option<(&'static str, Value)> {
         "open-atlas" => ("dock-open-panel", Value::from("atlas")),
         "open-exchange" => ("dock-open-panel", Value::from("exchange")),
         "open-room" => ("dock-open-panel", Value::from("room")),
+        "open-console" => ("dock-open-panel", Value::from("console")),
         "open-setting" => ("dock-open-panel", Value::from("setting")),
         "toggle-pet" => ("tray-toggle-pet-visibility", Value::Null),
         "toggle-passthrough" => ("tray-toggle-window-passthrough", Value::Null),
@@ -366,10 +367,7 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
                 _ => {}
             }
         }
-        let result = if id == "open-console" {
-            crate::windows::open_console(app);
-            Ok(())
-        } else if id == "open-logs" {
+        let result = if id == "open-logs" {
             crate::system::open_log_dir(app)
         } else if let Some((name, payload)) = event_for_id(id) {
             app.emit(name, payload).map_err(|e| e.to_string())
@@ -443,6 +441,7 @@ mod tests {
             ("open-atlas", "atlas"),
             ("open-exchange", "exchange"),
             ("open-room", "room"),
+            ("open-console", "console"),
             ("open-setting", "setting"),
         ] {
             assert_eq!(event_for_id(id), Some(("dock-open-panel", json!(tab))));

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { getRegionProfile } from '../scripts/regions.mjs';
-import { pinnedInstallerCache, syncUpstream } from '../scripts/sync-upstream.mjs';
+import { pinnedInstallerCache, syncUpstream } from '../../scripts/sync-upstream.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const repoRoot = path.resolve(root, '..');
@@ -17,7 +17,7 @@ const signatureCheck = () => ({ subject: 'fixture', issuer: 'fixture' });
 function fixtureLock(region = 'cn') {
   const profile = getRegionProfile(region);
   return {
-    schemaVersion: 1, region: profile.region, version: '1.0.2',
+    schemaVersion: 2, region: profile.region, version: '1.0.2',
     manifestUrl: `${profile.assetsOrigin}/app/version-json/latest.json`,
     installer: { url: `${profile.assetsOrigin}/app/release/WuwaTappo-${region}_1.0.2_x64-setup.exe`, signature: 'public-signature', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
   };
@@ -47,10 +47,10 @@ test('cache metadata CLI emits only the selected region pinned file and immutabl
   try {
     for (const region of ['cn', 'global']) {
       const output = path.join(directory, `${region}.out`);
-      const result = spawnSync(process.execPath, [path.join(root, 'scripts/installer-cache.mjs')], { encoding: 'utf8', env: { ...process.env, WUWA_REGION: region, GITHUB_OUTPUT: output } });
+      const result = spawnSync(process.execPath, [path.join(repoRoot, 'scripts/installer-cache.mjs')], { encoding: 'utf8', env: { ...process.env, WUWA_REGION: region, GITHUB_OUTPUT: output } });
       assert.equal(result.status, 0, result.stderr);
       const cache = JSON.parse(result.stdout);
-      const lock = JSON.parse(await readFile(path.join(root, `upstream-${region}.json`), 'utf8'));
+      const lock = JSON.parse(await readFile(path.join(repoRoot, 'shared/upstream', `${region}.json`), 'utf8'));
       assert.deepEqual(cache, pinnedInstallerCache(lock, root, getRegionProfile(region)));
       assert.equal(await readFile(output, 'utf8'), `key=${cache.key}\npath=${cache.path}\n`);
     }
@@ -63,6 +63,7 @@ test('restored installers avoid network but remain size and digest verified befo
   const previousMirror = process.env.WUWA_INSTALLER_MIRROR_BASE;
   try {
     const lock = fixtureLock();
+    const testProfile = { ...getRegionProfile('cn'), upstreamLock: 'upstream-cn.json' };
     const cache = pinnedInstallerCache(lock, directory);
     process.env.WUWA_REGION = 'cn';
     delete process.env.WUWA_INSTALLER_MIRROR_BASE;
@@ -80,13 +81,13 @@ test('restored installers avoid network but remain size and digest verified befo
     `);
     globalThis.fetch = async () => assert.fail('a restored pinned installer must not need network');
     await writeFile(cache.path, bytes);
-    const result = await syncUpstream({ sevenzip, signatureCheck }, directory);
+    const result = await syncUpstream({ sevenzip, signatureCheck, profile: testProfile }, directory);
     assert.equal(result.version, '1.0.2');
     assert.equal(await readFile(path.join(directory, 'frontend/index.html'), 'utf8'), '<html></html>');
     for (const corrupt of [bytes.subarray(1), Buffer.alloc(bytes.length)]) {
       await rm(path.join(directory, 'frontend'), { recursive: true, force: true });
       await writeFile(cache.path, corrupt);
-      await assert.rejects(syncUpstream({ sevenzip, signatureCheck }, directory), /大小不匹配|SHA-256 不匹配/);
+      await assert.rejects(syncUpstream({ sevenzip, signatureCheck, profile: testProfile }, directory), /大小不匹配|SHA-256 不匹配/);
       await assert.rejects(access(path.join(directory, 'frontend')), { code: 'ENOENT' });
     }
     await rm(cache.path);
@@ -96,13 +97,13 @@ test('restored installers avoid network but remain size and digest verified befo
       assert.equal(options.redirect, 'error');
       return { ok: true, arrayBuffer: async () => bytes };
     };
-    await syncUpstream({ sevenzip, signatureCheck }, directory);
+    await syncUpstream({ sevenzip, signatureCheck, profile: testProfile }, directory);
     assert.deepEqual(requests, [lock.installer.url]);
     assert.deepEqual(await readFile(cache.path), bytes);
     await rm(cache.path);
     await rm(path.join(directory, 'frontend'), { recursive: true });
     globalThis.fetch = async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('official connect timeout'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) }); };
-    await assert.rejects(syncUpstream({ sevenzip, signatureCheck }, directory), error => error.message.includes(lock.installer.url) && error.message.includes('CN 安装包下载') && error.message.includes('第 3 次请求') && error.message.includes('UND_ERR_CONNECT_TIMEOUT'));
+    await assert.rejects(syncUpstream({ sevenzip, signatureCheck, profile: testProfile }, directory), error => error.message.includes(lock.installer.url) && error.message.includes('CN 安装包下载') && error.message.includes('第 3 次请求') && error.message.includes('UND_ERR_CONNECT_TIMEOUT'));
     await assert.rejects(access(cache.path), { code: 'ENOENT' });
     await assert.rejects(access(path.join(directory, 'frontend')), { code: 'ENOENT' });
   } finally {

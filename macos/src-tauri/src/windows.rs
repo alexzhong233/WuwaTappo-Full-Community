@@ -259,22 +259,6 @@ fn build_window(
     Ok(window)
 }
 
-/// 打开桌宠控制台：控制台 UI 是挂在面板窗口里的 DOM，
-/// 所以先把面板叫起来，再补发几次「打开概览」，免得面板还没注册监听就丢掉这次点击。
-pub fn open_console(app: &AppHandle) {
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        if let Err(error) = show_aux(&handle, "panel", "/panel?tab=setting", (1100., 760.)) {
-            eprintln!("[console] open failed: {error}");
-            return;
-        }
-        for _ in 0..5 {
-            std::thread::sleep(std::time::Duration::from_millis(600));
-            let _ = handle.emit("local-assistant-view", "overview");
-        }
-    });
-}
-
 fn show_aux(
     app: &AppHandle,
     label: &str,
@@ -448,7 +432,7 @@ pub fn dispatch(
                 .get("tab")
                 .and_then(Value::as_str)
                 .unwrap_or("bag");
-            if !["bag", "atlas", "exchange", "room", "setting"].contains(&tab) {
+            if !["bag", "atlas", "exchange", "room", "console", "setting"].contains(&tab) {
                 return Err("Unknown panel tab".into());
             }
             let (w, existed) = show_aux(app, "panel", &format!("/panel?tab={tab}"), (1100., 760.))?;

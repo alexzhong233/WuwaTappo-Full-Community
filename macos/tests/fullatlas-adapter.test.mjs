@@ -5,6 +5,7 @@ import { parse } from 'acorn';
 import { test } from 'node:test';
 import { adapterVersion } from '../scripts/fullatlas-frontend.mjs';
 import { getRegionProfile } from '../scripts/regions.mjs';
+import { hasPreparedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 
 const profile = getRegionProfile();
 // 两个区域都接入 FullAtlas，产物目录按区域分开。
@@ -12,7 +13,7 @@ const assets = new URL(`../build/${profile.id === 'cn' ? 'frontend' : 'frontend-
 const stage = new URL(`../build/fullatlas-adapter-${profile.id}/`, import.meta.url);
 
 test('FullAtlas takes any official baseline as long as the installer is pinned', async () => {
-  const lock = JSON.parse(await readFile(new URL('../upstream-cn.json', import.meta.url), 'utf8'));
+  const lock = JSON.parse(await readFile(new URL('../../shared/upstream/cn.json', import.meta.url), 'utf8'));
   assert.equal(adapterVersion(lock), lock.version);
   // 版本号不再是准入条件：锚点是否还成立由注入器的结构断言回答，
   // 官方升版先编译，锚点漂移才需要人工改适配。
@@ -20,11 +21,12 @@ test('FullAtlas takes any official baseline as long as the installer is pinned',
   assert.throws(() => adapterVersion({ ...lock, version: '' }), /missing the official version or installer digest/);
   assert.throws(() => adapterVersion({ ...lock, installer: { ...lock.installer, sha256: '' } }), /missing the official version or installer digest/);
   // 国际服同样接入，锁也要能过。
-  const global = JSON.parse(await readFile(new URL('../upstream-global.json', import.meta.url), 'utf8'));
+  const global = JSON.parse(await readFile(new URL('../../shared/upstream/global.json', import.meta.url), 'utf8'));
   assert.equal(adapterVersion(global), global.version);
 });
 
-test('prepared FullAtlas factory stays inactive in login and other auxiliary routes', async () => {
+test('prepared FullAtlas factory stays inactive in login and other auxiliary routes', async t => {
+  if (!hasPreparedFrontend && !requireFrontendAssets) return t.skip('缺少已准备前端，跳过注入产物测试');
   const { readdir } = await import('node:fs/promises');
   const directory = assets;
   const sources = await Promise.all((await readdir(directory)).filter(name => name.endsWith('.js')).map(name => readFile(new URL(name, directory), 'utf8')));
@@ -44,7 +46,8 @@ test('prepared FullAtlas factory stays inactive in login and other auxiliary rou
   }
 });
 
-test('every prepared module imports exports that its actual dependency provides', async () => {
+test('every prepared module imports exports that its actual dependency provides', async t => {
+  if (!hasPreparedFrontend && !requireFrontendAssets) return t.skip('缺少已准备前端，跳过依赖导出检查');
   const { readdir } = await import('node:fs/promises');
   const directory = assets;
   const modules = new Map();
@@ -70,7 +73,8 @@ test('every prepared module imports exports that its actual dependency provides'
   }
 });
 
-test('assistant chest timers bind to the official readiness computations after minifier renaming', async () => {
+test('assistant chest timers bind to the official readiness computations after minifier renaming', async t => {
+  if (!hasPreparedFrontend && !requireFrontendAssets) return t.skip('缺少已准备前端，跳过宝箱计时锚点测试');
   const structure = JSON.parse(await readFile(new URL('base/js_structure.json', stage), 'utf8'));
   const main = Object.entries(structure.files).find(([, meta]) => meta.snapshots.length === 1);
   assert.ok(main);
@@ -86,7 +90,8 @@ test('assistant chest timers bind to the official readiness computations after m
   }
 });
 
-test('prepared appearance renderers preserve local Mod image URLs', async () => {
+test('prepared appearance renderers preserve local Mod image URLs', async t => {
+  if (!hasPreparedFrontend && !requireFrontendAssets) return t.skip('缺少已准备前端，跳过 Mod 图片渲染测试');
   const structure = JSON.parse(await readFile(new URL('base/js_structure.json', stage), 'utf8'));
   const source = await readFile(new URL(structure.shared, assets), 'utf8');
   assert.match(
@@ -115,7 +120,8 @@ test('prepared appearance renderers preserve local Mod image URLs', async () => 
   assert.equal(renderers.resolveAppearanceAtlasUrl({}), url);
 });
 
-test('a bare HTTP 403 no longer clears the account login', async () => {
+test('a bare HTTP 403 no longer clears the account login', async t => {
+  if (!hasPreparedFrontend && !requireFrontendAssets) return t.skip('缺少已准备前端，跳过 403 拦截器测试');
   const structure = JSON.parse(await readFile(new URL('base/js_structure.json', stage), 'utf8'));
   const source = await readFile(new URL(structure.shared, assets), 'utf8');
   // 官方 1.0.4 的响应拦截器把 403 也算作登出信号：撞上就 clearAuthTokens + logoutAccount，

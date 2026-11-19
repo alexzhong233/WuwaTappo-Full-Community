@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { parse } from 'acorn';
-import { profile, root, findSource } from './frontend-context.mjs';
+import { profile, root, findSource, hasExtractedFrontend, hasPreparedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 import { patchGlobalAuthListener, patchMacLayoutBarriers } from '../scripts/patch-frontend.mjs';
 
 const originalBridge = 'async function onOpenUrl(e){return await listen("deep-link://new-url",t=>{e(t.payload)})}';
@@ -12,7 +12,8 @@ const current = 'try{const t=await getCurrent();t?.length&&handleRawUrls(t)}catc
 const listener = 'try{unlisten=await onOpenUrl(t=>{handleRawUrls(t)})}catch(t){throw console.warn("[overseas-auth] onOpenUrl failed:",t),bound=!1,t}';
 const fixture = `${originalBridge}async function bindOverseasAuthDeepLink(e){if(successHandler=e.onSuccess,errorHandler=e.onError??null,bound)return()=>{};bound=!0;${current}${listener}return()=>{unlisten?.(),unlisten=null,bound=!1,successHandler=null,errorHandler=null}}`;
 
-test('login regression fixtures preserve the selected official loader or state filter', async () => {
+test('login regression fixtures preserve the selected official loader or state filter', async t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过登录回归测试');
   const domestic = profile.region === 'CN';
   const name = domestic ? 'ge' : 'handleRawUrls';
   const source = findSource(value => value.includes(`async function ${name}(`)).source;
@@ -56,7 +57,8 @@ test('unknown OAuth binding versions stop preparation', () => {
   assert.throws(() => patchGlobalAuthListener(fixture.replace('getCurrent();', 'getOther();')), /OAuth callback binding changed/);
 });
 
-test('prepared resources preserve the selected region and contain its macOS adaptations', async () => {
+test('prepared resources preserve the selected region and contain its macOS adaptations', async t => {
+  if ((!hasExtractedFrontend || !hasPreparedFrontend) && !requireFrontendAssets) return t.skip('缺少已准备前端，跳过产物检查');
   const mainSource = findSource(source => source.includes(`const APP_REGION="${profile.region}"`));
   const preparedMain = await readFile(path.join(root, profile.preparedDir, 'assets', mainSource.name), 'utf8');
   parse(preparedMain, { sourceType: 'module', ecmaVersion: 'latest' });
@@ -101,7 +103,8 @@ test('official OAuth state filtering accepts queued B even when old callback A a
   assert.equal(storage.get('overseas-oauth-done-B'), '1');
 });
 
-test('occluded macOS windows use real layout measurements without requiring an animation frame', async () => {
+test('occluded macOS windows use real layout measurements without requiring an animation frame', async t => {
+  if ((!hasExtractedFrontend || !hasPreparedFrontend) && !requireFrontendAssets) return t.skip('缺少已准备前端，跳过布局屏障测试');
   const view = findSource(source => source.includes('[main] window layout during open failed'));
   const prepared = await readFile(path.join(root, profile.preparedDir, 'assets', view.name), 'utf8');
   const tree = parse(prepared, { sourceType: 'module', ecmaVersion: 'latest' });

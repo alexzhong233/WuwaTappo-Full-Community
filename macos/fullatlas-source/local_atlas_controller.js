@@ -36,6 +36,61 @@ function createLocalAtlasController(d) {
       : (/^https?:/i.test(String(reference || '')) ? reference : '');
   };
   const offlineError = () => new Error('本地全图鉴已开启：不能进入联机或把本地图鉴外观写入账号。真实点击和开箱正常。');
+  // 挂饰微调：每个挂饰在本机记一组位移与缩放，只在本地模式叠加到官方的 translate 上。
+  // 数据只落 localStorage，不进账号、不进房间请求——别人看到的仍是账号里的官方外观。
+  const XFORM_KEY = 'wuwatappo-accessory-transform-v1';
+  const readTransforms = () => {
+    try {
+      const rows = JSON.parse(d.storage.getItem(XFORM_KEY) || '{}');
+      return rows && typeof rows === 'object' && !Array.isArray(rows) ? rows : {};
+    } catch { return {}; }
+  };
+  const transforms = d.ref(readTransforms());
+  const clampNum = (value, low, high, fallback) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.min(high, Math.max(low, number)) : fallback;
+  };
+  const currentAccessoryId = user => String(
+    (user ? viewUser(user)?.accessory?.id : selection.value.accessory?.id) || '');
+  /** 官方渲染层每帧算 translate 时来问这里：返回 null 表示没有本地调整。 */
+  function accessoryTransform(user) {
+    // 读一次 revision：调用方是官方的 computed，靠这次读取订阅本机改动，
+    // 拖动滑杆才能立刻重算，而不是等下一次切页。
+    revision.value;
+    if (!enabled.value) return null;
+    const id = currentAccessoryId(user);
+    const row = id ? transforms.value[id] : null;
+    if (!row) return null;
+    return {dx: clampNum(row.dx, -400, 400, 0), dy: clampNum(row.dy, -400, 400, 0),
+      scale: clampNum(row.scale, 0.3, 3, 1)};
+  }
+  function setAccessoryTransform(patch) {
+    if (!enabled.value) throw new Error('本地模式尚未开启');
+    const id = String(selection.value.accessory?.id || '');
+    if (!id) throw new Error('先在本地图鉴里选一个挂饰');
+    const row = {...{dx: 0, dy: 0, scale: 1}, ...(transforms.value[id] || {}), ...(patch || {})};
+    const saved = {dx: Math.round(clampNum(row.dx, -400, 400, 0)),
+      dy: Math.round(clampNum(row.dy, -400, 400, 0)),
+      scale: Math.round(clampNum(row.scale, 0.3, 3, 1) * 100) / 100};
+    const next = {...transforms.value};
+    // 回到默认值就把这条删掉，免得配置里堆一堆全零。
+    if (!saved.dx && !saved.dy && saved.scale === 1) delete next[id];
+    else next[id] = saved;
+    transforms.value = next;
+    d.storage.setItem(XFORM_KEY, JSON.stringify(next));
+    revision.value++;
+    return saved;
+  }
+  function resetAccessoryTransform() {
+    const id = String(selection.value.accessory?.id || '');
+    if (!id || !transforms.value[id]) return {dx: 0, dy: 0, scale: 1};
+    const next = {...transforms.value};
+    delete next[id];
+    transforms.value = next;
+    d.storage.setItem(XFORM_KEY, JSON.stringify(next));
+    revision.value++;
+    return {dx: 0, dy: 0, scale: 1};
+  }
   const read = () => { try { return JSON.parse(d.storage.getItem(KEY) || '{}'); } catch { return {}; } };
   const remote = value => {
     try {
@@ -57,10 +112,25 @@ function createLocalAtlasController(d) {
     d.storage.setItem(KEY, JSON.stringify({enabled: enabled.value, selection: selection.value, favorites: favorites.value}));
     revision.value++;
   };
+  // 宿主刚起来、或后台正在跑素材同步时，本机 HTTP 会有短暂不响应。
+  // fetch 不设超时的话，这个 pending 会把 waitForHost、面板挂载、更新检查
+  // 一起拖死——界面就永远停在「读取中」，看起来像卡 loading。
+  function fetchWithTimeout(input, options, timeoutMs = 15000) {
+    const Abort = d.window.AbortController;
+    if (!Abort) return rawFetch(input, options);
+    const controller = new Abort();
+    const timer = d.window.setTimeout(() => controller.abort(), timeoutMs);
+    return rawFetch(input, {...(options || {}), signal: controller.signal})
+      .catch(error => {
+        const aborted = error && (error.name === 'AbortError' || error.code === 20);
+        throw aborted ? new Error('本机服务响应超时') : error;
+      })
+      .finally(() => d.window.clearTimeout(timer));
+  }
   let bootstrapPromise;
   async function ensureLocalToken() {
     if (d.token) return;
-    if (!bootstrapPromise) bootstrapPromise=rawFetch(origin+'/bootstrap').then(async response=>{
+    if (!bootstrapPromise) bootstrapPromise=fetchWithTimeout(origin+'/bootstrap', undefined, 8000).then(async response=>{
       if(!response.ok)throw new Error('本地服务身份验证失败');
       d.token=(await response.json()).token;
     }).catch(error=>{bootstrapPromise=null;throw error;});
@@ -69,7 +139,7 @@ function createLocalAtlasController(d) {
   async function localRequest(path, body) {
     if (d.request) return d.request(path, body);
     await ensureLocalToken();
-    const response = await rawFetch(origin + path, body === undefined ? {} : {
+    const response = await fetchWithTimeout(origin + path, body === undefined ? {} : {
       method: 'POST', headers: {'Content-Type': 'application/json', 'X-Local-Token': d.token}, body: JSON.stringify(body)
     });
     const value = await response.json();
@@ -193,6 +263,11 @@ function createLocalAtlasController(d) {
     style.id = 'wuwa-mod-badge';
     style.textContent = 'html[data-wuwa-mod] .atlas-thumb--mod{background-image:none;outline:2px dashed #7f77dd;outline-offset:-2px}'
       + 'html[data-wuwa-mod] .atlas-thumb--mod::after{content:"MOD";position:absolute;left:3px;bottom:3px;z-index:2;font:600 9px/1 -apple-system,"Segoe UI",sans-serif;letter-spacing:.3px;padding:2px 4px;border-radius:4px;background:#534ab7;color:#fff}'
+      // 「我的预设」两类卡片各打一个角标：账号那份是服务器的，本地这份只在本机。
+      + 'html[data-wuwa-mod] .preset-item--account,html[data-wuwa-mod] .preset-item--local{position:relative}'
+      + 'html[data-wuwa-mod] .preset-item--account::after,html[data-wuwa-mod] .preset-item--local::after{position:absolute;left:3px;top:3px;z-index:3;font:600 9px/1 -apple-system,"Segoe UI",sans-serif;letter-spacing:.3px;padding:2px 4px;border-radius:4px;color:#fff}'
+      + 'html[data-wuwa-mod] .preset-item--account::after{content:"账号";background:#8a6d3b}'
+      + 'html[data-wuwa-mod] .preset-item--local::after{content:"本地";background:#534ab7}'
       // 排序保持官方原样：之前用 flex order 把 Mod 提到最前，等于在筛选之外又造了一个
       // 官方没有的「MOD 稀有度分组」，和背包的稀有度下拉框对不上，这里撤回。
       ;
@@ -279,8 +354,13 @@ function createLocalAtlasController(d) {
       save();
     } finally { busy.value = false; }
   }
+  // 账号背包原始副本：图鉴页要拿它当「官方拥有」的唯一判据。
+  // 官方面板本来就会做 图鉴 ∩ 背包 → owned，本地模式绕过了那次合并，
+  // 所以这里把真背包留下来，由面板的合并逻辑判断哪些是账号已有的。
+  let accountBag = null;
   function inventory(atlas, bag) {
     revision.value;
+    if (Array.isArray(bag)) accountBag = bag;
     if (!enabled.value) return bag;
     const rows = d.normalizeAtlasList(offlineData.value?.atlas || atlas);
     return rows.map(entry => {
@@ -292,6 +372,8 @@ function createLocalAtlasController(d) {
         is_collect: favorites.value[id] ? 1 : 0, owned: true};
     });
   }
+  /** 面板合并图鉴时用的归属索引；取不到就返回 null，调用方回退到官方 bagList。 */
+  function ownedBag() { revision.value; return accountBag; }
   // 图鉴顶部的分类收集进度：只统计真实账号里 owned 的条目，
   // 本地模式全部显示为已拥有，所以面板那边在本地模式下整块隐藏。
   function collectionProgress(rows, loading = false) {
@@ -372,9 +454,41 @@ function createLocalAtlasController(d) {
   }
   function deleteLocalPreset(id) {
     if (!enabled.value) throw new Error('本地模式尚未开启');
+    // 账号预设是真存在服务器上的，本地模式连的是只读允许清单，删不掉也不该删。
+    if (Number(id) > 0) throw new Error('账号预设要关闭「全图鉴 + Mod」后再删除');
     const rows = readPresets();
     if (!rows.some(p => p.preset_id === id)) throw new Error('本地预设不存在');
     savePresets(rows.filter(p => p.preset_id !== id));
+  }
+  // 账号预设（官方那份）与本地预设并排展示：本地 id 为负，账号 id 为正。
+  // 点账号那条＝把它的搭配复制成本地外观，账号本身不动、也不联网写回。
+  let accountPresets = [];
+  function mergePresets(localRows, accountRows) {
+    accountPresets = Array.isArray(accountRows) ? accountRows : [];
+    return [...(Array.isArray(localRows) ? localRows : []), ...accountPresets];
+  }
+  function applyPreset(id) {
+    if (Number(id) < 0) return applyLocalPreset(id);
+    if (!enabled.value) throw new Error('本地模式尚未开启');
+    const row = accountPresets.find(item => item.preset_id === Number(id));
+    if (!row) throw new Error('账号预设不存在，请先刷新列表');
+    const pick = (assetId, name, type) => {
+      const meta = d.getAppearanceAssetById(Number(assetId) || 0);
+      if (!meta || meta.asset_type !== type) throw new Error('该预设里的素材不在本地图鉴缓存里');
+      return {id: meta.id, name: name || meta.file_name || meta.asset_name || ''};
+    };
+    const character = pick(row.character_asset_id, row.character_asset_name, 'character_skin');
+    const accessory = Number(row.accessory_asset_id) > 0
+      ? pick(row.accessory_asset_id, row.accessory_asset_name, 'accessory') : null;
+    const emote = (Array.isArray(row.emotes) ? row.emotes : [])
+      .map(item => Number(item.asset_id) || 0)
+      .filter(id2 => d.getAppearanceAssetById(id2)?.asset_type === 'emote')
+      .slice(0, 5)
+      .map(id2 => ({id: id2, name: (Array.isArray(row.emotes) ? row.emotes : [])
+        .find(item => Number(item.asset_id) === id2)?.asset_name || ''}));
+    selection.value = {character, accessory, emote};
+    save();
+    return selection.value;
   }
   function applyLocalPreset(id) {
     if (!enabled.value) throw new Error('本地模式尚未开启');
@@ -515,5 +629,7 @@ function createLocalAtlasController(d) {
   return {enabled, busy, selection, favorites, revision, ready, cacheReady, setEnabled, inventory, viewUser, select,
     favorite, reorder, prepare, offlineData, assetsHost: origin, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, assetUrl, request: localRequest, dispose,
     presetList, createLocalPreset, deleteLocalPreset, applyLocalPreset, collectionProgress,
+    mergePresets, applyPreset,
+    ownedBag, accessoryTransform, setAccessoryTransform, resetAccessoryTransform,
     restricted,normalCumulative:()=>d.getAccountCumulative?.()??0,normalPending:()=>d.getAccountPending?.()??0};
 }

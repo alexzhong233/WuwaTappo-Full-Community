@@ -1,8 +1,8 @@
-//! Windows 开机自启托管：为本安装注册一条登录计划任务，先起本地服务再起桌宠。
+//! Windows 开机自启托管：为本安装注册一条登录计划任务，优先拉起无控制台启动器 `WuwaTappoLauncher.exe`。
 //!
 //! 为什么不能沿用官方那条自启项：官方任务直接拉起桌宠 exe，开机后图鉴和控制台
-//! 连不上本机服务。这里注册的任务跑 `launch.ps1`，顺序才正确；并且在启用/停用时
-//! 顺手迁移掉官方那条只指向本安装 exe 的旧任务（绝不碰其他安装的任务）。
+//! 连不上本机服务。这里注册的任务优先运行 `WuwaTappoLauncher.exe`（先起本地服务再起桌宠），
+//! 仅在旧布局缺少启动器 exe 时回退 `launch.ps1`；并且在启用/停用时顺手迁移掉官方旧任务。
 //!
 //! PowerShell 脚本保持与旧 Python 实现一致：越权、注册表、任务校验都交给系统，
 //! 本模块只负责传参、超时和解析。
@@ -41,6 +41,7 @@ $taskName=NAME_VALUE
 $taskAction=ACTION_VALUE
 $taskPath='\WuwaTappoFullAtlas\'
 $taskNative=Join-Path $taskRoot 'WuwaTappo.Local.exe'
+$taskGuiLauncher=Join-Path $taskRoot 'WuwaTappoLauncher.exe'
 $taskLauncher=Join-Path $taskRoot 'launch.ps1'
 $taskPowerShell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $taskArguments='-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$taskLauncher+'"'
@@ -51,13 +52,18 @@ $taskLegacy=@(Get-ScheduledTask -TaskPath '\WuwaTappo\' -ErrorAction SilentlyCon
 })
 $taskOldEnabled=@($taskLegacy|Where-Object {$_.Settings.Enabled}).Count -gt 0
 if($taskAction -eq 'enable' -or ($taskAction -eq 'migrate' -and -not $taskOwn -and $taskOldEnabled)){
- if(-not(Test-Path -LiteralPath $taskLauncher)){throw '启动器不存在，未更改开机自启动。'}
+ if(Test-Path -LiteralPath $taskGuiLauncher){
+  $taskLaunch=New-ScheduledTaskAction -Execute $taskGuiLauncher -WorkingDirectory $taskRoot
+ }elseif(Test-Path -LiteralPath $taskLauncher){
+  $taskLaunch=New-ScheduledTaskAction -Execute $taskPowerShell -Argument $taskArguments -WorkingDirectory $taskRoot
+ }else{
+  throw '启动器不存在，未更改开机自启动。'
+ }
  $taskUser=[Security.Principal.WindowsIdentity]::GetCurrent().Name
  $taskTrigger=New-ScheduledTaskTrigger -AtLogOn -User $taskUser
  $taskTrigger.Delay='PT15S'
  $taskPrincipal=New-ScheduledTaskPrincipal -UserId $taskUser -LogonType Interactive -RunLevel Highest
  $taskSettings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable
- $taskLaunch=New-ScheduledTaskAction -Execute $taskPowerShell -Argument $taskArguments -WorkingDirectory $taskRoot
  $taskOwn=Register-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Action $taskLaunch -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Description 'WuwaTappo全图鉴版：先启动本地服务，再启动桌宠。' -Force
 }
 if($taskAction -eq 'disable' -and $taskOwn){
@@ -67,7 +73,15 @@ if($taskAction -eq 'disable' -and $taskOwn){
 if($taskAction -in @('enable','disable','migrate') -and ($taskOwn -or $taskAction -eq 'disable')){
  foreach($taskOld in $taskLegacy){Unregister-ScheduledTask -TaskPath $taskOld.TaskPath -TaskName $taskOld.TaskName -Confirm:$false}
 }
-$taskValid=$taskOwn -and $taskOwn.Settings.Enabled -and @($taskOwn.Actions).Count -eq 1 -and $taskOwn.Actions[0].Execute -ieq $taskPowerShell -and $taskOwn.Actions[0].Arguments -ceq $taskArguments
+$taskValid=$false
+if($taskOwn -and $taskOwn.Settings.Enabled -and @($taskOwn.Actions).Count -eq 1){
+ $taskRegistered=$taskOwn.Actions[0]
+ if($taskRegistered.Execute.Trim('"') -ieq $taskGuiLauncher){
+  $taskValid=$true
+ }elseif($taskRegistered.Execute -ieq $taskPowerShell -and $taskRegistered.Arguments -ceq $taskArguments -and (Test-Path -LiteralPath $taskLauncher)){
+  $taskValid=$true
+ }
+}
 @{enabled=[bool]($taskValid -or ($taskAction -eq 'status' -and $taskOldEnabled));launcher_verified=[bool]$taskValid;migrated=[bool]($taskAction -eq 'migrate' -and $taskValid -and $taskOldEnabled)}|ConvertTo-Json -Compress
 "#;
     TEMPLATE
@@ -196,5 +210,15 @@ mod tests {
     #[test]
     fn rejects_unknown_actions_before_spawning_anything() {
         assert!(run(Path::new("C:/Game/WuwaTappo"), "delete").is_err());
+    }
+
+    #[test]
+    fn startup_script_prefers_gui_launcher_and_keeps_legacy_fallback() {
+        let rendered = script(Path::new("C:/Game/WuwaTappo"), "FullAtlas-1", "enable");
+        let gui_pos = rendered.find("$taskGuiLauncher").unwrap();
+        let legacy_pos = rendered.find("$taskPowerShell -Argument $taskArguments").unwrap();
+        assert!(rendered.contains("WuwaTappoLauncher.exe"));
+        assert!(rendered.contains("launch.ps1"));
+        assert!(gui_pos < legacy_pos);
     }
 }

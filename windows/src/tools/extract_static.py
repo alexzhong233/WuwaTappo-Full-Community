@@ -1,19 +1,25 @@
-"""Extract Tauri embedded assets and PE resources without executing the input."""
-from pathlib import Path, PurePosixPath
+"""Extract Tauri embedded assets and PE resources without executing the input.
+
+The Tauri PHF/Brotli walker and JS beautifier are shared with macOS in
+``scripts/extract-assets.mjs``. This adapter only adds the Windows PE resource,
+icon, import and string inventories needed by the build.
+"""
+from pathlib import Path
 import argparse
 import collections
 import hashlib
 import json
 import re
 import struct
+import subprocess
 import sys
-
 import os
-ROOT = Path(os.environ['WUWA_EXTRACT_ROOT'])
-sys.path.insert(0, str(Path(__file__).parent / 'python_libs'))
-import brotli
+
 import pefile
-import jsbeautifier
+
+ROOT = Path(os.environ['WUWA_EXTRACT_ROOT'])
+NODE = os.environ.get('NODE') or 'node'
+EXTRACTOR = Path(__file__).resolve().parents[3] / 'scripts/extract-assets.mjs'
 
 
 def main():
@@ -21,81 +27,33 @@ def main():
     ap.add_argument('exe', type=Path)
     args = ap.parse_args()
     data = args.exe.read_bytes()
+
+    frontend = ROOT / 'frontend'
+    readable = ROOT / 'readable_js'
+    result = subprocess.run(
+        [NODE, str(EXTRACTOR), '--payload', str(args.exe), '--output', str(frontend), '--readable', str(readable)],
+        capture_output=True, text=True, encoding='utf-8')
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr or result.stdout)
+        raise SystemExit(result.returncode)
+    manifest = json.loads(result.stdout)
+
     pe = pefile.PE(data=data)
     base = pe.OPTIONAL_HEADER.ImageBase
     analysis = ROOT / 'analysis'
     analysis.mkdir(exist_ok=True)
 
-    def offset(va, size=1):
-        rva = va - base
-        for sec in pe.sections:
-            if sec.VirtualAddress <= rva and rva + size <= sec.VirtualAddress + sec.SizeOfRawData:
-                return sec.PointerToRawData + rva - sec.VirtualAddress
-        raise ValueError('Pointer outside file-backed sections')
-
-    def row(pos):
-        kp, kl, dp, dl = struct.unpack_from('<QQQQ', data, pos)
-        if not (1 <= kl <= 512 and 1 <= dl <= len(data)):
-            raise ValueError('Invalid lengths')
-        ko, do = offset(kp, kl), offset(dp, dl)
-        name = data[ko:ko + kl].decode('utf-8')
-        pp = PurePosixPath(name)
-        if not name.startswith('/') or '..' in pp.parts or '\\' in name or ':' in name or '\0' in name:
-            raise ValueError('Unsafe or invalid asset path')
-        return name, do, dl
-
-    # Locate the (&str, &[u8]) table through references to the entry HTML path.
-    candidates = []
-    for match in re.finditer(re.escape(b'/index.html'), data):
-        va = base + pe.get_rva_from_offset(match.start())
-        for ref in re.finditer(re.escape(struct.pack('<Q', va)), data):
-            try:
-                first = ref.start()
-                row(first)
-                while first >= 32:
-                    try:
-                        row(first - 32)
-                        first -= 32
-                    except (ValueError, UnicodeError, struct.error):
-                        break
-                rows = []
-                pos = first
-                while pos + 32 <= len(data):
-                    try:
-                        rows.append(row(pos))
-                        pos += 32
-                    except (ValueError, UnicodeError, struct.error):
-                        break
-                if len(rows) > 5:
-                    candidates.append((first, rows))
-            except (ValueError, UnicodeError, struct.error):
-                pass
-    if not candidates:
-        raise RuntimeError('No Tauri asset table found')
-    table_start, rows = max(candidates, key=lambda x: len(x[1]))
-    inventory, errors = [], []
-    opts = jsbeautifier.default_options()
-    opts.indent_size = 2
-    for name, pos, length in rows:
-        relative = PurePosixPath(name.lstrip('/'))
-        target = ROOT / 'frontend' / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        packed = data[pos:pos + length]
-        try:
-            plain = brotli.decompress(packed)
-        except brotli.error as exc:
-            errors.append({'path': name, 'error': str(exc)})
-            (analysis / ('failed_' + str(pos) + '.bin')).write_bytes(packed)
-            continue
-        target.write_bytes(plain)
-        inventory.append({'path': name, 'table_offset': table_start + rows.index((name, pos, length)) * 32,
-                          'file_offset': pos, 'compressed_size': length, 'size': len(plain),
-                          'sha256': hashlib.sha256(plain).hexdigest()})
-        if name.endswith('.js'):
-            readable = ROOT / 'readable_js' / relative
-            readable.parent.mkdir(parents=True, exist_ok=True)
-            readable.write_text(jsbeautifier.beautify(plain.decode('utf-8'), opts), encoding='utf-8')
-        print(f'{name}: {length:,} -> {len(plain):,}')
+    inventory = []
+    for entry in manifest['assets']:
+        content = (frontend / entry['relativePath']).read_bytes()
+        inventory.append({
+            'path': entry['key'],
+            'table_offset': entry['tableOffset'],
+            'file_offset': entry['dataOffset'],
+            'compressed_size': entry['compressedSize'],
+            'size': entry['size'],
+            'sha256': hashlib.sha256(content).hexdigest(),
+        })
 
     resource_inventory = []
     if hasattr(pe, 'DIRECTORY_ENTRY_RESOURCE'):
@@ -153,19 +111,18 @@ def main():
     metadata = {'input': str(args.exe.resolve()), 'input_size': len(data),
                 'sha256': hashlib.sha256(data).hexdigest(), 'machine': hex(pe.FILE_HEADER.Machine),
                 'image_base': hex(base), 'entry_rva': hex(pe.OPTIONAL_HEADER.AddressOfEntryPoint),
-                'asset_table_offset': table_start, 'asset_count': len(inventory),
+                'asset_table_offset': manifest['assets'][0]['tableOffset'] if manifest['assets'] else None,
+                'asset_count': len(inventory),
                 'compressed_size': sum(x['compressed_size'] for x in inventory),
                 'uncompressed_size': sum(x['size'] for x in inventory),
                 'extensions': dict(collections.Counter(Path(x['path']).suffix for x in inventory)),
-                'errors': errors, 'sections': sections, 'string_count': string_count,
+                'errors': [], 'sections': sections, 'string_count': string_count,
                 'native_function_entries': len(getattr(pe, 'DIRECTORY_ENTRY_EXCEPTION', [])),
                 'overlay_offset': pe.get_overlay_data_start_offset()}
     for filename, obj in [('metadata.json', metadata), ('assets.json', inventory),
                           ('imports.json', imports), ('resources.json', resource_inventory)]:
         (analysis / filename).write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(metadata, ensure_ascii=False, indent=2))
-    if errors:
-        raise SystemExit('Some assets failed to decompress; see metadata.json')
 
 
 if __name__ == '__main__':

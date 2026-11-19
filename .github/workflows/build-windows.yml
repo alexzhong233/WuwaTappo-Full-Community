@@ -52,34 +52,29 @@ jobs:
         with:
           python-version: '3.13'
 
-      # 前端只有 shared/frontend/ 一份源，两侧副本（含 windows/src/src/*.js）由
-      # scripts/sync-frontend.mjs 生成。副本落后时 Windows 包会带着旧界面发出去。
-      # macOS 工作流的 npm test 里有这道检查，但本工作流能单独触发（workflow_dispatch
-      # 与 release 都会直接调它），所以这里也得挡一次。
-      - name: Verify frontend copies are in sync
-        run: node scripts/sync-frontend.mjs --check
+      - name: Install Node test dependencies
+        run: npm ci
 
-      # 注入器链仍是 Python（本地宿主的 Python 实现已随 Rust 迁移删除），
-      # 这里只留还在用的那几组：注入核 test_inject*、素材同步 test_sync_cache*、
-      # 更新包 test_desktop_updater*。test_initialize* 依赖本机 PowerShell 执行策略，
-      # 属于环境差异而不是代码质量，不放在这里当门禁。
-      # test_inject* 覆盖 shared/tools/inject_core.py 与 assistant_core.py —— 这两个是
-      # 注入器的公共核，坏了会让两个平台的构建同时出错，必须在这里挡住。
+      # 与 macOS 工作流跑同一套共享测试：前端单一源、host 路由、注入器契约
+      # 和跨平台回归都在这里挡住，避免 Windows 单独触发构建时绕过共享门禁。
+      - name: Test shared frontend and host contracts
+        run: npm test
+
+      # 注入器链仍是 Python（运行期本地宿主、素材同步与原地更新打包均已迁入 shared/backend Rust）：
+      # 这里跑 test_inject* 覆盖 shared/tools/inject_core.py 与 assistant_core.py —— 坏了会同时影响双端构建。
+      # test_initialize* 依赖本机 PowerShell 执行策略，不放在 CI 当门禁。
       - name: Run injection unit tests
         shell: pwsh
-        run: |
-          python -m unittest discover -s windows/src/tests -p 'test_inject*.py' -v
-          python -m unittest discover -s windows/src/tests -p 'test_sync_cache*.py' -v
-          python -m unittest discover -s windows/src/tests -p 'test_desktop_updater*.py' -v
+        run: python -m unittest discover -s windows/src/tests -p 'test_inject*.py' -v
 
       - name: Read pinned official client identity
         id: pinned
         shell: pwsh
         run: |
-          $lockFile = if ('${{ matrix.region }}' -eq 'global') { 'windows/upstream-win-global.json' } else { 'windows/upstream-win.json' }
+          $lockFile = if ('${{ matrix.region }}' -eq 'global') { 'shared/upstream/global.json' } else { 'shared/upstream/cn.json' }
           $lock = Get-Content $lockFile -Raw | ConvertFrom-Json
-          "version=$($lock.client_version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          $bytes = [Text.Encoding]::UTF8.GetBytes([string]$lock.installer_url)
+          "version=$($lock.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $bytes = [Text.Encoding]::UTF8.GetBytes([string]$lock.installer.url)
           $sha = [Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
           $hex = -join ($sha | ForEach-Object { $_.ToString('x2') })
           "urlhash=$($hex.Substring(0,16))" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8

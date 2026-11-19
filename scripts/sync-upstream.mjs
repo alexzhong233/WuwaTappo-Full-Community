@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getRegionProfile } from './regions.mjs';
 
-const root = fileURLToPath(new URL('../', import.meta.url));
+const root = fileURLToPath(new URL('../macos/', import.meta.url));
 const cn = getRegionProfile('cn');
 export const configUrl = cn.configUrl;
 export const assetsOrigin = cn.assetsOrigin;
@@ -33,11 +33,11 @@ export function parseManifest(manifest, manifestUrl, profile = cn) {
   }
   const signature = manifest.platforms['windows-x86_64'].signature;
   if (typeof signature !== 'string' || !signature.trim()) throw new Error('官方清单缺少安装包签名。');
-  return { schemaVersion: 1, region: profile.region, version, manifestUrl, installer: { url, signature } };
+  return { schemaVersion: 2, region: profile.region, version, manifestUrl, installer: { url, signature } };
 }
 
 export function validateLock(lock, profile = cn) {
-  if (lock?.schemaVersion !== 1 || lock.region !== profile.region) throw new Error(`资源锁必须是 schemaVersion 1 的 ${profile.region} 配置。`);
+  if (lock?.schemaVersion !== 2 || lock.region !== profile.region) throw new Error(`资源锁必须是 schemaVersion 2 的 ${profile.region} 配置。`);
   parseManifest({ version: lock.version, platforms: { 'windows-x86_64': lock.installer } }, lock.manifestUrl, profile);
   if (!/^[a-f0-9]{64}$/.test(lock.installer.sha256) || !Number.isSafeInteger(lock.installer.size) || lock.installer.size <= 0) {
     throw new Error('资源锁缺少有效的 SHA-256 或文件大小。');
@@ -273,7 +273,7 @@ async function installerBytes(lock, options, work, profile) {
 }
 
 export async function syncUpstream(options = {}, projectRoot = root) {
-  const profile = getRegionProfile();
+  const profile = options.profile || getRegionProfile();
   const lockPath = path.join(projectRoot, profile.upstreamLock);
   const current = validateLock(JSON.parse(await readFile(lockPath, 'utf8')), profile);
   const latest = options.check || options.updateLock ? await discoverUpstream(fetch, profile) : current;
@@ -298,7 +298,11 @@ export async function syncUpstream(options = {}, projectRoot = root) {
   const frontend = path.join(projectRoot, profile.frontendDir);
   const backup = path.join(staging, 'previous-frontend');
   try {
-    const result = spawnSync(process.execPath, [path.join(projectRoot, 'scripts/extract-assets.mjs'),
+    const projectExtractor = path.join(projectRoot, 'scripts/extract-assets.mjs');
+    const extractor = existsSync(projectExtractor)
+      ? projectExtractor
+      : fileURLToPath(new URL('./extract-assets.mjs', import.meta.url));
+    const result = spawnSync(process.execPath, [extractor,
       '--installer', filename, '--sevenzip', sevenzip, '--output', output], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`${profile.region} 资源提取失败：${result.stderr.trim() || result.stdout.trim()}`);
@@ -307,7 +311,12 @@ export async function syncUpstream(options = {}, projectRoot = root) {
     if (hadFrontend) await rename(frontend, backup);
     try { await rename(output, frontend); }
     catch (error) { if (hadFrontend) await rename(backup, frontend); throw error; }
-    if (options.updateLock) await writeFile(lockPath, `${JSON.stringify(target, null, 2)}\n`);
+    if (options.updateLock) {
+      target.schemaVersion = 2;
+      target.platforms = structuredClone(current.platforms || {});
+      if (comparison.changed) delete target.platforms.windows?.executable;
+      await writeFile(lockPath, `${JSON.stringify(target, null, 2)}\n`);
+    }
     await writeFile(path.join(work, profile.id === 'cn' ? 'upstream-extraction.json' : `upstream-${profile.id}-extraction.json`), result.stdout);
     return { ...comparison, version: target.version, region: target.region, files: extracted.count, staticReferences: extracted.staticReferences };
   } finally { await rm(staging, { recursive: true, force: true }); }

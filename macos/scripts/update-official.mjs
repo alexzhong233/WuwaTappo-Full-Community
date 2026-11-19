@@ -4,7 +4,7 @@ import { access, copyFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/pr
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRegionProfile } from './regions.mjs';
-import { compareUpstream, discoverUpstream, syncUpstream, validateLock } from './sync-upstream.mjs';
+import { compareUpstream, discoverUpstream, syncUpstream, validateLock } from '../../scripts/sync-upstream.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 // 仓库根：npm 脚本入口（package.json）与两平台共用的产物目录 dist/ 都在这里。

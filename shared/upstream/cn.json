@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "region": "CN",
   "version": "1.0.4",
   "manifestUrl": "https://mc-wuwatappo.kurogames-global.com/app/version-json/latest.json?t=1793876056",
@@ -8,5 +8,15 @@
     "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSSnV4aU5ob1MxTFJLUjI1SEhHOW5QUXVyNFdSZnJkdFQzOUlKQ0lzT29LcHlVYytCZnp1elRrUkJtNTczcWcxMGx0OENjbGdTc2FGcUhzakV0bi80RDZyZHF3TzBQTEFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODczODg3CWZpbGU6V3V3YVRhcHBvLWNuXzEuMC40X3g2NC1zZXR1cC5leGUKYmJFMThueXRBMU9hOTBFRXFyZnNBRE4xUnBxa0xJTHlxcVlXQStYR3FqdjBteG9iTDllQmI3ZGZMeWlIR1JzY2d2YkNOdWtxNXV4Z1JTV3NCRzJ0QkE9PQo=",
     "sha256": "eb4e6d2103c222297508837a5ca92eeaa058891c9f1e2e7bf034c23f37668e26",
     "size": 201758432
+  },
+  "platforms": {
+    "windows": {
+      "executable": {
+        "sha256": "ee829c55916619ea2882e4a13546cbaf2f880363237608285105c7a4958e70b3",
+        "size": 78128864
+      },
+      "adapterNotes": "国服 1.0.4 与 mac 侧同一份前端产物（共享 JS 20 个模块），注入锚点全部命中，行为与 1.0.3 一致，未新增断点。",
+      "comment": "Windows 侧注入适配所锁定的官方客户端版本。跟随官方最新版，与 canonical upstream lock 保持一致；CI 与 fetch-official.ps1 默认按这里取包，保证可重现。升级前必须在 staging 上重跑注入，锚点断裂会直接失败。"
+    }
   }
 }

@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs,
-    io::{Read, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -17,7 +16,6 @@ use wuwatappo_assistant_core::AssistantCore;
 
 const UPDATE_MESSAGE: &str =
     "这是 Mac 整合版；Windows FullAtlas 更新包不能安装到 Mac。请使用本项目的 Mac 安装包更新。";
-const MAX_OFFICIAL_INSTALLER: u64 = 512 * 1024 * 1024;
 const COMMUNITY_RELEASES_URL: &str =
     "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 
@@ -117,121 +115,14 @@ fn download_official_installer(
     } else {
         "global"
     };
-    let status = wuwatappo_assistant_core::release_updates::check_official(
+    let directory = app.path().download_dir().map_err(|e| e.to_string())?;
+    wuwatappo_assistant_core::release_updates::download_official_installer(
         region_id,
         env!("WUWA_OFFICIAL_VERSION"),
-    )?;
-    if status["newer"].as_bool() != Some(true) {
-        return Err(status["message"]
-            .as_str()
-            .unwrap_or("没有可下载的新版本")
-            .to_string());
-    }
-    let latest = status["remote"]
-        .as_str()
-        .ok_or("官方版本检查没有返回版本号")?;
-    let url = Url::parse(
-        status["officialInstallerUrl"]
-            .as_str()
-            .ok_or("官方版本检查没有返回安装包地址")?,
+        &directory,
+        true,
     )
-    .map_err(|_| "官方安装包地址无效")?;
-    let filename = status["officialInstallerFileName"]
-        .as_str()
-        .ok_or("官方版本检查没有返回安装包文件名")?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent("WuwaTappo-Full-Community-Mac")
-        .build()
-        .map_err(|e| e.to_string())?;
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|e| format!("下载官方原包失败：{e}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "下载官方原包失败（HTTP {}）",
-            response.status().as_u16()
-        ));
-    }
-    if response
-        .content_length()
-        .is_some_and(|size| size > MAX_OFFICIAL_INSTALLER)
-    {
-        return Err("官方原包超过 512 MiB，已停止下载".into());
-    }
-    let directory = app.path().download_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let target = directory.join(&filename);
-    let temporary = directory.join(format!(".{filename}.download"));
-    let mut file = fs::File::create(&temporary).map_err(|e| e.to_string())?;
-    let mut limited = response.take(MAX_OFFICIAL_INSTALLER + 1);
-    let copied = match std::io::copy(&mut limited, &mut file) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(format!("保存官方原包失败：{error}"));
-        }
-    };
-    if copied > MAX_OFFICIAL_INSTALLER {
-        let _ = fs::remove_file(&temporary);
-        return Err("官方原包超过 512 MiB，已停止下载".into());
-    }
-    file.flush().map_err(|e| e.to_string())?;
-    fs::rename(&temporary, &target).map_err(|e| e.to_string())?;
-    Ok(json!({
-        "ok": true,
-        "version": latest,
-        "fileName": filename,
-        "path": target,
-        "platform": "windows-x86_64",
-        "message": format!("官方 {latest} Windows 原包已下载到 {}。它不能直接安装到 Mac；请使用本项目 Releases 中的 Mac 包。", target.display()),
-    }))
 }
-fn validate_catalog(value: &Value) -> Result<(), String> {
-    let atlas = value
-        .get("atlas")
-        .and_then(Value::as_array)
-        .filter(|a| !a.is_empty())
-        .ok_or("官方图鉴列表为空")?;
-    let catalog = value.get("catalog").ok_or("缺少外观目录")?;
-    for kind in ["character_skin", "accessory", "emote"] {
-        if !catalog.get(kind).is_some_and(Value::is_object)
-            || !catalog
-                .get(format!("{kind}_atlas"))
-                .is_some_and(Value::is_object)
-        {
-            return Err("外观目录结构不兼容，原缓存保留".into());
-        }
-    }
-    for row in atlas {
-        let kind = row
-            .get("asset_type")
-            .and_then(Value::as_str)
-            .ok_or("图鉴类型缺失")?;
-        let id = row
-            .get("asset_id")
-            .and_then(Value::as_u64)
-            .ok_or("图鉴 ID 无效")?
-            .to_string();
-        let usable = catalog
-            .get(kind)
-            .and_then(|v| v.get(&id))
-            .and_then(|v| v.get("height_light_id"))
-            .and_then(Value::as_u64)
-            .ok_or("图鉴缺少外观 ID 映射")?
-            .to_string();
-        if !catalog
-            .get(kind.trim_end_matches("_atlas"))
-            .is_some_and(|v| v.get(usable).is_some())
-        {
-            return Err("图鉴外观映射不完整，原缓存保留".into());
-        }
-    }
-    Ok(())
-}
-
 impl FullAtlasState {
     pub fn new(dir: PathBuf) -> Result<Self, String> {
         let path = dir.join("fullatlas.json");
@@ -293,27 +184,14 @@ impl FullAtlasState {
         };
         // Mod 叠加失败不能让全图鉴跟着不可用：降级返回官方数据，把原因留给
         // 设置页显示。没有导入 Mod 时这里本来就走透传路径。
-        let mut value = match crate::custom_resources::merge_official(
+        let (mut value, error) = crate::custom_resources::merge_or_official(
             &official,
             &self.dir.join("custom-atlas"),
             region,
-        ) {
-            Ok(value) => {
-                if let Ok(mut slot) = self.custom_error.lock() {
-                    *slot = None;
-                }
-                value
-            }
-            Err(error) => {
-                if let Ok(mut slot) = self.custom_error.lock() {
-                    *slot = Some(error);
-                }
-                let mut fallback = official;
-                fallback["atlas_count"] =
-                    json!(fallback["atlas"].as_array().map(Vec::len).unwrap_or(0));
-                fallback
-            }
-        };
+        );
+        if let Ok(mut slot) = self.custom_error.lock() {
+            *slot = error;
+        }
         // Mod 图片必须从本机 HTTP 取：官方渲染器只把 http(s)/asset 原样交给
         // <img>，而 asset:// 在这个 WebView 里取不到。前端拿这个前缀拼
         // `custom-assets/...` 相对键，与 Windows 侧 local_host 的语义一致。
@@ -342,7 +220,7 @@ impl FullAtlasState {
             for source in [&path, &bundled] {
                 if let Ok(bytes) = fs::read(source) {
                     if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-                        if validate_catalog(&value).is_ok()
+                        if wuwatappo_assistant_core::resource_cache::validate_catalog(&value).is_ok()
                             && value.get("assets_host").and_then(Value::as_str)
                                 == Some(
                                     format!(
@@ -373,7 +251,7 @@ impl FullAtlasState {
             "assets_json_ts": snapshot.activity.pointer("/data/assets_json_ts"),
             "checked_at": unix_time()
         });
-        validate_catalog(&value)?;
+        wuwatappo_assistant_core::resource_cache::validate_catalog(&value)?;
         atomic_json(&path, &value)?;
         *memo = Some(value.clone());
         Ok(value)
@@ -457,6 +335,7 @@ impl FullAtlasState {
             "status" => Ok(
                 json!({"ready":true,"enabled":self.enabled(),"mode_verified":true,"network_policy":"rooms-only","sync":{"status":"idle"}}),
             ),
+            "sync/status" => Ok(json!({"status":"idle","done":0,"total":0,"checked_at":unix_time()})),
             "offline-data" => self.catalog(app, false),
             // 面板/背包要缩略图时不一定会先拉 offline-data，单独给一个轻量入口。
             "asset-base" => Ok(json!({
@@ -477,19 +356,12 @@ impl FullAtlasState {
                 } else {
                     "GLOBAL"
                 };
-                let packs =
-                    crate::custom_resources::list_details(&self.dir.join("custom-atlas"), region)?;
-                let items: usize = packs
-                    .iter()
-                    .map(|pack| pack["item_count"].as_u64().unwrap_or(0) as usize)
-                    .sum();
-                let assets: usize = packs
-                    .iter()
-                    .map(|pack| pack["asset_count"].as_u64().unwrap_or(0) as usize)
-                    .sum();
                 let error = self.custom_error.lock().ok().and_then(|slot| slot.clone());
-                Ok(
-                    json!({"enabled":self.enabled(),"region":region,"installed":!packs.is_empty(),"packs":packs,"atlas_count":items,"asset_count":assets,"error":error}),
+                crate::custom_resources::status(
+                    &self.dir.join("custom-atlas"),
+                    region,
+                    self.enabled(),
+                    error,
                 )
             }
             "custom/import" => {
@@ -556,7 +428,10 @@ impl FullAtlasState {
                 json!({"required":false,"version":env!("CARGO_PKG_VERSION"),"message":UPDATE_MESSAGE}),
             ),
             "update/install" => Err(UPDATE_MESSAGE.into()),
-            "diagnostic" => Ok(json!({"ok":true})),
+            "diagnostic" => {
+                wuwatappo_assistant_core::append_diagnostic(&self.dir, body);
+                Ok(json!({"ok":true}))
+            }
             name if name.starts_with("assistant/") => {
                 let quiet = app.state::<crate::input::InputMonitor>().status().running
                     && crate::input::physical_input_quiet();

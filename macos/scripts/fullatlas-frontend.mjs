@@ -44,7 +44,8 @@ export async function integrateFullAtlas(root, profile) {
   run(process.execPath, ['../shared/tools/inspect_js.cjs', base, shared]);
   await writeFile(path.join(stage, 'current_base.txt'), base);
   await writeFile(path.join(stage, 'local_config.json'), JSON.stringify({ client_version: version }));
-  run(process.env.PYTHON || 'python3', ['tools/fullatlas-integration.py'], { ...process.env, WUWA_BUILD_ROOT: stage });
+  const python = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  run(python, ['tools/fullatlas-integration.py'], { ...process.env, WUWA_BUILD_ROOT: stage });
   const manifest = JSON.parse(await readFile(path.join(stage, 'build_manifest_v2.json'), 'utf8'));
   const changed = [manifest.shared, manifest.main, manifest.panel, ...files.filter(name => name.startsWith('switchDisplayMonitor-'))];
   for (const name of changed) {

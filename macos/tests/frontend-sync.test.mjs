@@ -37,7 +37,7 @@ test('唯一源里不留平台字面量，否则生成器替换不到', async ()
   }
 });
 
-test('渲染结果只差品牌行、平台注释与 VERSION 三处', () => {
+test('渲染结果只差品牌行和平台注释，两平台统一使用唯一源版本号', () => {
   const source = [
     "el('div','__WUWA_BRAND__',eyebrow);",
     '/* Main-renderer driver. No signal enters the __WUWA_PLATFORM__ input queue. */',
@@ -50,12 +50,12 @@ test('渲染结果只差品牌行、平台注释与 VERSION 三处', () => {
   assert.match(mac, /const VERSION='1\.3\.0-alpha\.3'/);
   assert.match(win, /WUWA TAPPO \/ 后台助手/);
   assert.match(win, /No signal enters the Windows input queue/);
-  assert.match(win, /const VERSION='1\.2'/);
+  assert.match(win, /const VERSION='1\.3\.0-alpha\.3'/);
 });
 
-test('VERSION 只在 desktop_assistant.js 里被覆盖，别的模块不受影响', () => {
+test('所有共用模块按平台只替换品牌、平台名与默认配置占位符', () => {
   const source = "const VERSION='9.9.9';";
   const other = "const other='keep';";
-  assert.match(render(VERSION_MODULE, source, TARGETS.win), /const VERSION='1\.2'/);
+  assert.match(render(VERSION_MODULE, source, TARGETS.win), /const VERSION='9\.9\.9'/);
   assert.equal(render('assistant_dashboard.js', other, TARGETS.win), other);
 });

@@ -32,14 +32,14 @@ Source: "..\build\payload\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 Source: "..\build\payload\cache\*"; DestDir: "{app}\cache"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppTitle}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\launch.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\WuwaTappo.Local.exe"
-Name: "{autodesktop}\{#AppTitle}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\launch.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\WuwaTappo.Local.exe"
+Name: "{group}\{#AppTitle}"; Filename: "{app}\WuwaTappoLauncher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\WuwaTappo.Local.exe"
+Name: "{autodesktop}\{#AppTitle}"; Filename: "{app}\WuwaTappoLauncher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\WuwaTappo.Local.exe"
 Name: "{group}\恢复本地版联网"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\restore_network.ps1"""
 Name: "{group}\使用说明"; Filename: "{app}\README.md"
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\initialize.ps1"""; Flags: runhidden waituntilterminated
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\launch.ps1"""; Description: "启动 {#AppTitle}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\WuwaTappoLauncher.exe"; Description: "启动 {#AppTitle}"; Flags: postinstall nowait skipifsilent
 
 [Code]
 function InitializeUninstall(): Boolean;

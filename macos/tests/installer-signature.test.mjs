@@ -2,7 +2,7 @@
 // 锁被改就一起通过。这里锁住签名校验这条独立依据的行为。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertOfficialSigner, readSigner, verifyPublisher } from '../scripts/sync-upstream.mjs';
+import { assertOfficialSigner, readSigner, verifyPublisher } from '../../scripts/sync-upstream.mjs';
 
 const officialSigner = `  Signer's certificate:
     Subject: /C=CN/ST=Guangdong/L=Guangzhou/O=Guangzhou Kuro Games/CN=广州库洛数界科技有限公司

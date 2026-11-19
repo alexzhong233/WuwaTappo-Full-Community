@@ -1,16 +1,15 @@
 # Windows 构建
 
-发行包不再包含 Python：本地服务 `LocalGalleryHost.exe` 与无控制台启动器 `WuwaTappoLauncher.exe`
-都是 `shared/backend` 的 Rust 产物。Python 只留在构建期（解包、注入、素材缓存、打更新包）。
+发行包不再包含 Python：本地服务 `LocalGalleryHost.exe`（含 `--prepare-cache`、`--make-update`、`--apply-update`）与无控制台启动器 `WuwaTappoLauncher.exe` 都是 `shared/backend` 的 Rust 产物。Python 只留在构建期（解包与注入）。
 
 ## 前置
 
 | 依赖 | 用途 |
 | --- | --- |
 | Windows x64 | 只能在 Windows 上构建（要跑官方 Windows 客户端） |
-| Node.js 22+ | 生成前端副本、解析 JS 结构、分派构建 |
-| Python 3.13 | 解包 / 注入 / 缓存 / 打包脚本（`tools\setup-env.ps1` 会建 `windows\.venv`） |
-| Rust stable（`cargo` + MSVC 链接器 + Windows SDK） | 编译本地服务与启动器 |
+| Node.js 24+ | 生成前端副本、解析 JS 结构、NSIS 静态提取、分派构建 |
+| Python 3.13 | 官方解包与注入脚本（`tools\setup-env.ps1` 会建 `windows\.venv`） |
+| Rust stable（`cargo` + MSVC 链接器 + Windows SDK） | 编译本地服务、启动器与更新工具 |
 
 Rust 部分需要 MSVC 的 `link.exe` 和 Windows SDK 的 `.lib`。装了 Visual Studio 的话，
 最省事的是在「Developer PowerShell for VS」里构建；只装了 rustup 没装 C++ 生成工具时，
@@ -18,7 +17,7 @@ Rust 部分需要 MSVC 的 `link.exe` 和 Windows SDK 的 `.lib`。装了 Visual
 
 ## 官方基底
 
-基底版本与安装包直链锁定在 `windows\upstream-win.json`（国际服是 `upstream-win-global.json`），
+基底版本与安装包直链锁定在 `shared/upstream/cn.json`（国际服是 `shared/upstream/global.json`），
 不需要手动准备：
 
 ```powershell
@@ -56,10 +55,9 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1 [-Extract] [-NoDeploy] 
 ## 验证
 
 ```sh
-node shared/tests/host-routes.cjs                 # 前端/注入器调用的接口在 Rust 宿主里都有路由
+npm test                                          # 前端/注入器接口对账（双端）+ 共享控制器与注入测试
 cargo test --locked --manifest-path shared/backend/Cargo.toml
 windows/.venv/Scripts/python.exe -m unittest discover -s windows/src/tests -p 'test_inject*.py'
-windows/.venv/Scripts/python.exe -m unittest discover -s windows/src/tests -p 'test_desktop_updater*.py'
 ```
 
 构建后可以直接起宿主验接口（`local_config.json` 里有端口与 token）：

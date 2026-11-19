@@ -11,19 +11,37 @@ const { join } = require('node:path');
 const assert = require('node:assert/strict');
 
 const root = join(__dirname, '..', '..');
-const hostSource = readFileSync(
-  join(root, 'shared', 'backend', 'src', 'local_gallery_host.rs'),
-  'utf8',
-);
+const hostSource =
+  readFileSync(join(root, 'shared', 'backend', 'src', 'local_gallery_host.rs'), 'utf8') +
+  '\n' +
+  readFileSync(join(root, 'shared', 'backend', 'src', 'lib.rs'), 'utf8');
 
-// 调用方：注入到官方前端里的模块，以及改写官方界面的注入器。
+const macSource =
+  readFileSync(join(root, 'macos', 'src-tauri', 'src', 'fullatlas.rs'), 'utf8') +
+  '\n' +
+  readFileSync(join(root, 'macos', 'src-tauri', 'src', 'mod_assets.rs'), 'utf8') +
+  '\n' +
+  readFileSync(join(root, 'shared', 'backend', 'src', 'custom_resources.rs'), 'utf8') +
+  '\n' +
+  readFileSync(join(root, 'shared', 'backend', 'src', 'lib.rs'), 'utf8');
+
+// 调用方：跨端共享前端、共享注入器以及桌面壳层桥接代码。
 const callers = [
+  'shared/frontend/local_atlas_controller.js',
+  'shared/frontend/desktop_assistant.js',
+  'shared/frontend/assistant_dashboard.js',
+  'shared/tools/fullatlas_core.py',
+  'shared/tools/assistant_core.py',
   'windows/src/src/desktop_context_menu.js',
-  'windows/src/src/desktop_assistant.js',
-  'windows/src/src/assistant_dashboard.js',
-  'windows/src/src/local_atlas_controller.js',
   'windows/src/tools/integrate_assistant.py',
 ];
+
+const WINDOWS_ONLY_ROUTES = new Set([
+  '/bootstrap',
+  '/startup',
+  '/assistant/context-menu',
+  '/assets/',
+]);
 
 // 只认本机服务的路径前缀；官方游戏接口（/api/frontend/...）不属于这里。
 const ROUTE = /["'`]\/(?:assistant|startup|bootstrap|status|sync|mode|custom|diagnostic|asset-base|assets|offline-data|community|official|update|settings)[a-zA-Z0-9_\-/]*["'`]/g;
@@ -40,17 +58,36 @@ for (const file of callers) {
 
 assert.ok(requested.size > 0, '没有从调用方解析出任何接口路径，检查文件列表是否过期');
 
-const missing = [];
+const missingWin = [];
+const missingMac = [];
 for (const [route, files] of requested) {
-  // 宿主里既可能是精确匹配（"/startup"），也可能是前缀分支（"/assets/"）。
-  const declared = hostSource.includes(`"${route}"`) || hostSource.includes(`'${route}'`);
-  if (!declared) missing.push(`${route}  ← ${[...files].join(', ')}`);
+  // Windows 宿主里既可能是精确匹配（"/startup"），也可能是前缀分支（"/assets/"）。
+  const winDeclared = hostSource.includes(`"${route}"`) || hostSource.includes(`'${route}'`);
+  if (!winDeclared) missingWin.push(`${route}  ← ${[...files].join(', ')}`);
+
+  if (!WINDOWS_ONLY_ROUTES.has(route)) {
+    const macPrefix = route.replace(/^\/+/, '');
+    const macAction = macPrefix.replace(/\/+$/, '');
+    const assistantAction = macAction.startsWith('assistant/')
+      ? macAction.slice('assistant/'.length)
+      : macAction;
+    const macDeclared =
+      macSource.includes(`"${macPrefix}"`) ||
+      macSource.includes(`"${macAction}"`) ||
+      (macAction.startsWith('assistant/') && macSource.includes(`"${assistantAction}"`));
+    if (!macDeclared) missingMac.push(`${route} (${macAction})  ← ${[...files].join(', ')}`);
+  }
 }
 
 assert.deepEqual(
-  missing,
+  missingWin,
   [],
-  `以下接口被前端/注入器调用，但在 shared/backend/src/local_gallery_host.rs 里没有路由：\n  ${missing.join('\n  ')}`,
+  `以下接口被前端/注入器调用，但在 shared/backend/src/local_gallery_host.rs 里没有路由：\n  ${missingWin.join('\n  ')}`,
+);
+assert.deepEqual(
+  missingMac,
+  [],
+  `以下跨端接口被前端/注入器调用，但在 macOS Rust 宿主里没有对应 action：\n  ${missingMac.join('\n  ')}`,
 );
 
-console.log(`本机接口对账通过（${requested.size} 条路径）`);
+console.log(`本机接口双端对账通过（共 ${requested.size} 条路径）`);

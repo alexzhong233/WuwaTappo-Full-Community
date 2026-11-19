@@ -18,7 +18,7 @@
  *   node scripts/build-platform.mjs --latest        # Windows 侧取官方最新版（默认锁定适配版）
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -94,8 +94,15 @@ function checkMac() {
   rows.push(['rustup', rustup ?? '未找到', Boolean(rustup)]);
   rows.push(['src-tauri', existsSync(join(MACOS, 'src-tauri', 'Cargo.toml')) ? '存在' : '缺失', existsSync(join(MACOS, 'src-tauri', 'Cargo.toml'))]);
   rows.push(['node_modules', existsSync(join(repoRoot, 'node_modules')) ? '已装' : '未装（先 npm ci）', existsSync(join(repoRoot, 'node_modules'))]);
-  const upstream = readJson(join(MACOS, 'upstream-cn.json'));
-  rows.push(['官方基底（锁）', upstream.version, true]);
+  rows.push(['区域', region === 'global' ? '国际服（global）' : '国服（cn）', true]);
+  const lockName = `shared/upstream/${region}.json`;
+  const lockPath = join(repoRoot, lockName);
+  if (existsSync(lockPath)) {
+    const upstream = readJson(lockPath);
+    rows.push(['官方基底（锁）', upstream.version, true]);
+  } else {
+    rows.push([lockName, '缺失', false]);
+  }
   return { rows, ok: rows.every(([, , ok]) => ok) };
 }
 
@@ -111,13 +118,14 @@ function checkWin() {
   rows.push(['Python', py ?? '未找到', Boolean(py)]);
   const venv = join(WINDOWS, '.venv', 'Scripts', 'python.exe');
   rows.push(['windows\\.venv', existsSync(venv) ? '已就绪' : '未创建（setup-env.ps1 会自动建）', true]);
-  const lockName = region === 'global' ? 'upstream-win-global.json' : 'upstream-win.json';
-  const lockPath = join(WINDOWS, lockName);
+  const lockName = `shared/upstream/${region}.json`;
+  const lockPath = join(repoRoot, lockName);
   rows.push(['区域', region === 'global' ? '国际服（global）' : '国服（cn）', true]);
   if (existsSync(lockPath)) {
     const lock = readJson(lockPath);
-    rows.push(['适配基底（锁）', lock.client_version, true]);
-    rows.push(['安装包直链', lock.installer_url ? '已配置' : '缺失', Boolean(lock.installer_url)]);
+    rows.push(['适配基底（锁）', lock.version, true]);
+    rows.push(['安装包直链', lock.installer?.url ? '已配置' : '缺失', Boolean(lock.installer?.url)]);
+    rows.push(['Windows 基底指纹', lock.platforms?.windows?.executable?.sha256 ? '已配置' : '缺失', Boolean(lock.platforms?.windows?.executable?.sha256)]);
   } else {
     rows.push([lockName, '缺失', false]);
   }
@@ -167,8 +175,37 @@ function buildWin({ withPackage }) {
   const ps = process.platform === 'win32' ? 'powershell.exe' : null;
   if (!ps) throw new Error('Windows 构建只能在 Windows 上执行');
 
-  const call = (script, args = []) =>
-    run(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(WINDOWS, 'tools', script), '-Region', region, ...args]);
+  // Windows PowerShell 5.1 在 stdout/stderr 被 CI 或上层工具接管时，直接 `-File`
+  // 运行长构建脚本可能无输出退出为 -1。通过一个临时脚本用调用运算符进入脚本作用域，
+  // 既能保留实时输出，也能稳定传回各路原生命令的退出码。
+  const psQuote = value => `'${String(value).replaceAll("'", "''")}'`;
+  const call = (script, args = []) => {
+    mkdirSync(join(repoRoot, '.work'), { recursive: true });
+    const wrapper = join(repoRoot, '.work', `build-platform-${process.pid}-${Date.now()}.ps1`);
+    const scriptPath = join(WINDOWS, 'tools', script);
+    const parameters = { Region: region };
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      if (!arg.startsWith('-')) throw new Error(`PowerShell 参数缺少名称：${arg}`);
+      const name = arg.slice(1);
+      const value = args[index + 1] && !args[index + 1].startsWith('-') ? args[++index] : true;
+      parameters[name] = value;
+    }
+    const entries = Object.entries(parameters).map(([name, value]) =>
+      `${psQuote(name)} = ${value === true ? '$true' : psQuote(value)}`);
+    writeFileSync(wrapper, [
+      "$ErrorActionPreference = 'Stop'",
+      `$arguments = @{ ${entries.join('; ')} }`,
+      `& ${psQuote(scriptPath)} @arguments`,
+      'exit $LASTEXITCODE',
+      '',
+    ].join('\n'), 'utf8');
+    try {
+      run(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', wrapper]);
+    } finally {
+      rmSync(wrapper, { force: true });
+    }
+  };
   log(`区域：${region === 'global' ? '国际服' : '国服'}`);
 
   if (!existsSync(join(WINDOWS, '.venv', 'Scripts', 'python.exe'))) {

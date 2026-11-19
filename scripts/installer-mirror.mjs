@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { getRegionProfile } from './regions.mjs';
 import { installerMirrorAssetName, installerMirrorUrl, pinnedInstallerCache, verifyInstaller } from './sync-upstream.mjs';
 
-const root = fileURLToPath(new URL('../', import.meta.url));
+const root = fileURLToPath(new URL('../macos/', import.meta.url));
 
 export async function publishPinnedInstaller({ projectRoot = root, profile = getRegionProfile(), environment = process.env, execute = execFileSync } = {}) {
   const lock = JSON.parse(await readFile(path.join(projectRoot, profile.upstreamLock), 'utf8'));

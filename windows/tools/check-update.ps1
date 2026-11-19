@@ -1,7 +1,7 @@
 ﻿<#
   检查官方是否发布新版本（不下载、不改动任何文件）
 
-  官方更新接口（客户端自己用的同一条链，CN 渠道）：
+  官方更新接口（区域由 region.ps1 与 -Region 决定）：
     1) https://mc-wuwatappo.kurogames-global.com/app/json-host/latest_host.json
        -> {"url": ".../app/version-json/latest.json?t=..."}
     2) .../app/version-json/latest.json
@@ -9,28 +9,18 @@
 
   用法： powershell -ExecutionPolicy Bypass -File tools\check-update.ps1
 #>
-param([string]$AssetsHost = 'https://mc-wuwatappo.kurogames-global.com')
+param([ValidateSet('cn', 'global')][string]$Region, [string]$AssetsHost)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
-
-function Get-Json([string]$url) {
-  # 兼容 Windows PowerShell 5.1 与 PowerShell 7，直连不走系统代理
-  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
-  $wc = New-Object System.Net.WebClient
-  $wc.Proxy = $null
-  $wc.Encoding = [Text.Encoding]::UTF8
-  $wc.Headers.Add('User-Agent', 'WuwaTappo-FullAtlas-UpdateCheck/1.0')
-  try {
-    return ($wc.DownloadString($url) | ConvertFrom-Json)
-  } finally {
-    $wc.Dispose()
-  }
-}
+. (Join-Path $PSScriptRoot 'region.ps1')
+. (Join-Path $PSScriptRoot 'upstream-common.ps1')
+$R = Get-RegionProfile -Root $Root -Region $Region
+if (-not $AssetsHost) { $AssetsHost = $R.AssetsHost }
 
 "== 查询官方更新清单 =="
-$hostJson = Get-Json "$AssetsHost/app/json-host/latest_host.json"
-if (-not $hostJson.url) { throw "latest_host.json 未返回 url 字段" }
+$hostJson = Get-Json "$AssetsHost/app/json-host/$($R.UpdaterHostFile)"
+if (-not $hostJson.url) { throw "官方版本指针未返回 url 字段" }
 "清单入口: $($hostJson.url)"
 
 $manifest = Get-Json ([string]$hostJson.url)
@@ -44,9 +34,9 @@ $pubDate = [datetime]$manifest.pub_date
 "签名     : $(if ($platform.signature) { '有（minisign，官方私有密钥）' } else { '无' })"
 
 "== 本地版本 =="
-$localExe = Join-Path $Root 'app\WuwaTappo.Local.exe'
+$localExe = Join-Path $R.AppDir 'WuwaTappo.Local.exe'
 $localVer = if (Test-Path -LiteralPath $localExe) { (Get-Item -LiteralPath $localExe).VersionInfo.ProductVersion } else { '' }
-$cfg = Join-Path $Root 'build\local_config.json'
+$cfg = Join-Path $R.WorkDir 'local_config.json'
 $baseVer = if (Test-Path -LiteralPath $cfg) { (Get-Content -LiteralPath $cfg -Raw | ConvertFrom-Json).client_version } else { '' }
 "本地程序 : $localVer"
 "适配基底 : $baseVer"

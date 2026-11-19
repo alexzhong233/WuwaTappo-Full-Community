@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { getRegionProfile } from './regions.mjs';
 import { pinnedInstallerCache } from './sync-upstream.mjs';
 
-const root = fileURLToPath(new URL('../', import.meta.url));
+const root = fileURLToPath(new URL('../macos/', import.meta.url));
 const profile = getRegionProfile();
 const lock = JSON.parse(await readFile(path.join(root, profile.upstreamLock), 'utf8'));
 const cache = pinnedInstallerCache(lock, root, profile);

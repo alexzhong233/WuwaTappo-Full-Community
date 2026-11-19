@@ -20,9 +20,10 @@ class Hooks:
     facade_files = ('assistant_dashboard.js', 'desktop_assistant.js')
 
     def facade_locals(self):
-        """`__WUWA_LOCAL_ATLAS__` 赋值之后，还要挂到控制器上的东西。"""
+        """`__WUWA_LOCAL_ATLAS__` 赋值之后，还要挂到控制器和原生页签钩子上的东西。"""
         return ('\nif(localAtlasController)localAtlasController.assistant=createDesktopAssistant('
-                '{ref,window,atlas:localAtlasController,displayName:resolveAssetDisplayName});')
+                '{ref,window,atlas:localAtlasController,displayName:resolveAssetDisplayName});'
+                '\nwindow.__WUWA_OPEN_PANEL_TAB__=tab=>invoke("open_panel_window",{payload:{tab}}).then(()=>true).catch(()=>false);')
 
     def before_main_code(self, main, ctx):
         """在插入 `startMain` 之前改 main（右键菜单、页签白名单之类）。"""
@@ -151,6 +152,18 @@ window.__WUWA_LOCAL_ATLAS__ = localAtlasController;''' + hooks.facade_locals())
     quit_fn = re.search(r'"tray-quit", \(\) => \{\s*([\w$]+)\(\)', source)[1]
     persist_original = re.search(re.escape(mi['listenPersistClicksBeforeExit'])+r'\(async \(\) => \{\s*([\s\S]+?)\n\s*\}\)',source)[1]
     main = once(main, 'async function '+quit_fn+'() {', 'async function '+quit_fn+'() {\n try{await __lg.assistant.flush();}catch{}')
+    # 「控制台」页不受更新锁拦截：更新卡住时用户仍要能进来点更新。
+    tab_pos = main.index(f'function {open_tab}(')
+    tab_match = re.search(
+        r'(?:async )?function ' + re.escape(open_tab) + r'\(([\w$]+)\)\s*\{\s*if \(([\w$]+)\(\)\) \{\s*'
+        + re.escape(mi['showToast']) + r'\(',
+        main[max(0, tab_pos - 6):tab_pos + 600],
+    )
+    assert tab_match, 'panel update-lock guard changed'
+    tab_param, lock_fn = tab_match.group(1), tab_match.group(2)
+    old_guard = tab_match.group(0)
+    new_guard = old_guard.replace(f'if ({lock_fn}()) {{', f'if ({tab_param} !== "console" && {lock_fn}()) {{', 1)
+    main = once(main, old_guard, new_guard)
     ctx = {'once': once, 'mi': mi, 'pi': pi, 'source': source, 'structure': structure,
            'main_name': main_name, 'open_tab': open_tab, 'store': store, 'fields': fields}
     main = hooks.before_main_code(main, ctx)
@@ -198,6 +211,9 @@ window.__WUWA_LOCAL_ATLAS__ = localAtlasController;''' + hooks.facade_locals())
     mon = re.search(r'async function ([\w$]+)\(\) \{\n  const e = await me\(\),\n    t = await H\(\);\n  return qe\(e, t\)', monitor)
     assert mon, 'display list contract'
     monitor += '\nexport{' + mon.group(1) + ' as __zzMonitors,' + switch_fn + ' as __zzSwitchMonitor};\n'
+    # 面板页签白名单：官方的折叠/切换逻辑只认背包/图鉴/合成/联机/设置，必须放行「控制台」。
+    _tab_guard = 'return e === "bag" || e === "atlas" || e === "exchange" || e === "room" || e === "setting"'
+    monitor = once(monitor, _tab_guard, _tab_guard + ' || e === "console"')
     monitor = hooks.after_monitor(monitor, ctx)
     (frontend/'assets'/monitor_name).write_text(monitor, encoding='utf-8')
     main = 'import {__zzMonitors as __assistantMonitors,__zzSwitchMonitor as __assistantRestoreMonitor} from "./'+monitor_name+'";\n'+main

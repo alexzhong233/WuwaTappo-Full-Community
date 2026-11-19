@@ -1,0 +1,9 @@
+{
+  "checksumFile": "SHA256SUMS.txt",
+  "formats": {
+    "macos": "{prefix}-{version}-macOS-arm64.dmg",
+    "windowsInstaller": "{prefix}-Windows-x64-{version}.exe",
+    "windowsPortable": "{prefix}-Windows-x64-{version}.zip",
+    "windowsUpdate": "{prefix}-{version}-win-x64-update.zip"
+  }
+}

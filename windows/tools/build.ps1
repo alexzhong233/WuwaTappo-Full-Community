@@ -3,8 +3,8 @@
 
   前置：
     1. tools\setup-env.ps1 已执行（.venv 就绪）
-    2. tools\fetch-official.ps1 已取好官方基底（按 upstream-win*.json 锁定的最新版本）
-    3. assets\cache 已由 prepare_cache.py 拉好
+    2. tools\fetch-official.ps1 已取好官方基底（按 shared/upstream/*.json 锁定的最新版本）
+    3. 可选：assets\cache 由 LocalGalleryHost.exe --prepare-cache <windows> [cn|global] 拉好
 
   用法： powershell -ExecutionPolicy Bypass -File tools\build.ps1 [-Extract] [-NoDeploy] [-NoRuntime] [-Base <目录>]
         -Extract   先重新解包官方 EXE（覆盖基底目录里的前端产物）

@@ -133,7 +133,8 @@ mkdir -p "$OUTPUT"
 OUTPUT="$(cd "$OUTPUT" && pwd)"
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/wuwatappo-package.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
-NAME="$ARTIFACT_PREFIX-$VERSION-macOS-arm64"
+DMG_NAME=$(node "$REPO_ROOT/scripts/release-assets.mjs" name --kind=macos --region="$EXPECTED_REGION" --version="$VERSION")
+NAME="${DMG_NAME%.dmg}"
 phase '复制应用并复查签名'
 ditto --norsrc --noextattr --noqtn --noacl "$APP" "$STAGE/$PRODUCT_NAME.app"
 /usr/bin/codesign --verify --deep --strict "$STAGE/$PRODUCT_NAME.app"

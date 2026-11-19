@@ -1,5 +1,6 @@
 use serde_json::json;
 use tauri::{AppHandle, Manager};
+use wuwatappo_assistant_core::regions::{self, RegionProfile};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Region {
@@ -8,12 +9,24 @@ pub enum Region {
 }
 
 impl Region {
-    pub fn from_identifier(identifier: &str) -> Result<Self, String> {
-        match identifier {
-            "dev.w33d.wuwatappo.fullatlas.mac" => Ok(Self::Cn),
-            "dev.w33d.wuwatappo.global.mac" => Ok(Self::Global),
-            _ => Err("Unknown Wuwa Tappo application identity".into()),
+    fn id(self) -> &'static str {
+        match self {
+            Self::Cn => "cn",
+            Self::Global => "global",
         }
+    }
+
+    fn profile(self) -> &'static RegionProfile {
+        regions::profile(self.id()).expect("shared region profile must exist")
+    }
+
+    pub fn from_identifier(identifier: &str) -> Result<Self, String> {
+        for region in [Self::Cn, Self::Global] {
+            if region.profile().mac_identifier.as_str() == identifier {
+                return Ok(region);
+            }
+        }
+        Err("Unknown Wuwa Tappo application identity".into())
     }
 
     pub fn from_app(app: &AppHandle) -> Self {
@@ -21,47 +34,34 @@ impl Region {
     }
 
     pub fn name(self) -> &'static str {
-        match self {
-            Self::Cn => "WuwaTappo Full Community",
-            Self::Global => "WuwaTappo Global Community",
-        }
+        self.profile().mac_product_name.as_str()
     }
 
     pub fn api_host(self) -> &'static str {
-        match self {
-            Self::Cn => "api-mc-wuwatappo.kurogames-global.com",
-            Self::Global => "api-wutheringwaves-wuwatappo.kurogames-global.com",
-        }
+        self.profile().api_host.as_str()
     }
 
     pub fn asset_host(self) -> &'static str {
-        match self {
-            Self::Cn => "mc-wuwatappo.kurogames-global.com",
-            Self::Global => "wutheringwaves-wuwatappo.kurogames-global.com",
-        }
+        self.profile().assets_host.as_str()
     }
 
     /// 官方桌宠（Wuwa Tappo）下载页。
     ///
-    /// 官方的 mac 版尚未开放，所以 Mac 整合版也指向同一个 Windows 下载页——
+    /// 官方的 mac 版尚未开放，所以 Mac 整合版也指向同一个 Windows 下载页；
     /// 用户点进去拿到的是官方原版，用于对照或纯净安装。
     pub fn pet_site(self) -> &'static str {
-        match self {
-            Self::Cn => "https://download-mc-wuwatappo.kurogames-global.com/download/",
-            Self::Global => {
-                "https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/zh-tw/"
-            }
-        }
+        self.profile().pet_site.as_str()
     }
 
     pub fn initialization_script(self) -> String {
-        let profile = json!({
-            "region": if self == Self::Cn { "CN" } else { "GLOBAL" },
-            "productName": self.name(),
-            "socketHost": self.api_host(),
-            "assetHost": format!("https://{}", self.asset_host()),
+        let profile = self.profile();
+        let webview_profile = json!({
+            "region": profile.region.clone(),
+            "productName": profile.mac_product_name.clone(),
+            "socketHost": profile.api_host.clone(),
+            "assetHost": format!("https://{}", profile.assets_host),
         });
-        format!("Object.defineProperty(window,'__WUWATAPPO_PROFILE__',{{value:Object.freeze({profile}),writable:false,configurable:false}});")
+        format!("Object.defineProperty(window,'__WUWATAPPO_PROFILE__',{{value:Object.freeze({webview_profile}),writable:false,configurable:false}});")
     }
 }
 

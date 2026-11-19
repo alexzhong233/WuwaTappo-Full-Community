@@ -1,6 +1,6 @@
 # 自制角色、挂饰和表情 Mod
 
-本功能在独立分支开发（已同步官方 1.0.4 基底），尚未合入主线。macOS 国服和 Windows 的资源格式相同。
+macOS 和 Windows 的国服与国际服均支持自制 Mod，两边使用完全相同的资源格式和校验逻辑（由 `shared/backend/src/custom_resources.rs` 提供）。
 
 ## 两种外观模式
 
@@ -138,6 +138,6 @@ macOS 国服与国际服都接入 FullAtlas 控制面板，Mod 界面两服一�
 
 背包、图鉴和 Mod 管理面板里的缩略图都从宿主的本机 HTTP 服务取，不用 `asset://`：官方渲染器只把 `http(s)` / `asset` 原样交给 `<img>`，而 Mac 的 WebView 从 `tauri://` 页面里取 `asset://` 子资源拿不到图（表现为 404）。
 
-- macOS：`src-tauri/src/mod_assets.rs` 起一个只监听 `127.0.0.1` 的只读服务，端口由系统分配，路径前缀是每次启动随机生成的 token，只服务 `custom-assets/<包>/<文件>` 这类校验过的相对键。
-- Windows：沿用本地服务的 `/custom-assets/` 路由，语义相同。
+- macOS：`src-tauri/src/mod_assets.rs` 起一个只监听 `127.0.0.1` 的只读服务，端口由系统分配，路径前缀是每次启动随机生成的 token，调用 `shared/backend/src/custom_resources.rs`（`resolve_asset_file` / `asset_mime_type`）服务 `custom-assets/<包>/<文件>`。
+- Windows：`shared/backend/src/local_gallery_host.rs` 的 `/custom-assets/` 路由复用同一组共享路径解析与 MIME 校验函数，语义完全一致。
 - 前端通过 `/asset-base` 拿前缀，拼接 `custom-assets/...` 相对键；拿不到前缀时退回注入器给的转换函数，宁可这张图不显示也不拼出必然 404 的地址。

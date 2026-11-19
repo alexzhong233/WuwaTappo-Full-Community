@@ -6,8 +6,8 @@ import {
   assertConsistent, nextPrerelease, readSources, readVersions, rewriteSources,
   versionFiles,
 } from '../../scripts/bump-version.mjs';
-import { detectOutputs } from '../scripts/upstream-detect.mjs';
-import { serializeLock, windowsLockFromOfficial, windowsLockPath } from '../scripts/upstream-windows-lock.mjs';
+import { detectOutputs } from '../../scripts/upstream-detect.mjs';
+import { serializeLock, windowsLockFromOfficial, windowsLockPath } from '../../scripts/upstream-windows-lock.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 
@@ -65,44 +65,48 @@ test('一次改写覆盖全部十处，且只动版本号本身', async () => {
   }
 });
 
-test('Windows 基线锁只覆盖机器算得出的字段', () => {
+test('Windows 指纹只覆盖机器算得出的 platforms.windows 字段', () => {
   const official = {
+    schemaVersion: 2,
+    region: 'CN',
     version: '1.0.5',
+    manifestUrl: 'https://example.test/latest.json',
     installer: { url: 'https://example.test/WuwaTappo-cn_1.0.5_x64-setup.exe', sha256: 'a'.repeat(64), size: 201758432 },
   };
   const current = {
-    $comment: '人工写的说明',
-    client_version: '1.0.4',
-    official_exe_sha256: 'b'.repeat(64),
-    official_exe_size: 1,
-    installer_url: 'https://example.test/old.exe',
-    installer_sha256: 'c'.repeat(64),
-    installer_size: 1,
-    adapter_notes: '1.0.4 锚点全部命中',
+    schemaVersion: 2,
+    region: 'CN',
+    version: '1.0.4',
+    manifestUrl: 'https://example.test/old.json',
+    installer: { url: 'https://example.test/old.exe', sha256: 'c'.repeat(64), size: 1 },
+    platforms: {
+      windows: {
+        executable: { sha256: 'b'.repeat(64), size: 1 },
+        adapterNotes: '1.0.4 锚点全部命中',
+        comment: '人工写的说明',
+      },
+    },
   };
   const next = windowsLockFromOfficial({ official, executable: Buffer.from('official-exe'), current });
-  assert.equal(next.client_version, '1.0.5');
-  assert.equal(next.installer_url, official.installer.url);
-  assert.equal(next.installer_sha256, official.installer.sha256);
-  assert.equal(next.installer_size, official.installer.size);
-  assert.equal(next.official_exe_size, Buffer.from('official-exe').length);
-  assert.match(next.official_exe_sha256, /^[0-9a-f]{64}$/);
-  // 人工写的字段原样保留，键序也不动 —— 否则 diff 会变成全文替换。
-  assert.equal(next.$comment, current.$comment);
-  assert.equal(next.adapter_notes, current.adapter_notes);
-  assert.deepEqual(Object.keys(next), Object.keys(current));
+  assert.equal(next.version, '1.0.5');
+  assert.equal(next.installer.url, official.installer.url);
+  assert.equal(next.installer.sha256, official.installer.sha256);
+  assert.equal(next.installer.size, official.installer.size);
+  assert.equal(next.platforms.windows.executable.size, Buffer.from('official-exe').length);
+  assert.match(next.platforms.windows.executable.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(next.platforms.windows.adapterNotes, current.platforms.windows.adapterNotes);
+  assert.equal(next.platforms.windows.comment, current.platforms.windows.comment);
 });
 
-test('Windows 锁按原行尾写回，避免整份文件被 diff 成替换', () => {
-  const lock = { client_version: '1.0.5', official_exe_size: 3 };
+test('canonical upstream lock keeps its newline style', () => {
+  const lock = { version: '1.0.5', platforms: { windows: { executable: { size: 3 } } } };
   assert.equal(serializeLock(lock, '\r\n'), JSON.stringify(lock, null, 2).replace(/\n/g, '\r\n') + '\r\n');
   assert.equal(serializeLock(lock, '\n').endsWith('\n'), true);
   assert.equal(serializeLock(lock, '\n').includes('\r'), false);
-  assert.equal(windowsLockPath('cn'), 'windows/upstream-win.json');
-  assert.equal(windowsLockPath('global'), 'windows/upstream-win-global.json');
+  assert.equal(windowsLockPath('cn'), 'shared/upstream/cn.json');
+  assert.equal(windowsLockPath('global'), 'shared/upstream/global.json');
   assert.throws(() => windowsLockPath('../etc'), /未知服务区域/);
 });
-
 test('官方版本探测只在任一区域变化时请求编译', () => {
   const unchanged = detectOutputs([
     { regionId: 'cn', changed: false, latestVersion: '1.0.4' },
@@ -120,15 +124,11 @@ test('官方版本探测只在任一区域变化时请求编译', () => {
   assert.equal(cnOnly.global_version, '1.0.4');
 });
 
-test('两平台锁指向同一个安装包', () => {
-  for (const [macLock, winLock] of [
-    ['macos/upstream-cn.json', 'windows/upstream-win.json'],
-    ['macos/upstream-global.json', 'windows/upstream-win-global.json'],
-  ]) {
-    const mac = JSON.parse(readFileSync(path.join(repoRoot, macLock), 'utf8'));
-    const win = JSON.parse(readFileSync(path.join(repoRoot, winLock), 'utf8'));
-    assert.equal(win.client_version, mac.version, winLock);
-    assert.equal(win.installer_sha256, mac.installer.sha256, winLock);
-    assert.equal(win.installer_size, mac.installer.size, winLock);
+test('canonical lock 同时包含共同安装包和 Windows 主程序指纹', () => {
+  for (const region of ['cn', 'global']) {
+    const lock = JSON.parse(readFileSync(path.join(repoRoot, `shared/upstream/${region}.json`), 'utf8'));
+    assert.equal(lock.schemaVersion, 2);
+    assert.ok(lock.installer?.sha256);
+    assert.ok(lock.platforms?.windows?.executable?.sha256);
   }
 });

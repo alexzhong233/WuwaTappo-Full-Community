@@ -15,7 +15,7 @@
 use std::{
     fs,
     net::TcpListener as StdListener,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -74,7 +74,7 @@ impl Inner {
         respond(
             &mut stream,
             "200 OK",
-            content_type(&file),
+            wuwatappo_assistant_core::custom_resources::asset_mime_type(&file),
             &body,
             method == "HEAD",
         )
@@ -88,7 +88,7 @@ impl Inner {
             .unwrap_or_default();
         let decoded = percent_decode(path);
         let key = decoded.strip_prefix(&format!("/{}/", self.token))?;
-        asset_path(&self.root, key)
+        wuwatappo_assistant_core::custom_resources::resolve_asset_file(&self.root, key)
     }
 }
 
@@ -113,55 +113,6 @@ async fn respond(
     let _ = stream.shutdown().await;
 }
 
-/// 把 `custom-assets/<pack>/<file…>` 解析成磁盘路径，任何可疑输入直接拒绝。
-fn asset_path(root: &Path, key: &str) -> Option<PathBuf> {
-    let parts: Vec<&str> = key.split('/').collect();
-    if parts.len() < 3 || parts[0] != "custom-assets" {
-        return None;
-    }
-    if parts.iter().any(|part| {
-        part.is_empty()
-            || *part == "."
-            || *part == ".."
-            || part.contains('\\')
-            || part.contains(':')
-            || part.chars().any(char::is_control)
-    }) {
-        return None;
-    }
-    // 隐藏目录是安装/回滚过程中的临时状态，不该被外部看到。
-    if parts[1].starts_with('.') {
-        return None;
-    }
-    let mut path = root.join(parts[1]).join("assets");
-    for part in &parts[2..] {
-        path.push(part);
-    }
-    let path = path.canonicalize().ok()?;
-    let base = root.canonicalize().ok()?;
-    if !path.starts_with(&base) || !path.is_file() {
-        return None;
-    }
-    Some(path)
-}
-
-fn content_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("webp") => "image/webp",
-        Some("gif") => "image/gif",
-        Some("bmp") => "image/bmp",
-        Some("avif") => "image/avif",
-        _ => "application/octet-stream",
-    }
-}
-
 /// 只解码 `%XX`；`+` 在路径里就是加号，不能当空格。
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
@@ -180,35 +131,6 @@ fn percent_decode(value: &str) -> String {
         index += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-fn random_token() -> String {
-    // 不引新依赖：优先取系统随机源，取不到就退化成时间 + pid 的哈希。
-    let mut bytes = [0u8; 16];
-    let filled = fs::File::open("/dev/urandom")
-        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes))
-        .is_ok();
-    if !filled {
-        let seed = format!(
-            "{}-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|value| value.as_nanos())
-                .unwrap_or_default(),
-            std::thread::current().id()
-        );
-        let mut state: u64 = 0xcbf29ce484222325;
-        for (index, byte) in seed.bytes().enumerate() {
-            state ^= u64::from(byte);
-            state = state.wrapping_mul(0x100000001b3);
-            bytes[index % 16] ^= (state >> ((index % 8) * 8)) as u8;
-        }
-    }
-    bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
 }
 
 /// 启动取图服务；起不来只降级（`base` 为空，前端退回旧路径），不影响应用启动。
@@ -234,7 +156,7 @@ fn bind(root: PathBuf) -> Result<ModAssetHost, String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
-    let token = random_token();
+    let token = wuwatappo_assistant_core::random_token_hex();
     let inner = Arc::new(Inner {
         root,
         token: token.clone(),
@@ -265,9 +187,14 @@ fn bind(root: PathBuf) -> Result<ModAssetHost, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use wuwatappo_assistant_core::custom_resources::{asset_mime_type, resolve_asset_file};
 
     fn root() -> PathBuf {
-        std::env::temp_dir().join(format!("wuwa-mod-assets-{}", random_token()))
+        std::env::temp_dir().join(format!(
+            "wuwa-mod-assets-{}",
+            wuwatappo_assistant_core::random_token_hex()
+        ))
     }
 
     #[test]
@@ -279,7 +206,7 @@ mod tests {
 
         let key = "custom-assets/mod-0123456789abcdef/icon.png";
         assert_eq!(
-            asset_path(&base, key).map(|path| path.file_name().unwrap().to_owned()),
+            resolve_asset_file(&base, key).map(|path| path.file_name().unwrap().to_owned()),
             Some("icon.png".into())
         );
 
@@ -293,7 +220,7 @@ mod tests {
             "custom-assets/C:/Windows/System32/icon.png",
             "custom-assets/mod-0123456789abcdef/missing.png",
         ] {
-            assert!(asset_path(&base, rejected).is_none(), "{rejected}");
+            assert!(resolve_asset_file(&base, rejected).is_none(), "{rejected}");
         }
         let _ = fs::remove_dir_all(&base);
     }
@@ -317,8 +244,11 @@ mod tests {
 
     #[test]
     fn only_known_image_extensions_get_an_image_content_type() {
-        assert_eq!(content_type(Path::new("a.PNG")), "image/png");
-        assert_eq!(content_type(Path::new("a.webp")), "image/webp");
-        assert_eq!(content_type(Path::new("a.json")), "application/octet-stream");
+        assert_eq!(asset_mime_type(Path::new("a.PNG")), "image/png");
+        assert_eq!(asset_mime_type(Path::new("a.webp")), "image/webp");
+        assert_eq!(
+            asset_mime_type(Path::new("a.json")),
+            "application/octet-stream"
+        );
     }
 }

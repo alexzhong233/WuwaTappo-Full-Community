@@ -15,7 +15,7 @@ const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
 // 这些名字都属于 macOS 平台实现，出现目录根就说明有人绕过 macos/ 直接改了根目录。
 const PLATFORM_ENTRIES = ['src-tauri', 'tests', 'tools', 'fullatlas-source', 'frontend', 'frontend-global'];
-const PLATFORM_FILES = ['upstream-cn.json', 'upstream-global.json', 'rust-toolchain.toml'];
+const PLATFORM_FILES = ['rust-toolchain.toml'];
 
 test('平台实现只留在 macos/ 与 windows/，不散落到仓库根', () => {
   const strays = [...PLATFORM_ENTRIES, ...PLATFORM_FILES].filter(name => existsSync(path.join(repoRoot, name)));
@@ -25,7 +25,7 @@ test('平台实现只留在 macos/ 与 windows/，不散落到仓库根', () => 
 
 test('两个平台目录与跨平台入口都在位', () => {
   for (const name of ['macos/src-tauri/Cargo.toml', 'macos/scripts/app.mjs', 'macos/tests', 'macos/fullatlas-source',
-    'windows/src', 'windows/tools', 'windows/upstream-win.json']) {
+    'windows/src', 'windows/tools', 'shared/upstream/cn.json', 'shared/upstream/global.json']) {
     assert.ok(existsSync(path.join(repoRoot, name)), `缺少 ${name}`);
   }
   for (const name of ['package.json', 'scripts/build-platform.mjs', 'LICENSE', 'THIRD_PARTY_NOTICES.md']) {
@@ -41,8 +41,22 @@ test('两个平台目录与跨平台入口都在位', () => {
   assert.equal(existsSync(path.join(repoRoot, 'docs/macos/MODS.md')), false, '通用文档不应按平台分目录');
   assert.ok(existsSync(path.join(repoRoot, 'docs/macos/INPUT_PERMISSION.md')), '缺少 Mac 专属权限说明');
   assert.ok(existsSync(path.join(repoRoot, 'docs/windows/BUILD.md')), '缺少 Windows 专属构建说明');
-  // 注入器的公共核也只有一份：锚点工具与公共补丁在 inject_core，助手主流程在 assistant_core。
-  for (const name of ['shared/tools/inject_core.py', 'shared/tools/assistant_core.py']) {
-    assert.ok(existsSync(path.join(repoRoot, name)), `缺少注入器公共核 ${name}`);
+  // 注入器的公共核与跨平台构建/同步入口只在根目录 shared/ 与 scripts/。
+  for (const name of [
+    'shared/tools/inject_core.py',
+    'shared/tools/assistant_core.py',
+    'shared/tools/fullatlas_core.py',
+    'shared/config/regions.json',
+    'shared/contracts/release-assets.json',
+    'shared/contracts/windows-update.json',
+    'scripts/extract-assets.mjs',
+    'scripts/sync-upstream.mjs',
+    'scripts/upstream-detect.mjs',
+    'scripts/upstream-windows-lock.mjs',
+    'scripts/upstream-release.mjs',
+    'scripts/installer-mirror.mjs',
+    'scripts/installer-cache.mjs',
+  ]) {
+    assert.ok(existsSync(path.join(repoRoot, name)), `缺少跨平台文件 ${name}`);
   }
 });

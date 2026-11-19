@@ -6,23 +6,21 @@
 | --- | --- | --- |
 | 做法 | Rust / Tauri 原生壳重写 | 给官方客户端打补丁并重打包 PE |
 | 为什么 | 官方没有 Mac 包 | 官方包本来能跑，重写没有收益 |
-| 运行时 | 原生 IPC 绑定 | Python 本地服务 + 本机 HTTP（端口 43229） |
+| 运行时 | 原生 IPC 绑定 | Rust 本地服务 + 本机 HTTP（端口 43229） |
 | 工具链 | Node + Rust + Xcode CLT + 7-Zip | PowerShell + Python + Rust（本地服务与启动器都是 Rust 产物） |
 | 产物 | `.dmg`（约 130 MiB，拖入「应用程序」） | `.exe` 安装包（NSIS，装完双击快捷方式即用） |
 
-两侧共用同一套构建链，但各自锁定自己那一条上游：国服 `upstream-cn.json`、国际服 `upstream-global.json`（都在本目录，安装包直链与 SHA-256 一并锁住）。服务区域由 `scripts/regions.mjs` 单点定义，构建脚本一律通过 `WUWA_REGION` 取，不各写一份。
+两侧共用同一份 canonical upstream lock：`shared/upstream/cn.json` 与 `shared/upstream/global.json`，同时记录安装包直链、SHA-256 和 Windows 主程序指纹。服务区域由 `shared/config/regions.json` 单点定义，构建脚本一律通过 `WUWA_REGION` 取。
 
 ## 目录
 
 ```text
 macos/
 ├─ src-tauri/            Rust 后端与 Tauri 配置（tauri.conf.json、tauri.global.conf.json）
-├─ scripts/              构建链：前端准备、注入、打包、上游同步与校验（*.mjs / *.js / package-macos.sh）
+├─ scripts/              Mac 专属构建脚本：前端准备、注入、图标、签名与 DMG 打包（通用上游/NSIS 提取在 ../scripts/）
 ├─ tests/                Mac 适配、注入、打包与平台集成测试
-├─ tools/                FullAtlas 集成器（Python）与前端结构检查器
-├─ fullatlas-source/     shared/frontend/ 生成的 Mac 构建输入
-├─ upstream-cn.json      国服官方客户端锁定版本、安装包直链与 SHA-256
-├─ upstream-global.json  国际服同上（版本与国服同步跟新）
+├─ tools/                FullAtlas 集成器适配器（调用 ../shared/tools/）
+├─ fullatlas-source/     ../shared/frontend/ 生成的 Mac 构建输入
 └─ rust-toolchain.toml   Rust 版本固定（1.97.1，CI 与本地共用）
 ```
 
@@ -57,7 +55,7 @@ npm run build:global
 npm run package:global # 产物名 WuwaTappo-Full-Global-Community-*-macOS-arm64.dmg
 ```
 
-区域差异全部由 `scripts/regions.mjs` 的 profile 决定：`frontend`/`frontend-global`、`build/frontend`/`build/frontend-global`、`icons`/`icons-global`、`tauri.conf.json`/`tauri.global.conf.json`、以及产物前缀。两者**不能交叉**：`prepare-frontend.mjs` 会校验入口模块里是否写着对应区域的 `APP_REGION`，`network-smoke.mjs` 还会拒绝另一服的源码，串了会直接报错而不是静默构建出错的包。
+区域差异全部由 `shared/config/regions.json` 决定，`scripts/regions.mjs` 只把它转换成 Mac profile：`frontend`/`frontend-global`、`build/frontend`/`build/frontend-global`、`icons`/`icons-global`、`tauri.conf.json`/`tauri.global.conf.json`、以及产物前缀。两者**不能交叉**：`prepare-frontend.mjs` 会校验入口模块里是否写着对应区域的 `APP_REGION`，`network-smoke.mjs` 还会拒绝另一服的源码，串了会直接报错而不是静默构建出错的包。
 
 FullAtlas 控制面板两个区域都注入（`integrateFullAtlas` 对国服/国际服各跑一遍），中间产物也按区域分开放在 `build/fullatlas-adapter-<cn|global>/`，所以同一工作区里先后构建两服不会互相覆盖结构快照。
 
@@ -73,8 +71,8 @@ WUWA_REGION=global node macos/scripts/inventory-contract.mjs   # 覆盖 tests/co
 
 ## 与 Windows 侧怎么分工
 
-- **共用**：三个助手前端模块唯一源位于仓库根 `shared/frontend/`，平台目录内副本由 `npm run sync:frontend` 生成并由 `frontend-sync.test.mjs` 严格校验。其余原生运行时和官方资源注入仍由平台适配器负责。
-- **不共用**：运行时、构建层、注入器范式完全不同（Rust/Tauri vs Python/PE 重打包），硬并只会造出一个到处 `if (platform === ...)` 的缝合怪。
+- **共用**：三个助手前端模块唯一源位于仓库根 `shared/frontend/`；助手主流程、FullAtlas 注入核心与「控制台」页签、状态/图鉴/Mod/更新/日志/配置等 Rust 领域逻辑均在 `shared/`；NSIS 解包与上游同步脚本位于根目录 `scripts/`。平台目录内前端副本由 `npm run sync:frontend` 生成并由测试严格校验。
+- **平台专属**：Tauri IPC、辅助功能/输入监控/窗口、DMG 打包，以及 Windows 的 PE 重打包、Win32 菜单/自启和本机 HTTP 传输。共享层不写平台分支。
 
 ## 应用内官方版本检测
 

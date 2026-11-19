@@ -51,6 +51,21 @@ fn root_dir() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "无法确定程序目录".into())
 }
 
+/// 探测响应是不是 200。
+///
+/// 只看状态码，不写死协议版本：`tiny_http` 按请求的版本回包，发 HTTP/1.0 就得到
+/// `HTTP/1.0 200 OK`。这里原来断言 `HTTP/1.1 200`，于是探测永远失败——启动器每次都
+/// 以为服务没起来，再起一个宿主；新宿主绑定同一端口失败直接退出，20 秒后报
+/// 「本地服务启动超时」。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn status_line_ok(response: &str) -> bool {
+    response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .is_some_and(|code| code == "200")
+}
+
 #[cfg(windows)]
 fn ready(address: SocketAddr) -> bool {
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
@@ -61,7 +76,7 @@ fn ready(address: SocketAddr) -> bool {
         return false;
     }
     let mut response = String::new();
-    stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.1 200")
+    stream.read_to_string(&mut response).is_ok() && status_line_ok(&response)
 }
 
 #[cfg(windows)]
@@ -98,10 +113,7 @@ fn elevate_app(root: &std::path::Path, app: &std::path::Path) -> Result<(), Stri
 #[cfg(windows)]
 fn run() -> Result<(), String> {
     let root = root_dir()?;
-    let config: Value = serde_json::from_slice(
-        &fs::read(root.join("local_config.json")).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
+    let config = wuwatappo_assistant_core::ensure_local_config(&root)?;
     let port = config
         .get("port")
         .and_then(Value::as_u64)
@@ -148,4 +160,29 @@ fn main() {
 #[cfg(not(windows))]
 fn main() {
     eprintln!("wuwatappo-launcher can only run on Windows");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_line_ok;
+
+    #[test]
+    fn accepts_ok_from_either_protocol_version() {
+        // tiny_http 对 HTTP/1.0 请求回 HTTP/1.0，而启动器发的正是 1.0；
+        // 两种版本都得认，否则探测永远失败。
+        assert!(status_line_ok("HTTP/1.0 200 OK\r\n\r\n"));
+        assert!(status_line_ok("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+        assert!(status_line_ok("HTTP/1.0 200 OK\n"));
+    }
+
+    #[test]
+    fn rejects_everything_that_is_not_200() {
+        assert!(!status_line_ok("HTTP/1.1 403 Forbidden\r\n\r\n"));
+        assert!(!status_line_ok("HTTP/1.0 404 Not Found\r\n\r\n"));
+        assert!(!status_line_ok("HTTP/1.0 2000 nope\r\n\r\n"));
+        assert!(!status_line_ok("HTTP/1.0\r\n\r\n"));
+        assert!(!status_line_ok(""));
+        // 端口被别的服务占着时，别把任意文本当成就绪。
+        assert!(!status_line_ok("SSH-2.0-OpenSSH_9.0\r\n"));
+    }
 }

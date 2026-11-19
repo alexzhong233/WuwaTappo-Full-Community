@@ -213,6 +213,40 @@ pub fn list_summaries(root: &Path, region: &str) -> Result<Vec<Summary>, String>
     }
     Ok(summaries)
 }
+/// 管理面板显示的状态；两平台只负责提供存储路径和 enabled/error 状态。
+pub fn status(root: &Path, region: &str, enabled: bool, error: Option<String>) -> Result<Value, String> {
+    let packs = list_details(root, region)?;
+    let item_count: usize = packs
+        .iter()
+        .map(|pack| pack["item_count"].as_u64().unwrap_or(0) as usize)
+        .sum();
+    let asset_count: usize = packs
+        .iter()
+        .map(|pack| pack["asset_count"].as_u64().unwrap_or(0) as usize)
+        .sum();
+    Ok(json!({
+        "installed": !packs.is_empty(),
+        "enabled": enabled,
+        "name": packs.iter().filter_map(|pack| pack["name"].as_str()).collect::<Vec<_>>().join("、"),
+        "atlas_count": item_count,
+        "asset_count": asset_count,
+        "packs": packs,
+        "region": region,
+        "error": error,
+    }))
+}
+
+/// Mod 叠加失败时返回官方数据并保留错误，避免图鉴整体不可用。
+pub fn merge_or_official(official: &Value, root: &Path, region: &str) -> (Value, Option<String>) {
+    match merge_official(official, root, region) {
+        Ok(value) => (value, None),
+        Err(error) => {
+            let mut fallback = official.clone();
+            fallback["atlas_count"] = json!(fallback["atlas"].as_array().map(Vec::len).unwrap_or(0));
+            (fallback, Some(error))
+        }
+    }
+}
 /// 管理面板用：每个包的条目明细 + 可直接渲染的缩略图引用。
 /// 引用格式与 catalog 里的 `url` 完全一致，前端用同一套解析还原成本地文件。
 pub fn list_details(root: &Path, region: &str) -> Result<Vec<Value>, String> {
@@ -612,6 +646,56 @@ pub fn install_archive(
     }
 }
 
+/// 把 `custom-assets/<pack>/<file…>` 解析成磁盘路径，拒绝路径穿越与隐藏临时目录。
+pub fn resolve_asset_file(root: &Path, key: &str) -> Option<PathBuf> {
+    let key = key.trim_start_matches('/');
+    let parts: Vec<&str> = key.split('/').collect();
+    if parts.len() < 3 || parts[0] != "custom-assets" {
+        return None;
+    }
+    if parts.iter().any(|part| {
+        part.is_empty()
+            || *part == "."
+            || *part == ".."
+            || part.contains(['\\', ':', '?', '#', '%'])
+            || part.chars().any(char::is_control)
+    }) {
+        return None;
+    }
+    // 隐藏目录是安装/回滚过程中的临时状态，不该被外部看到。
+    if parts[1].starts_with('.') {
+        return None;
+    }
+    let mut path = root.join(parts[1]).join("assets");
+    for part in &parts[2..] {
+        path.push(part);
+    }
+    let path = path.canonicalize().ok()?;
+    let base = root.canonicalize().ok()?;
+    if !path.starts_with(&base) || !path.is_file() {
+        return None;
+    }
+    Some(path)
+}
+
+/// Mod 资源路由使用的图片 MIME 类型映射；非图片后缀一律按二进制流返回。
+pub fn asset_mime_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
+        Some("avif") => "image/avif",
+        _ => "application/octet-stream",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -892,5 +976,38 @@ mod tests {
         assert_eq!(restored["atlas"], official()["atlas"]);
         assert_eq!(restored["catalog"], official()["catalog"]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn custom_asset_resolver_and_mime_enforce_boundaries() {
+        let base = temp_dir("resolve");
+        let pack = base.join("mod-0123456789abcdef").join("assets");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("icon.png"), b"png").unwrap();
+
+        let key = "custom-assets/mod-0123456789abcdef/icon.png";
+        assert_eq!(
+            resolve_asset_file(&base, key).map(|path| path.file_name().unwrap().to_owned()),
+            Some("icon.png".into())
+        );
+
+        for rejected in [
+            "custom-assets/../icon.png",
+            "custom-assets/mod-0123456789abcdef/../../etc/passwd",
+            "custom-assets/mod-0123456789abcdef/",
+            "custom-assets/.stage-1/icon.png",
+            "assets/mod-0123456789abcdef/icon.png",
+            "custom-assets/mod-0123456789abcdef\\icon.png",
+            "custom-assets/mod-0123456789abcdef/%2e%2e/icon.png",
+            "custom-assets/C:/Windows/System32/icon.png",
+            "custom-assets/mod-0123456789abcdef/missing.png",
+        ] {
+            assert!(resolve_asset_file(&base, rejected).is_none(), "{rejected}");
+        }
+
+        assert_eq!(asset_mime_type(Path::new("a.PNG")), "image/png");
+        assert_eq!(asset_mime_type(Path::new("a.webp")), "image/webp");
+        assert_eq!(asset_mime_type(Path::new("a.json")), "application/octet-stream");
+        let _ = fs::remove_dir_all(base);
     }
 }
