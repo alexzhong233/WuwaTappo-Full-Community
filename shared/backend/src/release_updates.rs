@@ -5,7 +5,7 @@ use std::{
     fs,
     io::{Read, Write},
     path::Path,
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -13,6 +13,157 @@ const REPOSITORY: &str = "alexzhong233/WuwaTappo-Full-Community";
 const COMMUNITY_RELEASES: &str =
     "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 const MAX_OFFICIAL_INSTALLER: u64 = 512 * 1024 * 1024;
+const UPDATE_CACHE_TTL_SECS: u64 = 15 * 60;
+
+#[derive(Clone)]
+struct CachedCommunityCheck {
+    key: (String, bool),
+    at_secs: u64,
+    value: Value,
+}
+
+/// 缓存最近一次社区版发布检查结果，避免页面轮询打爆 GitHub 匿名接口限流（60 次/小时）。
+#[derive(Default)]
+pub struct UpdateTracker {
+    cache: Mutex<Option<CachedCommunityCheck>>,
+}
+
+impl UpdateTracker {
+    pub fn check_community_cached(
+        &self,
+        current: &str,
+        include_prerelease: bool,
+        force: bool,
+    ) -> Value {
+        let now_secs = checked_at();
+        if !force {
+            let guard = self.cache.lock().unwrap();
+            if let Some(entry) = guard.as_ref() {
+                if entry.key.0 == current
+                    && entry.key.1 == include_prerelease
+                    && now_secs.saturating_sub(entry.at_secs) < UPDATE_CACHE_TTL_SECS
+                {
+                    return entry.value.clone();
+                }
+            }
+        }
+        match check_community(current, include_prerelease) {
+            Ok(value) => {
+                let mut guard = self.cache.lock().unwrap();
+                *guard = Some(CachedCommunityCheck {
+                    key: (current.to_owned(), include_prerelease),
+                    at_secs: checked_at(),
+                    value: value.clone(),
+                });
+                value
+            }
+            Err(error) => check_community_error(current, include_prerelease, &error),
+        }
+    }
+
+    /// 仅读取内存缓存构造 `/update/status` 响应，绝不发起联网请求。
+    pub fn policy_status(
+        &self,
+        current: &str,
+        include_prerelease: bool,
+        installable_platform: bool,
+    ) -> Value {
+        let cached = {
+            let guard = self.cache.lock().unwrap();
+            guard
+                .as_ref()
+                .filter(|entry| entry.key.0 == current && entry.key.1 == include_prerelease)
+                .map(|entry| entry.value.clone())
+        };
+        match cached {
+            Some(check) => policy_from_check(&check, installable_platform),
+            None => json!({
+                "required": false,
+                "current": current,
+                "repository": REPOSITORY,
+                "checked_at": 0,
+                "error": Value::Null,
+                "github_version": "",
+                "latest": "",
+                "available": false,
+                "installable": false,
+                "release_notes": "",
+                "release_url": COMMUNITY_RELEASES,
+                "message": "点击“检查更新”查看最新整合包版本。",
+            }),
+        }
+    }
+
+    pub fn policy_check(
+        &self,
+        current: &str,
+        include_prerelease: bool,
+        installable_platform: bool,
+        force: bool,
+    ) -> Value {
+        let check = self.check_community_cached(current, include_prerelease, force);
+        policy_from_check(&check, installable_platform)
+    }
+}
+
+pub fn check_community_error(current: &str, include_prerelease: bool, error: &str) -> Value {
+    json!({
+        "current": current,
+        "latest": "",
+        "updateAvailable": false,
+        "checked_at": checked_at(),
+        "error": error,
+        "message": format!("检查更新失败：{error}"),
+        "releaseUrl": COMMUNITY_RELEASES,
+        "pageUrl": COMMUNITY_RELEASES,
+        "releaseNotes": "",
+        "prereleaseIncluded": include_prerelease,
+    })
+}
+
+pub fn policy_from_check(check: &Value, installable_platform: bool) -> Value {
+    let current = check.get("current").and_then(Value::as_str).unwrap_or("");
+    let latest = check.get("latest").and_then(Value::as_str).unwrap_or("");
+    let available = check
+        .get("updateAvailable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let error = check.get("error").cloned().unwrap_or(Value::Null);
+    let has_error = error.as_str().is_some_and(|s| !s.is_empty());
+    let message = if has_error {
+        check
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("检查更新失败")
+            .to_owned()
+    } else if available {
+        if installable_platform {
+            format!("发现新版本 {latest}，可点击下方按钮下载并原地升级，或到 GitHub Releases 下载安装包。")
+        } else {
+            format!("发现新版本 {latest}，请到 GitHub Releases 下载对应安装包。")
+        }
+    } else {
+        check
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("检查更新失败")
+            .to_owned()
+    };
+    json!({
+        "required": false,
+        "current": current,
+        "repository": REPOSITORY,
+        "checked_at": check.get("checked_at").cloned().unwrap_or_else(|| json!(0)),
+        "error": error,
+        "github_version": if latest.is_empty() { "" } else { latest },
+        "latest": latest,
+        "available": available,
+        "installable": available && installable_platform,
+        "release_notes": check.get("releaseNotes").and_then(Value::as_str).unwrap_or(""),
+        "release_url": check.get("releaseUrl").and_then(Value::as_str).unwrap_or(COMMUNITY_RELEASES),
+        "message": message,
+    })
+}
 
 static RELEASE_CONTRACT: OnceLock<Value> = OnceLock::new();
 
@@ -721,5 +872,43 @@ mod tests {
 
         let html = r#"<div data-test-selector="body-content" class="markdown-body"><p><strong>修复</strong> &amp; 对齐</p><ul><li>Mac &amp; Win 同步</li></ul></div>"#;
         assert_eq!(release_notes_from_html(html), "修复 & 对齐\nMac & Win 同步");
+    }
+
+    #[test]
+    fn tracker_policy_status_never_fabricates_version_and_respects_prerelease_key() {
+        let tracker = UpdateTracker::default();
+        let uninitialized = tracker.policy_status("1.3.2-beta.2", false, true);
+        assert_eq!(uninitialized["checked_at"], 0);
+        assert_eq!(uninitialized["github_version"], "");
+        assert_eq!(uninitialized["available"], false);
+
+        *tracker.cache.lock().unwrap() = Some(CachedCommunityCheck {
+            key: ("1.3.2-beta.2".into(), true),
+            at_secs: checked_at(),
+            value: json!({
+                "current": "1.3.2-beta.2",
+                "latest": "1.3.2",
+                "updateAvailable": true,
+                "checked_at": 12345,
+                "releaseNotes": "fix",
+                "releaseUrl": COMMUNITY_RELEASES,
+                "message": "ok",
+            }),
+        });
+        let cached_hit = tracker.policy_status("1.3.2-beta.2", true, false);
+        assert_eq!(cached_hit["github_version"], "1.3.2");
+        assert_eq!(cached_hit["installable"], false);
+        assert_eq!(cached_hit["available"], true);
+
+        let prerelease_changed = tracker.policy_status("1.3.2-beta.2", false, true);
+        assert_eq!(prerelease_changed["checked_at"], 0);
+        assert_eq!(prerelease_changed["github_version"], "");
+
+        let err_policy = policy_from_check(
+            &check_community_error("1.3.2-beta.2", false, "network down"),
+            true,
+        );
+        assert_eq!(err_policy["github_version"], "");
+        assert_eq!(err_policy["error"], "network down");
     }
 }

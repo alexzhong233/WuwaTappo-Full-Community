@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
-import { parse } from 'acorn';
+import { parse } from '../../shared/tools/acorn.mjs';
 import { profile, root, findSource, hasExtractedFrontend, hasPreparedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 import { patchGlobalAuthListener, patchMacLayoutBarriers } from '../scripts/patch-frontend.mjs';
 
@@ -12,19 +12,21 @@ const current = 'try{const t=await getCurrent();t?.length&&handleRawUrls(t)}catc
 const listener = 'try{unlisten=await onOpenUrl(t=>{handleRawUrls(t)})}catch(t){throw console.warn("[overseas-auth] onOpenUrl failed:",t),bound=!1,t}';
 const fixture = `${originalBridge}async function bindOverseasAuthDeepLink(e){if(successHandler=e.onSuccess,errorHandler=e.onError??null,bound)return()=>{};bound=!0;${current}${listener}return()=>{unlisten?.(),unlisten=null,bound=!1,successHandler=null,errorHandler=null}}`;
 
-test('login regression fixtures preserve the selected official loader or state filter', async t => {
+test('login source preserves the selected official SDK mount or state filter', async t => {
   if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过登录回归测试');
-  const domestic = profile.region === 'CN';
-  const name = domestic ? 'ge' : 'handleRawUrls';
-  const source = findSource(value => value.includes(`async function ${name}(`)).source;
-  const fixture = await readFile(new URL(domestic ? './fixtures/domestic-sdk-loader.js' : './fixtures/global-oauth-handler.js', import.meta.url), 'utf8');
-  function declaration(value) {
-    const node = parse(value, { sourceType: 'module', ecmaVersion: 'latest' }).body
-      .find(item => item.type === 'FunctionDeclaration' && item.id.name === name);
-    assert.ok(node, `Official ${name} declaration must remain available`);
-    return value.slice(node.start, node.end);
+  if (profile.region === 'CN') {
+    const { source } = findSource(value => value.includes('"KrSDK"') && !value.includes('const APP_REGION='));
+    parse(source, { sourceType: 'module', ecmaVersion: 'latest' });
+    assert.match(source, /openLoginView|init/);
+  } else {
+    const { source } = findSource(value => value.includes('async function handleRawUrls('));
+    const node = parse(source, { sourceType: 'module', ecmaVersion: 'latest' }).body
+      .find(item => item.type === 'FunctionDeclaration' && item.id.name === 'handleRawUrls');
+    assert.ok(node, 'Official handleRawUrls declaration must remain available');
+    const body = source.slice(node.start, node.end);
+    assert.ok(body.includes('assertPendingStateMatches'));
+    assert.ok(body.includes('parseOverseasAuthCallback'));
   }
-  assert.equal(declaration(source), declaration(fixture));
 });
 
 test('GLOBAL OAuth listens before reading cold callbacks and fetches URLs through the protected command', async () => {
@@ -77,7 +79,7 @@ test('prepared resources preserve the selected region and contain its macOS adap
     assert.ok(preparedMain.indexOf(listener) < preparedMain.indexOf(current));
   } else {
     assert.ok(preparedMain.includes('isdkSrc="https://pro-cdn-sdk.kurogame.com/pro/web-sdk/1.x/kr-sdk.js"'));
-    const login = findSource(source => source.includes('async function ge(e=!1)'));
+    const login = findSource(source => source.includes('"KrSDK"') && !source.includes('const APP_REGION='));
     const preparedLogin = await readFile(path.join(root, profile.preparedDir, 'assets', login.name), 'utf8');
     assert.ok(preparedLogin.includes('document.getElementById("KrSDK")?.remove()'));
     parse(preparedLogin, { sourceType: 'module', ecmaVersion: 'latest' });

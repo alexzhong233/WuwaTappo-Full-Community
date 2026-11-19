@@ -40,6 +40,7 @@ pub struct FullAtlasState {
     catalog: Mutex<Option<Value>>,
     official_catalog: Mutex<Option<Value>>,
     custom_error: Mutex<Option<String>>,
+    updates: wuwatappo_assistant_core::release_updates::UpdateTracker,
 }
 
 fn unix_time() -> u64 {
@@ -70,13 +71,6 @@ const COMMUNITY_RELEASES_PAGE: &str =
 /// 全图鉴整合包的发布版本；与 `package.json` 同源（bump-version 同步 Cargo.toml）。
 fn community_current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-fn community_update_status(include_prerelease: bool) -> Result<Value, String> {
-    wuwatappo_assistant_core::release_updates::check_community(
-        community_current_version(),
-        include_prerelease,
-    )
 }
 
 fn official_update_status(region: crate::profile::Region) -> Result<Value, String> {
@@ -150,7 +144,18 @@ impl FullAtlasState {
             catalog: Mutex::new(None),
             official_catalog: Mutex::new(None),
             custom_error: Mutex::new(None),
+            updates: Default::default(),
         })
+    }
+    fn include_prerelease(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|inner| {
+                inner.assistant.saved()["settings"]["prerelease_updates"]
+                    .as_bool()
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
     }
     pub fn enabled(&self) -> bool {
         self.inner.lock().map(|v| v.saved.enabled).unwrap_or(true)
@@ -269,7 +274,7 @@ impl FullAtlasState {
             return Ok(crate::input::focused_text_context());
         }
         let offline = inner.assistant.app_enabled();
-        let result = inner.assistant.handle(
+        let mut result = inner.assistant.handle(
             action,
             body,
             unix_time() as f64,
@@ -281,6 +286,12 @@ impl FullAtlasState {
             &mut inner,
             action != "observe" || body.get("flush") == Some(&Value::Bool(true)),
         )?;
+        if let Some(runtime) = result.get_mut("runtime").and_then(Value::as_object_mut) {
+            runtime.insert(
+                "accessibility_granted".into(),
+                json!(crate::input::accessibility_granted()),
+            );
+        }
         Ok(result)
     }
     fn request(
@@ -312,19 +323,30 @@ impl FullAtlasState {
                 crate::system::open_pet_site(app, region)
                     .map(|()| json!({"ok": true, "url": region.pet_site()}))
             }
+            "accessibility/request" => {
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                let handle = app.clone();
+                if app
+                    .run_on_main_thread(move || {
+                        let _ = tx.send(crate::input::request_accessibility_access(&handle, true));
+                    })
+                    .is_ok()
+                {
+                    Ok(rx.recv().unwrap_or_else(|_| {
+                        json!({"ok": true, "granted": crate::input::accessibility_granted()})
+                    }))
+                } else {
+                    Ok(crate::input::request_accessibility_access(app, true))
+                }
+            }
             "community/version" => Ok(json!({"current": community_current_version()})),
             "community/update-check" => {
-                // 是否把预发布算进候选由设置决定；读不到设置时按“不含预发布”处理。
-                let include = self
-                    .inner
-                    .lock()
-                    .map(|inner| {
-                        inner.assistant.saved()["settings"]["prerelease_updates"]
-                            .as_bool()
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(false);
-                community_update_status(include)
+                let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
+                Ok(self.updates.check_community_cached(
+                    community_current_version(),
+                    self.include_prerelease(),
+                    force,
+                ))
             }
             "official/update-check" => {
                 official_update_status(crate::profile::Region::from_app(app))
@@ -424,9 +446,21 @@ impl FullAtlasState {
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"enabled":enabled,"mode_verified":true,"network_policy":"rooms-only"}))
             }
-            "update/status" | "update/check" | "update/healthy" => Ok(
-                json!({"required":false,"version":env!("CARGO_PKG_VERSION"),"message":UPDATE_MESSAGE}),
-            ),
+            "update/status" => Ok(self.updates.policy_status(
+                community_current_version(),
+                self.include_prerelease(),
+                false,
+            )),
+            "update/check" => {
+                let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
+                Ok(self.updates.policy_check(
+                    community_current_version(),
+                    self.include_prerelease(),
+                    false,
+                    force,
+                ))
+            }
+            "update/healthy" => Ok(json!({"healthy": true})),
             "update/install" => Err(UPDATE_MESSAGE.into()),
             "diagnostic" => {
                 wuwatappo_assistant_core::append_diagnostic(&self.dir, body);
@@ -435,7 +469,17 @@ impl FullAtlasState {
             name if name.starts_with("assistant/") => {
                 let quiet = app.state::<crate::input::InputMonitor>().status().running
                     && crate::input::physical_input_quiet();
-                self.assistant(name.trim_start_matches("assistant/"), body, quiet)
+                let result = self.assistant(name.trim_start_matches("assistant/"), body, quiet)?;
+                if name == "assistant/configure"
+                    && body.pointer("/settings/auto_emote").and_then(Value::as_bool) == Some(true)
+                    && !crate::input::accessibility_granted()
+                {
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        let _ = crate::input::request_accessibility_access(&handle, false);
+                    });
+                }
+                Ok(result)
             }
             _ => Err(format!("未知全图鉴操作：{action}")),
         }

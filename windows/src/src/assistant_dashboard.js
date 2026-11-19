@@ -200,7 +200,7 @@ function createAssistantDashboard(d){
       paintMode();refreshPacks();
       renderView=paintMode;
     }else if(key==='update'){
-      const u=card();el('h3','版本与更新',u);
+      const u=card();el('h3','版本与更新',u);const fields={};
       const versions=el('div',undefined,u,'wt-versions');
       const baseRow=el('div',undefined,versions,'wt-version'),baseText=el('div',undefined,baseRow);
       el('strong','当前版本（官方基底）',baseText);el('span','Kuro 官方客户端版本',baseText,'wt-muted');
@@ -214,7 +214,7 @@ function createAssistantDashboard(d){
       const check=button('检查更新',remoteRow,checkCommunity);
       const preRow=el('label',undefined,u,'wt-setting');const preText=el('div',undefined,preRow);
       el('h3','包含预发布版本',preText);el('p','关闭时只提醒正式版；打开后 alpha/beta 也算更新',preText,'wt-muted');
-      const preBox=el('input',undefined,preRow);preBox.type='checkbox';preBox.setAttribute('aria-label','包含预发布版本');preBox.onchange=()=>change({prerelease_updates:preBox.checked});fields.prerelease_updates=preBox;
+      const preBox=el('input',undefined,preRow);preBox.type='checkbox';preBox.setAttribute('aria-label','包含预发布版本');preBox.onchange=async()=>{await change({prerelease_updates:preBox.checked});installChecked=false;await checkCommunity();};fields.prerelease_updates=preBox;
       const updates=el('p','',u,'wt-notice');updates.style.margin='6px 0 0';
       // 下载/校验/解压/替换的实时进度：桌宠还活着时由本机服务写，重启后照样能读回来。
       const progress=el('div',undefined,u,'wt-progress');progress.hidden=true;
@@ -254,13 +254,22 @@ function createAssistantDashboard(d){
         catch(e){updates.textContent='打开失败：'+e.message;}
       }
       async function checkCommunity(){
-        check.disabled=true;updates.textContent='正在对比 GitHub 最新发布…';
+        check.disabled=true;
         try{
-          const r=await withTimeout(d.atlas.request('/community/update-check',{}),'GitHub 版本检查');
+          updates.textContent='正在对比 GitHub 最新发布…';
+          const r=await withTimeout(d.atlas.request('/community/update-check',{force:true}),'GitHub 版本检查');
           if(r.current)modValue.textContent=r.current;
-          if(r.latest)remoteValue.textContent=r.latest;
-          if(r.updateAvailable){updates.textContent='发现新版本 '+r.latest+'（当前 '+r.current+'）。';confirmUpdate(r);}
-          else updates.textContent=r.latest?'已是最新版本 '+r.current:'GitHub 上还没有已发布的安装包。';
+          if(r.error){
+            remoteValue.textContent='检查失败';
+            updates.textContent=r.message||('检查更新失败：'+r.error);
+          }else if(r.latest){
+            remoteValue.textContent=r.latest;
+            if(r.updateAvailable){updates.textContent='发现新版本 '+r.latest+'（当前 '+r.current+'）。';confirmUpdate(r);}
+            else updates.textContent='已是最新版本 '+r.current;
+          }else{
+            remoteValue.textContent='暂无发布';
+            updates.textContent=r.message||'GitHub 上还没有已发布的安装包。';
+          }
           // 检查更新的响应里也带说明正文（Windows 是 /update/status，macOS 与社区检查走 update-check），
           // 两种命名都认，免得两端各写一套字段名。
           paintNotes(r.release_notes||r.releaseNotes);
@@ -287,11 +296,20 @@ function createAssistantDashboard(d){
           const r=await d.atlas.request('/update/status',{});
           paintInstall(r.installation);
           if(r.github_version){remoteValue.textContent=r.github_version;modValue.textContent=r.current||modValue.textContent;}
-          // 还没联网检查过、或上次检查没留下结果时，别把「检测中…」永远挂在页面上。
-          else if(remoteValue.textContent==='检测中…')remoteValue.textContent='未检查';
+          else if(r.error){
+            if(remoteValue.textContent==='检测中…'||remoteValue.textContent==='未检查')remoteValue.textContent='检查失败';
+            if(!updates.textContent||updates.textContent==='正在对比 GitHub 最新发布…')updates.textContent=r.message||('检查更新失败：'+r.error);
+          }else if(r.checked_at){
+            if(remoteValue.textContent==='检测中…'||remoteValue.textContent==='未检查')remoteValue.textContent='暂无发布';
+          }else if(remoteValue.textContent==='检测中…')remoteValue.textContent='未检查';
           paintNotes(r.release_notes);
           // 打开更新页时补一次联网检查，否则 release_notes 和远端版本号都是空的。
-          if(!r.checked_at&&!installChecked){installChecked=true;d.atlas.request('/update/check',{}).then(pollInstall).catch(()=>{});}
+          if(!r.checked_at&&!installChecked){
+            installChecked=true;
+            d.atlas.request('/update/check',{}).then(pollInstall).catch(()=>{
+              if(remoteValue.textContent==='检测中…')remoteValue.textContent='未检查';
+            });
+          }
         }catch{}
       }
       function confirmUpdate(r){
@@ -317,7 +335,11 @@ function createAssistantDashboard(d){
         button('稍后',row,()=>gate.remove());
       }
       const sync=card();el('h3','本地图鉴资源',sync);el('p','本地开关只影响物品展示与本机装扮，登录、点数、开箱和版本检查仍使用原账号。',sync,'wt-muted');button('检查并同步官方图鉴',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'官方图鉴资源正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});
-      renderView=()=>{pollInstall();if(!installTimer)installTimer=window.setInterval(pollInstall,2000);};
+      renderView=()=>{
+        if(doc.activeElement!==preBox&&value?.settings)preBox.checked=!!value.settings.prerelease_updates;
+        pollInstall();
+        if(!installTimer)installTimer=window.setInterval(pollInstall,2000);
+      };
     }else{
       const c=card();el('h3','自动化设置',c);const fields={};
       for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；真实文字输入时随机弹出，联机沿用手动发送，后台连点不触发'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
@@ -343,13 +365,24 @@ function createAssistantDashboard(d){
         finally{localBox.disabled=false;}
       };
       const emoteHint=el('p','',c,'wt-muted');emoteHint.setAttribute('data-emote-hint','true');
+      const accessBtn=button('授权辅助功能（打字表情）',c,async()=>{
+        accessBtn.disabled=true;
+        try{
+          const r=await d.atlas.request('/accessibility/request',{});
+          notice.textContent=r?.granted?'辅助功能已授权':'已打开系统辅助功能授权引导，请在系统设置中勾选本应用';
+          await refresh();
+        }catch(e){notice.textContent='请求辅助功能权限失败：'+e.message;}
+        finally{accessBtn.disabled=false;}
+      });accessBtn.hidden=true;accessBtn.setAttribute('data-accessibility-btn','true');
       renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox'){input.checked=!!value.settings[k];input.disabled=k==='auto_click_balance'&&!value.settings.enabled&&!value.settings.auto_click_balance;}else input.value=value.settings[k];}
         if(doc.activeElement!==localBox)localBox.checked=!!d.atlas.enabled.value;
         localBox.disabled=!!d.atlas.busy.value;
-        const stats=d.atlas?.assistant?.emoteStats||{};
+        const stats=value?.runtime?.emote||d.atlas?.assistant?.emoteStats||{};
+        const noAccess=value?.runtime?.accessibility_granted===false||stats.reason==='no-access';
+        accessBtn.hidden=!value.settings.auto_emote||!noAccess;
         emoteHint.textContent=!value.settings.auto_emote?'打字自动表情已关闭'
+          :noAccess?'需要「系统设置 → 隐私与安全性 → 辅助功能」里允许本应用'
           :stats.reason==='no-selection'?'请先在背包装备至少一个表情'
-          :stats.reason==='no-access'?'需要「系统设置 → 隐私与安全性 → 辅助功能」里允许本应用'
           :stats.reason==='not-editable'?'尚未识别到文字输入框（当前焦点不在输入框）'
           :stats.sent?'本次已触发 '+stats.sent+' 次 · 持续打字间隔约 1.2～2.4 秒'
           :'待命中：真实文字输入时会随机弹出，走路/组合键不触发';};

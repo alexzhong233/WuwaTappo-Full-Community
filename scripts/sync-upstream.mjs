@@ -313,8 +313,6 @@ export async function syncUpstream(options = {}, projectRoot = root) {
     catch (error) { if (hadFrontend) await rename(backup, frontend); throw error; }
     if (options.updateLock) {
       target.schemaVersion = 2;
-      target.platforms = structuredClone(current.platforms || {});
-      if (comparison.changed) delete target.platforms.windows?.executable;
       await writeFile(lockPath, `${JSON.stringify(target, null, 2)}\n`);
     }
     await writeFile(path.join(work, profile.id === 'cn' ? 'upstream-extraction.json' : `upstream-${profile.id}-extraction.json`), result.stdout);

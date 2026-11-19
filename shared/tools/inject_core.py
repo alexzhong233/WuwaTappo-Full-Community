@@ -137,6 +137,34 @@ function localStartOnlineServices() {
 }''')
 
 
+def patch_display_version(text, community_version, official_version):
+    """官方设置页与升级提示显示「社区版本 · 基底 官方版本」，同时保留上传统计里的纯官方客户端版本。"""
+    community_json = json.dumps(str(community_version or '').strip())
+    official_json = json.dumps(str(official_version or '').strip())
+    telemetry_pattern = re.compile(r'cachedAppVersion\s*=\s*await getVersion\(\)')
+    text, telemetry_count = telemetry_pattern.subn(
+        f'cachedAppVersion = {official_json}', text
+    )
+    assert telemetry_count == 1, ('cachedAppVersion telemetry anchor', telemetry_count)
+    version_pattern = re.compile(
+        r'async function getVersion\(\)\s*\{\s*return invoke(?:\$1)?\("plugin:app\|version"\);?\s*\}'
+    )
+    replacement = (
+        'async function getVersion() {\n'
+        f'  let c = {community_json};\n'
+        '  try {\n'
+        '    const r = await window.__WUWA_LOCAL_ATLAS__?.request?.("/community/version", {});\n'
+        '    if (r && typeof r.current === "string" && r.current.trim()) c = r.current.trim();\n'
+        '  } catch {}\n'
+        f'  const b = {official_json};\n'
+        '  return b ? c + " · 基底 " + b : c;\n'
+        '}'
+    )
+    text, version_count = version_pattern.subn(lambda _m: replacement, text)
+    assert version_count == 1, ('official getVersion anchor', version_count)
+    return text
+
+
 def patch_invoke_guard(text, strict=False):
     """在 tauri invoke 包装函数入口插一句 checkInvoke。
 

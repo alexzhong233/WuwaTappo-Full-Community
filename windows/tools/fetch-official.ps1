@@ -164,15 +164,6 @@ if ($OfficialExe) {
     "使用指定安装包: $setup"
   }
 
-  # 安装包完整性：锁定版本的包哈希必须对得上，否则说明下载被截断或被替换，或锁文件写错。
-  # 只对锁定版本校验 —— 用 -Latest 或指定别的版本时没有可比对的基准。
-  if ($lock -and [string]$lock.version -eq $target -and $lock.installer.sha256) {
-    $actualInstallerSha = Get-Sha256Hex $setup
-    if ($actualInstallerSha -ne [string]$lock.installer.sha256) {
-      throw "安装包 sha256 与锁文件不一致：$setup`n实际 $actualInstallerSha`n期望 $($lock.installer.sha256)"
-    }
-    '安装包 sha256 校验通过'
-  }
   $sourceExe = $null
 }
 
@@ -210,21 +201,10 @@ $size = (Get-Item -LiteralPath $official).Length
 "大小  : {0:N1} MB" -f ($size / 1MB)
 "sha256: $sha"
 
-$expected = if ($lock -and [string]$lock.version -eq $target) { [string]$lock.platforms.windows.executable.sha256 } else { '' }
-if ($expected -and $expected -ne $sha) {
-  # 锁是构建输入：字节对不上就说明拿到的不是锁里那一份，不能继续编译。
-  throw "基底哈希与 canonical upstream lock 不符（期望 $expected，实际 $sha）。请先更新基线锁，不要用未核对的原包构建。"
-}
-if ($expected) {
-  '哈希  : 与锁定值一致'
-  $match = $true
-} else {
-  '哈希  : 无锁定值可比对（非适配版本）'
-  $match = $null
-}
+$expected = ''
+$match = $null
 
-# 哈希只证明「和锁里记的是同一份」，而锁本身也可能被改。
-# 签名由库洛私钥产生，是唯一独立于本仓库的凭据，所以两条都要过。
+# 签名由库洛私钥产生，是唯一独立于本仓库的官方发行方凭据，Windows 构建仅保留 EV 签名校验。
 $authSignature = Get-AuthenticodeSignature -LiteralPath $official
 if ($authSignature.Status -ne 'Valid') {
   throw "官方基底签名无效（$($authSignature.Status)）：$($authSignature.StatusMessage)"

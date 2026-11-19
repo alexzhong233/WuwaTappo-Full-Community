@@ -52,7 +52,6 @@ test('两个平台目录与跨平台入口都在位', () => {
     'scripts/extract-assets.mjs',
     'scripts/sync-upstream.mjs',
     'scripts/upstream-detect.mjs',
-    'scripts/upstream-windows-lock.mjs',
     'scripts/upstream-release.mjs',
     'scripts/installer-mirror.mjs',
     'scripts/installer-cache.mjs',

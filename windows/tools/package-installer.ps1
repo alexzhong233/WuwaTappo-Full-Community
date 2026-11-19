@@ -301,14 +301,12 @@ if ($LASTEXITCODE -ne 0) { throw "生成程序内升级包失败，退出码 $LA
 $zip = Join-Path $OutDir (Get-ReleaseAssetName -Profile $R -Kind windowsUpdate -Version $version)
 if (-not (Test-Path -LiteralPath $zip)) { throw "没有生成程序内升级包：$zip" }
 $zipSha = Get-Sha256Hex $zip
-"$zipSha  $(Split-Path $zip -Leaf)" | Set-Content -LiteralPath "$zip.sha256" -Encoding ASCII
 Write-Host ("  升级包: {0}（{1:N1} MB）" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1MB))
 
 if (-not $KeepStaging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 
 $exeSize = (Get-Item -LiteralPath $exe).Length
 $sha = Get-Sha256Hex $exe
-"$sha  $name" | Set-Content -LiteralPath "$exe.sha256" -Encoding ASCII
 
 ''
 '打包完成'

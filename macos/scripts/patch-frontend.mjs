@@ -147,4 +147,4 @@ export function patchMacLayoutBarriers(source) {
 }`;
   return helper + source;
 }
-import { parse } from 'acorn';
+import { parse } from '../../shared/tools/acorn.mjs';

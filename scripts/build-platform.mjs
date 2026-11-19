@@ -125,7 +125,6 @@ function checkWin() {
     const lock = readJson(lockPath);
     rows.push(['适配基底（锁）', lock.version, true]);
     rows.push(['安装包直链', lock.installer?.url ? '已配置' : '缺失', Boolean(lock.installer?.url)]);
-    rows.push(['Windows 基底指纹', lock.platforms?.windows?.executable?.sha256 ? '已配置' : '缺失', Boolean(lock.platforms?.windows?.executable?.sha256)]);
   } else {
     rows.push([lockName, '缺失', false]);
   }
@@ -219,9 +218,6 @@ function buildWin({ withPackage }) {
   const infoPath = join(WINDOWS, winBuildDir, 'official', 'current.json');
   if (!existsSync(infoPath)) throw new Error('fetch-official.ps1 未产出 build\\official\\current.json');
   const info = readJson(infoPath);
-  if (info.hash_matched === false) {
-    log(`\n警告：基底 ${info.version} 的哈希与锁定值不一致，注入锚点可能已漂移。`);
-  }
 
   section('注入并装配');
   call('build.ps1', ['-Extract', '-Base', info.base, ...(noRuntime ? ['-NoRuntime'] : [])]);

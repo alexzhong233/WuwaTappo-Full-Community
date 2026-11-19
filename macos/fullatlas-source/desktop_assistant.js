@@ -43,6 +43,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     if(!(mainDependencies.emotes?.()||[]).some(x=>x.id&&x.src)){emoteStats.reason='no-selection';return;}
     emoteBusy=true;
     try{
+      const probeAt=Date.now();
       const context=await request('typing-context');
       // 宿主自己都判不出来（UIA 起不来/超时/正忙）时不能静默跳过：那样这类机器上
       // 功能等于没开。降级成「连续打字就弹」，宁可偶尔多弹一次，也别一直不弹。
@@ -52,8 +53,9 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
         :context.reason==='accessibility-denied'?'no-access'
         :context.reason==='disabled'?'disabled':'not-editable';
       if(!context.editable&&!undecidable){nextEmoteAt=Date.now()+500;return;}
-      // 焦点判定和真正发出去之间有几十毫秒：这期间停了手、关了开关或锁了更新，就放弃这次。
-      if(disposed||!state.value.settings.auto_emote||updateRequired.value||mainDependencies.blocked()||Date.now()-lastTypedAt>500)return;
+      // 焦点判定和真正发出去之间可能有跨进程耗时（Windows UIA 首次唤醒 >500ms）；
+      // 只要发起探测前刚敲过键，且本次探测未超过 3 秒，就允许触发，避免首轮恒被吞。
+      if(disposed||!state.value.settings.auto_emote||updateRequired.value||mainDependencies.blocked()||probeAt-lastTypedAt>500||Date.now()-probeAt>3000)return;
       const current=(mainDependencies.emotes?.()||[]).filter(x=>x.id&&x.src);
       if(!current.length)return;
       mainDependencies.sendEmote(current[Math.floor(Math.random()*current.length)]);
@@ -86,7 +88,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     }catch(error){console.warn('[assistant] reward history pending',error);}
   }
   function observation(d){return {total:Number(d.total()),balance:Number(d.balance()),account:d.account(),
-    logged_in:!!d.loggedIn(),chests:d.chests?.()||{}};}
+    logged_in:!!d.loggedIn(),chests:d.chests?.()||{},emote:{...emoteStats}};}
   async function flush(){
     if(!mainDependencies)return;
     if(flushing)return flushing;
@@ -139,7 +141,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
         const autoClick=resolveBalanceAutoClick(state.value.settings,Number(d.balance()));
         if(autoClick!==null&&autoClick!==state.value.settings.enabled)
           state.value=await request('configure',{settings:{enabled:autoClick}});
-        const now=Date.now(),body={sent,confirmed};sent=confirmed=0;
+        const now=Date.now(),body={sent,confirmed,emote:{...emoteStats}};sent=confirmed=0;
         if(now-lastObserve>=1000){Object.assign(body,observation(d));lastObserve=now;await drainRewards();}
         const result=await request('tick',body);state.value={...state.value,...result};
         if(result.update_required&&!updateRequired.value)showRequiredUpdate(await atlas.request('/update/status',{}));

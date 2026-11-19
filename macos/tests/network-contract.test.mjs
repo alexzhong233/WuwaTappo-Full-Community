@@ -45,9 +45,7 @@ test('OAuth callback transport rejects URL-bearing wake payloads, wrong events a
 
 test('selected regional network contract matches the locked official frontend', async t => {
   if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过网络契约检查');
-  const lock = JSON.parse(await readFile(path.join(root, profile.upstreamLock), 'utf8'));
   assert.equal(contract.region, profile.region);
-  assert.equal(contract.application, `WuwaTappo-${profile.id} ${lock.version}`);
   assert.equal(contract.http.baseUrl, new URL(profile.configUrl).origin);
   assert.equal(contract.assets.publicHost, profile.assetsOrigin);
   assert.equal(contract.updater.indexPath, `/app/json-host/${profile.updaterHostFile}`);

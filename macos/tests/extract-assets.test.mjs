@@ -116,7 +116,7 @@ test('finds embedded NSIS by PE section end and bounded NSIS header', () => {
 });
 
 test('all static references in the recovered production frontend exist', async t => {
-  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过静态引用检查');
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过静态引用完整性检查');
   const root = path.resolve(import.meta.dirname, '..', profile.frontendDir);
   const entries = [];
   async function visit(directory) {

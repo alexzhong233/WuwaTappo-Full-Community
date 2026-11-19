@@ -64,11 +64,6 @@ jobs:
           const cn = cnLock.version;
           const global = globalLock.version;
           if (process.env.TAG !== `v${version}`) throw new Error('Tag does not match integration version');
-          for (const [label, lock] of [['国服', cnLock], ['国际服', globalLock]]) {
-            if (!lock.platforms?.windows?.executable?.sha256) {
-              throw new Error(`${label} canonical lock 缺少 Windows 主程序指纹，先跑同步工作流再发版`);
-            }
-          }
           // 六个产物缺一不可：两服 × 两平台（mac=dmg / win=exe），
           // Windows 每个服再带一个程序内升级 zip（桌宠里「一键更新」下载的就是它）。
           const expected = releaseAssetNames(version);
@@ -77,15 +72,12 @@ jobs:
           const notes = `docs/RELEASE_NOTES_${version}.md`;
           const body = existsSync(notes)
             ? readFileSync(notes, 'utf8')
-            : `# WuwaTappo Full Community ${version}\n\n社区版整合了官方客户端的本地图鉴与桌宠能力，国服与国际服分开打包。\n\n- macOS：Apple Silicon / macOS 13 及以上，下载 \`.dmg\` 拖入「应用程序」\n- Windows：下载 \`.exe\` 安装后双击快捷方式即可使用；已装旧版可在控制台「更新」里一键升级\n\n实验预发布，完整业务仍需验收。\n`;
+            : `# WuwaTappo Full Community ${version}\n\n社区版整合了官方客户端的本地图鉴与桌宠能力，国服与国际服分开打包。\n\n- macOS：Apple Silicon / macOS 13 及以上，下载 \`.dmg\` 拖入「应用程序」\n- Windows：下载 \`.exe\` 安装后双击快捷方式即用；已装旧版可在控制台「更新」里一键升级\n\n实验预发布，完整业务仍需验收。\n`;
           writeFileSync('/tmp/release-notes.md', `${body}\n\n官方基底：国服 ${cn} / 国际服 ${global}。\n`);
           writeFileSync('/tmp/assets.txt', [...expected.map(name => `dist/${name}`), 'dist/SHA256SUMS.txt'].join('\n') + '\n');
           NODE
           mapfile -t FILES < /tmp/assets.txt
           for FILE in "${FILES[@]}"; do ls -la "$FILE"; done
-          if compgen -G 'dist/*.sha256' > /dev/null; then
-            FILES+=(dist/*.sha256)
-          fi
           # 打 tag 就是发版，不再留草稿等人点发布；只有预发布号（-alpha/-beta/-rc）才打 prerelease 标记。
           if [[ "$TAG" == *-* ]]; then
             FLAGS=(--prerelease --latest=false)

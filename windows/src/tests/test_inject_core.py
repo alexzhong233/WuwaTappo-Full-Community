@@ -109,6 +109,18 @@ class SharedPatchTests(unittest.TestCase):
         self.assertIn('showTaskbarIcon: !1', out)
         self.assertIn('wuwatappo-settings-community-taskbar-v1', out)
 
+    def test_display_version_preserves_telemetry_and_formats_community_plus_base(self):
+        for invoke_fn in ('invoke', 'invoke$1'):
+            source = (
+                'try { cachedAppVersion = await getVersion() } catch {}\n'
+                f'async function getVersion() {{ return {invoke_fn}("plugin:app|version") }}\n'
+            )
+            out = inject_core.patch_display_version(source, '1.3.2-beta.2', '1.0.4')
+            self.assertIn('cachedAppVersion = "1.0.4"', out)
+            self.assertIn('c + " · 基底 " + b', out)
+            self.assertIn('"/community/version"', out)
+            self.assertNotIn('plugin:app|version', out)
+
 
 class HooksTests(unittest.TestCase):
     """默认钩子就是 macOS 的行为；平台文件不许把主流程抄回来。"""

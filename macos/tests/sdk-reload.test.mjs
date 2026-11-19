@@ -5,9 +5,7 @@ import vm from 'node:vm';
 import { patchDomesticLoginReload } from '../scripts/patch-frontend.mjs';
 import { profile, findSource, hasExtractedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 
-const original = profile.region === 'CN' && (hasExtractedFrontend || requireFrontendAssets)
-  ? findSource(source => source.includes('async function ge(e=!1)')).source
-  : await readFile(new URL('./fixtures/domestic-sdk-loader.js', import.meta.url), 'utf8');
+const original = await readFile(new URL('./fixtures/domestic-sdk-loader.js', import.meta.url), 'utf8');
 const renderer = await readFile(new URL('./fixtures/kuro-sdk-preact.js', import.meta.url), 'utf8');
 const patched = patchDomesticLoginReload(original);
 const loader = patched.slice(patched.indexOf('async function ge(e=!1)'), patched.indexOf('async function Se()'));
@@ -100,4 +98,12 @@ test('the actual bundled Preact skips a new SDK App on a stale root but renders 
   assert.equal(cleanRenders, 1);
   env.appended[0].onload();
   assert.equal(await pending, true);
+});
+
+test('domestic login reload patch still matches extracted CN frontend when available', t => {
+  if (profile.region !== 'CN') return t.skip('仅国服启用国内 SDK 重载补丁');
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过国服 SDK 重载实包验证');
+  const live = findSource(source => source.includes('"KrSDK"') && !source.includes('const APP_REGION=')).source;
+  const livePatched = patchDomesticLoginReload(live);
+  assert.ok(livePatched.includes('document.getElementById("KrSDK")?.remove()'));
 });

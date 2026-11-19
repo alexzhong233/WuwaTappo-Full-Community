@@ -11,9 +11,9 @@ import re
 import sys
 
 from inject_core import (apply_edits, function_for, load_build, named,
-                         patch_atlas_guards, patch_invoke_guard, patch_mod_asset_url,
-                         patch_mod_display_name, patch_online_services, patch_taskbar_default,
-                         replace)
+                         patch_atlas_guards, patch_display_version, patch_invoke_guard,
+                         patch_mod_asset_url, patch_mod_display_name, patch_online_services,
+                         patch_taskbar_default, replace)
 
 
 class FullAtlasHooks:
@@ -133,6 +133,16 @@ def integrate_fullatlas(project, hooks, integrate_assistant):
     shared = patch_taskbar_default(shared)
     shared = patch_mod_asset_url(shared)
     shared = patch_online_services(shared)
+    repo_pkg = project.parent / 'package.json'
+    if not repo_pkg.exists():
+        repo_pkg = project.parent.parent / 'package.json'
+    community_version = str(
+        config.get('community_version')
+        or config.get('mod_version')
+        or json.loads(repo_pkg.read_text(encoding='utf-8'))['version']
+    ).strip()
+    official_version = str(config.get('client_version') or '').strip()
+    shared = patch_display_version(shared, community_version, official_version)
     shared = patch_invoke_guard(shared, strict=hooks.strict_invoke)
     shared = patch_atlas_guards(shared, hooks.atlas_guard_extra)
 

@@ -1,9 +1,7 @@
 import { cp, mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import beautify from 'js-beautify';
-import { minify } from 'terser';
-import { parse } from 'acorn';
+import { parse } from '../../shared/tools/acorn.mjs';
 
 // The upstream adapter locates its anchors structurally, but the parsed layout it
 // relies on has to come from a real official build. 版本号不再作为准入条件：
@@ -19,6 +17,10 @@ export function adapterVersion(lock) {
 }
 
 export async function integrateFullAtlas(root, profile) {
+  const [{ default: beautify }, { minify }] = await Promise.all([
+    import('js-beautify'),
+    import('terser'),
+  ]);
   const version = adapterVersion(JSON.parse(await readFile(path.join(root, profile.upstreamLock), 'utf8')));
   // 每个区域一套中间产物：国服与国际服的共享模块名不同，混用会让后续步骤读到别人的结构。
   const stage = path.join(root, `build/fullatlas-adapter-${profile.id}`);
@@ -42,8 +44,9 @@ export async function integrateFullAtlas(root, profile) {
     if (result.status !== 0) throw new Error(`FullAtlas adapter failed (${command}, ${result.status})`);
   };
   run(process.execPath, ['../shared/tools/inspect_js.cjs', base, shared]);
+  const communityVersion = JSON.parse(await readFile(path.join(root, '../package.json'), 'utf8')).version;
   await writeFile(path.join(stage, 'current_base.txt'), base);
-  await writeFile(path.join(stage, 'local_config.json'), JSON.stringify({ client_version: version }));
+  await writeFile(path.join(stage, 'local_config.json'), JSON.stringify({ client_version: version, community_version: communityVersion }));
   const python = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
   run(python, ['tools/fullatlas-integration.py'], { ...process.env, WUWA_BUILD_ROOT: stage });
   const manifest = JSON.parse(await readFile(path.join(stage, 'build_manifest_v2.json'), 'utf8'));

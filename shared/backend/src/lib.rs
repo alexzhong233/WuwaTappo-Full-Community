@@ -364,7 +364,21 @@ impl AssistantCore {
                     {
                         self.state["baselines"] = json!({key: total});
                     }
+                    let prev_emote = self.runtime.get("emote").cloned();
                     self.runtime = json!({"total":total,"balance":body.get("balance"),"logged_in":body.get("logged_in")==Some(&Value::Bool(true)),"local_atlas":offline,"chests":body.get("chests"),"quiet":quiet,"connected":true,"seen_at":now});
+                    if let Some(emote) = body
+                        .get("emote")
+                        .filter(|v| v.is_object())
+                        .cloned()
+                        .or(prev_emote)
+                    {
+                        self.runtime["emote"] = emote;
+                    }
+                } else if let Some(emote) = body.get("emote").filter(|v| v.is_object()) {
+                    if !self.runtime.is_object() {
+                        self.runtime = json!({});
+                    }
+                    self.runtime["emote"] = emote.clone();
                 }
                 if action == "tick" {
                     let allowed = !update_required
@@ -615,6 +629,18 @@ fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
 }
 
 /// 读取或初始化本机运行配置：从 `package_config.json` 补齐公开字段并确保有效端口与随机令牌。
+const SYNC_PACKAGE_KEYS: [&str; 9] = [
+    "region",
+    "label",
+    "cdn_host",
+    "api_base",
+    "asset_count",
+    "atlas_count",
+    "client_version",
+    "mod_version",
+    "community_version",
+];
+
 pub fn ensure_local_config(root: &Path) -> Result<Value, String> {
     fs::create_dir_all(root).map_err(|error| error.to_string())?;
     let local_path = root.join("local_config.json");
@@ -622,10 +648,11 @@ pub fn ensure_local_config(root: &Path) -> Result<Value, String> {
     let mut map = read_json_object(&local_path).unwrap_or_default();
     if let Some(pkg) = read_json_object(&root.join("package_config.json")) {
         for (key, value) in pkg {
-            if key == "token" {
+            if key == "token" || key == "port" {
                 continue;
             }
-            if !map.contains_key(&key) {
+            let sync = SYNC_PACKAGE_KEYS.contains(&key.as_str());
+            if !map.contains_key(&key) || (sync && map.get(&key) != Some(&value)) {
                 map.insert(key, value);
                 changed = true;
             }
@@ -774,5 +801,74 @@ mod tests {
         let reloaded = ensure_local_config(&root).unwrap();
         assert_eq!(reloaded["token"], token);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_local_config_refreshes_version_fields_without_clobbering_token_or_port() {
+        let root = temp_root("config-upgrade");
+        fs::write(
+            root.join("local_config.json"),
+            json!({
+                "region": "cn",
+                "community_version": "1.3.1",
+                "mod_version": "1.3.1",
+                "client_version": "1.0.3",
+                "port": 49123,
+                "token": "0123456789abcdef0123456789abcdef",
+                "user_custom": "keep"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("package_config.json"),
+            json!({
+                "region": "cn",
+                "community_version": "1.3.2-beta.2",
+                "mod_version": "1.3.2-beta.2",
+                "client_version": "1.0.4",
+                "port": 51731,
+                "token": "ffffffffffffffffffffffffffffffff"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let upgraded = ensure_local_config(&root).unwrap();
+        assert_eq!(upgraded["community_version"], "1.3.2-beta.2");
+        assert_eq!(upgraded["mod_version"], "1.3.2-beta.2");
+        assert_eq!(upgraded["client_version"], "1.0.4");
+        assert_eq!(upgraded["port"], 49123);
+        assert_eq!(upgraded["token"], "0123456789abcdef0123456789abcdef");
+        assert_eq!(upgraded["user_custom"], "keep");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn assistant_persists_emote_stats_even_without_total_observation() {
+        let mut core = AssistantCore::new(None);
+        core.handle(
+            "tick",
+            &json!({"emote": {"sent": 3, "reason": "ok"}}),
+            1.0,
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(core.snapshot(2.0, false)["runtime"]["emote"]["sent"], 3);
+        assert_eq!(
+            core.snapshot(2.0, false)["runtime"]["emote"]["reason"],
+            "ok"
+        );
+        core.handle(
+            "observe",
+            &json!({"total": 10, "account": "a"}),
+            3.0,
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(core.snapshot(4.0, false)["runtime"]["emote"]["sent"], 3);
     }
 }

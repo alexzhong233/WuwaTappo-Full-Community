@@ -253,6 +253,7 @@ fn handle(invoke: Invoke) -> bool {
         input::get_input_status,
         input::get_input_access_diagnostics,
         input::request_input_access,
+        input::request_accessibility_permission,
         input::resume_input_monitor,
         session::session_snapshot,
         session::session_apply,

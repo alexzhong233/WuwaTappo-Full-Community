@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parse } from 'acorn';
+import { parse } from '../../shared/tools/acorn.mjs';
 import { getRegionProfile } from './regions.mjs';
 
 const profile = getRegionProfile();
@@ -10,7 +10,7 @@ const contractUrl = new URL(`../tests/network-contract${profile.id === 'global' 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export const contract = JSON.parse(await readFile(contractUrl, 'utf8'));
 
-export function verifyDomesticSdkAssetBinding(main, loginView) {
+export function verifyDomesticSdkAssetBinding(main, loginView, mainName = contract.source.main) {
   const exports = new Map();
   for (const node of parse(main, { sourceType: 'module', ecmaVersion: 'latest' }).body) {
     if (node.type === 'ExportNamedDeclaration') {
@@ -20,7 +20,7 @@ export function verifyDomesticSdkAssetBinding(main, loginView) {
   const tree = parse(loginView, { sourceType: 'module', ecmaVersion: 'latest' });
   const imports = new Map();
   for (const node of tree.body) {
-    if (node.type === 'ImportDeclaration' && node.source.value === `./${contract.source.main}`) {
+    if (node.type === 'ImportDeclaration' && (mainName ? node.source.value === `./${mainName}` : node.source.value.startsWith('./'))) {
       for (const item of node.specifiers) if (item.type === 'ImportSpecifier') imports.set(item.imported.name, item.local.name);
     }
   }
@@ -67,9 +67,22 @@ export function verifyGlobalCallbackBridge(source, { prepared = false } = {}) {
 }
 
 export async function verifySourceContract(assetDirectory = path.join(root, profile.frontendDir, 'assets'), { prepared = false } = {}) {
-  const [main, room, login, loginView] = await Promise.all(
-    ['main', 'room', 'login', 'loginView'].map((name) => readFile(path.join(assetDirectory, contract.source[name]), 'utf8')),
+  const names = (await readdir(assetDirectory)).filter(name => name.endsWith('.js'));
+  if (!names.length) {
+    throw Object.assign(new Error(`No JavaScript assets found in ${assetDirectory}`), { code: 'ENOENT' });
+  }
+  const modules = await Promise.all(
+    names.map(async name => ({ name, source: await readFile(path.join(assetDirectory, name), 'utf8') })),
   );
+  const mainEntry = modules.find(item => item.source.includes('APP_REGION="'));
+  const roomEntry = modules.find(item => item.source.includes('transports:["websocket"]'));
+  const loginEntry = modules.find(item => item.source.includes(contract.auth.secureLocalStorageKeys[0]));
+  const loginViewEntry = modules.find(item => item.source.includes('handleInlandSDKLogin') || item.source.includes('handleForeignSDKLogin'));
+  assert.ok(mainEntry, `Expected the ${contract.region} frontend build`);
+  assert.ok(roomEntry, 'Expected the room websocket module');
+  assert.ok(loginEntry, 'Expected the login module');
+  assert.ok(loginViewEntry, 'Expected the login view module');
+  const [main, room, login, loginView] = [mainEntry.source, roomEntry.source, loginEntry.source, loginViewEntry.source];
   const observed = [...main.matchAll(/jsonpClient\.(get|post|put|delete)\("([^"\n]+)"/g)]
     .map((match) => `${match[1].toUpperCase()} /${match[2].replace(/^\/+/, '')}`)
     .sort();
@@ -99,7 +112,7 @@ export async function verifySourceContract(assetDirectory = path.join(root, prof
     assert.ok(main.includes('"api/auth/player/query",{cuid:e,is_domestic:'), 'Domestic player query must carry an is_domestic flag');
     assert.ok(/\b[\w$]{1,3}\([^;]{0,160},"sdk",[\w$]+,[\w$]+,1\)/.test(login), 'Domestic SDK login must pass source=sdk and is_domestic=1');
     assert.ok(loginView.includes('handleInlandSDKLogin'), 'Login view must bind the domestic SDK callback');
-    verifyDomesticSdkAssetBinding(main, loginView);
+    verifyDomesticSdkAssetBinding(main, loginView, mainEntry.name);
     const scriptIsHttps = main.includes(`isdkSrc="${contract.auth.sdk.scriptUrl}"`);
     const stylesheetIsHttps = main.includes(`isdkCss="${contract.auth.sdk.stylesheetUrl}"`);
     assert.ok(scriptIsHttps || main.includes(`isdkSrc="${contract.auth.sdk.sourceScriptUrl}"`), 'Unexpected domestic SDK script URL');

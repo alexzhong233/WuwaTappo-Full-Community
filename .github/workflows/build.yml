@@ -80,7 +80,8 @@ jobs:
         env:
           WUWA_REQUIRE_PREPARED_FRONTEND: '1'
         run: |
-          npm test
+          npm run test:shared
+          npm run test:mac
           npm run test:fullatlas
           npm run test:rust
       - name: Build complete application

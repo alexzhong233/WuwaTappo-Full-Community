@@ -1,9 +1,40 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRegionProfile } from './regions.mjs';
+
+const PLACEHOLDER_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=', 'base64');
+const PLACEHOLDER_ICNS = Buffer.from('aWNucwAAAFRpY3A0AAAATIlQTkcNChoKAAAADUlIRFIAAAABAAAAAQgGAAAAHxXEiQAAAAtJREFUeJxjYAACAAAFAAF6Xqs/AAAAAElFTkSuQmCC', 'base64');
+
+async function ensureRustTestInputs() {
+  for (const dir of ['build/frontend', 'build/frontend-global']) {
+    const target = path.join(root, dir);
+    if (!existsSync(target)) {
+      await mkdir(target, { recursive: true });
+      await writeFile(path.join(target, 'index.html'), '<!doctype html><html><body></body></html>');
+    }
+  }
+  const catalog = path.join(root, 'build/fullatlas-catalog.json');
+  if (!existsSync(catalog)) {
+    await mkdir(path.dirname(catalog), { recursive: true });
+    await writeFile(catalog, '{}');
+  }
+  for (const iconDir of ['src-tauri/icons', 'src-tauri/icons-global']) {
+    const dir = path.join(root, iconDir);
+    await mkdir(dir, { recursive: true });
+    for (const [name, content] of [
+      ['32x32.png', PLACEHOLDER_PNG],
+      ['128x128.png', PLACEHOLDER_PNG],
+      ['128x128@2x.png', PLACEHOLDER_PNG],
+      ['icon.icns', PLACEHOLDER_ICNS],
+    ]) {
+      const file = path.join(dir, name);
+      if (!existsSync(file)) await writeFile(file, content);
+    }
+  }
+}
 
 // 平台实现都在 macos/ 下，所以这里的一切都相对 macos/ 解析；
 // 仓库根只放跨平台入口与共享产物（dist/、node_modules/），单独算一个 repoRoot。
@@ -38,6 +69,7 @@ async function main([action, ...extra]) {
   const profile = getRegionProfile();
   const cli = action === 'test:rust' ? null : resolveTauriCli();
   if (action === 'test:rust') {
+    await ensureRustTestInputs();
     const environment = { ...process.env };
     if (profile.tauriConfig) environment.TAURI_CONFIG = await readFile(path.join(root, profile.tauriConfig), 'utf8');
     run('cargo', ['test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml', ...extra], environment);

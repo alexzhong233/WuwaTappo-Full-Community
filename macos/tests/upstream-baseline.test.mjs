@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { getRegionProfile } from '../scripts/regions.mjs';
 
-// 一份 canonical upstream lock 同时供 macOS、Windows 和发布流水线读取。
-// Windows 只追加 platforms.windows 的主程序指纹，不再维护第二份版本/安装包锁。
+// 一份 canonical upstream lock 同时供 macOS、Windows 和发布流水线读取，
+// 只锁定官方版本、安装包地址与官方安装包校验信息。
 
 const read = path => JSON.parse(readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8'));
 
@@ -24,7 +24,6 @@ for (const item of regions) {
     const escaped = lock.version.replace(/\./g, '\\.');
     assert.match(lock.installer.url, new RegExp(`_${escaped}_x64-setup\\.exe$`));
     assert.match(lock.installer.sha256, /^[0-9a-f]{64}$/);
-    assert.match(lock.platforms.windows.executable.sha256, /^[0-9a-f]{64}$/);
-    assert.ok(lock.installer.size > 0 && lock.platforms.windows.executable.size > 0);
+    assert.ok(lock.installer.size > 0);
   });
 }

@@ -82,7 +82,15 @@ if (Test-Path -LiteralPath $atlasPath) {
 }
 if ($assetCount -eq 0) { Write-Warning '未找到素材缓存（assets\cache），产物不含离线图鉴' }
 
-$clientVersion = (Get-Item -LiteralPath $Official).VersionInfo.ProductVersion
+$clientVersion = ''
+if (Test-Path -LiteralPath $R.LockFile) {
+  try {
+    $clientVersion = [string]((Get-Content -LiteralPath $R.LockFile -Raw -Encoding UTF8 | ConvertFrom-Json).version)
+  } catch { $clientVersion = '' }
+}
+if (-not $clientVersion) {
+  $clientVersion = ([string](Get-Item -LiteralPath $Official).VersionInfo.ProductVersion) -replace '^(\d+\.\d+\.\d+)\.0$', '$1'
+}
 if (-not $clientVersion) { $clientVersion = '0.0.0' }
 # 整合版本（上游 MOD 补丁号）：与「全图鉴版本」是两个概念，改补丁时手动抬这里。
 # 以前是读上游 build.py 里的 MOD_VERSION，那份脚本已随 Python 宿主一起删掉。

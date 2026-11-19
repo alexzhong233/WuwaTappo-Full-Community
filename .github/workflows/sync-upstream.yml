@@ -88,11 +88,9 @@ jobs:
           set -euo pipefail
           if [ "$CN_CHANGED" = "true" ]; then
             WUWA_REGION=cn node scripts/sync-upstream.mjs --update-lock
-            WUWA_REGION=cn node scripts/upstream-windows-lock.mjs
           fi
           if [ "$GLOBAL_CHANGED" = "true" ]; then
             WUWA_REGION=global node scripts/sync-upstream.mjs --update-lock
-            WUWA_REGION=global node scripts/upstream-windows-lock.mjs
           fi
       - name: Read resulting baseline versions
         id: versions

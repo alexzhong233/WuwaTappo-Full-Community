@@ -41,10 +41,15 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '24'
+          cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shared/backend
 
       - name: Test shared Rust backend
         run: cargo test --locked --manifest-path shared/backend/Cargo.toml
@@ -60,7 +65,10 @@ jobs:
       # 与 macOS 工作流跑同一套共享测试：前端单一源、host 路由、注入器契约
       # 和跨平台回归都在这里挡住，避免 Windows 单独触发构建时绕过共享门禁。
       - name: Test shared frontend and host contracts
-        run: npm test
+        shell: pwsh
+        run: |
+          npm run test:shared
+          npm run test:win
 
       # 注入器链仍是 Python（运行期本地宿主、素材同步与原地更新打包均已迁入 shared/backend Rust）：
       # 这里跑 test_inject* 覆盖 shared/tools/inject_core.py 与 assistant_core.py —— 坏了会同时影响双端构建。
@@ -160,8 +168,6 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             dist/*Windows-x64*.exe
-            dist/*Windows-x64*.exe.sha256
             dist/*win-x64-update.zip
-            dist/*win-x64-update.zip.sha256
           if-no-files-found: error
           retention-days: 14

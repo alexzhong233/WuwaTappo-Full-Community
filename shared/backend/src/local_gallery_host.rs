@@ -38,6 +38,7 @@ struct App {
     custom_error: Mutex<Option<String>>,
     sync: Mutex<Value>,
     focus_probe: Mutex<Option<(Instant, Value)>>,
+    updates: wuwatappo_assistant_core::release_updates::UpdateTracker,
 }
 
 #[cfg(windows)]
@@ -209,35 +210,44 @@ fn typing_context(app: &App) -> Value {
     value
 }
 
-fn community_update(app: &App) -> Value {
+fn community_current_version(app: &App) -> String {
     let configured = config_value(app, "community_version");
-    let current = configured
+    configured
         .as_str()
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| {
+        .or_else(|| {
             config_value(app, "mod_version")
                 .as_str()
-                .unwrap_or("0.0.0")
-                .to_owned()
-        });
-    let include_prerelease = app
-        .assistant
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
+}
+
+fn include_prerelease(app: &App) -> bool {
+    app.assistant
         .lock()
         .unwrap()
         .saved()
         .pointer("/settings/prerelease_updates")
         .and_then(Value::as_bool)
-        .unwrap_or(false);
-    match wuwatappo_assistant_core::release_updates::check_community(&current, include_prerelease) {
-        Ok(value) => value,
-        Err(error) => json!({
-            "current":current,"latest":"","updateAvailable":false,"checked_at":now(),
-            "error":error,"message":format!("检查更新失败：{error}"),
-            "releaseUrl":"https://github.com/alexzhong233/WuwaTappo-Full-Community/releases",
-            "pageUrl":"https://github.com/alexzhong233/WuwaTappo-Full-Community/releases"
-        }),
-    }
+        .unwrap_or(false)
+}
+
+fn community_update(app: &App, force: bool) -> Value {
+    let current = community_current_version(app);
+    let prerelease = include_prerelease(app);
+    let mut value = app
+        .updates
+        .check_community_cached(&current, prerelease, force);
+    value["installable"] = json!(
+        value
+            .get("updateAvailable")
+            .and_then(Value::as_bool)
+            == Some(true)
+    );
+    value
 }
 
 fn official_update(app: &App) -> Value {
@@ -797,12 +807,16 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         };
     }
     match path {
+        "/accessibility/request" => response(request, 200, json!({"ok":true,"granted":true})),
         "/community/version" => response(
             request,
             200,
-            json!({"current":config_value(app, "community_version").as_str().unwrap_or("")}),
+            json!({"current":community_current_version(app)}),
         ),
-        "/community/update-check" => response(request, 200, community_update(app)),
+        "/community/update-check" => {
+            let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
+            response(request, 200, community_update(app, force))
+        }
         "/official/update-check" | "/official/check" => {
             response(request, 200, official_update(app))
         }
@@ -835,65 +849,49 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
             let url = pet_site_url(app);
             response(request, 200, open_url(&url))
         }
-        "/update/status" | "/update/check" => {
-            let check = community_update(app);
-            let latest = check["latest"].as_str().unwrap_or("").to_owned();
-            let available = check["updateAvailable"].as_bool().unwrap_or(false);
-            let message = if available {
-                format!("发现新版本 {latest}，请到 GitHub Releases 下载 Windows 安装包。")
-            } else {
-                check["message"]
-                    .as_str()
-                    .unwrap_or("更新检查失败")
-                    .to_owned()
-            };
-            response(
-                request,
-                200,
-                json!({
-                    "required":false,"current":check["current"],"repository":"alexzhong233/WuwaTappo-Full-Community",
-                    "checked_at":check["checked_at"],"error":check["error"],
-                    "github_version":if latest.is_empty(){check["current"].clone()}else{json!(latest)},
-                    "latest":latest,"available":available,"installable":available,
-                    "release_notes":check["releaseNotes"],"release_url":check["releaseUrl"],"message":message
-                }),
+        "/update/status" => {
+            let mut status = app.updates.policy_status(
+                &community_current_version(app),
+                include_prerelease(app),
+                true,
             );
+            if let Some(installation) =
+                wuwatappo_assistant_core::release_installer::read_progress(&app.root)
+            {
+                status["installation"] = installation;
+            }
+            response(request, 200, status)
+        }
+        "/update/check" => {
+            let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
+            let mut status = app.updates.policy_check(
+                &community_current_version(app),
+                include_prerelease(app),
+                true,
+                force,
+            );
+            if let Some(installation) =
+                wuwatappo_assistant_core::release_installer::read_progress(&app.root)
+            {
+                status["installation"] = installation;
+            }
+            response(request, 200, status)
         }
         "/update/healthy" => {
-            let version = config_value(app, "community_version");
-            wuwatappo_assistant_core::release_installer::ack_healthy(
-                &app.root,
-                version.as_str().unwrap_or(""),
-            );
+            let version = community_current_version(app);
+            wuwatappo_assistant_core::release_installer::ack_healthy(&app.root, &version);
             response(request, 200, json!({"healthy":true}))
         }
         "/update/install" => {
-            let configured = config_value(app, "community_version");
-            let current = configured
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    config_value(app, "mod_version")
-                        .as_str()
-                        .unwrap_or("")
-                        .to_owned()
-                });
-            let include_prerelease = app
-                .assistant
-                .lock()
-                .unwrap()
-                .saved()
-                .pointer("/settings/prerelease_updates")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+            let current = community_current_version(app);
+            let prerelease = include_prerelease(app);
             let region_id = config_value(app, "region")
                 .as_str()
                 .unwrap_or("cn")
                 .to_owned();
             match wuwatappo_assistant_core::release_updates::community_installer(
                 &current,
-                include_prerelease,
+                prerelease,
                 &region_id,
             ) {
                 Ok(candidate) => match wuwatappo_assistant_core::release_installer::prepare(
@@ -1120,6 +1118,7 @@ fn main() {
         custom_error: Mutex::new(None),
         sync: Mutex::new(json!({"status":"idle","done":0,"total":0,"checked_at":0})),
         focus_probe: Mutex::new(None),
+        updates: Default::default(),
     });
     println!(
         "{}",
@@ -1155,6 +1154,7 @@ mod tests {
             custom_error: Mutex::new(None),
             sync: Mutex::new(json!({"status":"idle","checked_at":0})),
             focus_probe: Mutex::new(None),
+            updates: Default::default(),
         };
         fs::write(root.join("cache/assets/a.png"), b"png").unwrap();
         fs::write(

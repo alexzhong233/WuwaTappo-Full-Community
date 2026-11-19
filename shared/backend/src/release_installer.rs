@@ -17,8 +17,42 @@ const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED: u64 = 1024 * 1024 * 1024;
 const MAX_MANIFEST: u64 = 2 * 1024 * 1024;
 const MAX_ENTRIES: usize = 5000;
+const PROGRESS_MAX_AGE_SECS: u64 = 900;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn write_progress(root: &Path, job: &Path, phase: &str, percent: f64, message: &str) {
+    let payload = json!({
+        "phase": phase,
+        "percent": percent,
+        "message": message,
+        "updated_at": now_secs(),
+    });
+    if job.exists() {
+        let _ = atomic_json(&job.join("progress.json"), &payload);
+    }
+    let updates = root.join(".updates");
+    let _ = fs::create_dir_all(&updates);
+    let _ = atomic_json(&updates.join("install-current.json"), &payload);
+}
+
+/// 读取最近 15 分钟内（未过期）的升级进度快照。
+pub fn read_progress(root: &Path) -> Option<Value> {
+    let bytes = fs::read(root.join(".updates").join("install-current.json")).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let updated_at = value.get("updated_at").and_then(Value::as_u64)?;
+    if now_secs().saturating_sub(updated_at) > PROGRESS_MAX_AGE_SECS {
+        return None;
+    }
+    Some(value)
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,12 +156,16 @@ fn atomic_json(path: &Path, value: &Value) -> Result<(), String> {
     replace_path(&temp, path).map_err(|error| error.to_string())
 }
 
-fn download(
+fn download_with_progress<F>(
     url: &str,
     target: &Path,
     expected_size: u64,
     expected_sha: &str,
-) -> Result<(), String> {
+    mut on_progress: F,
+) -> Result<(), String>
+where
+    F: FnMut(u64, u64),
+{
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(300))
         .connect_timeout(Duration::from_secs(10))
@@ -150,6 +188,7 @@ fn download(
     let mut file = File::create(target).map_err(|error| error.to_string())?;
     let mut hasher = Sha256::new();
     let mut total = 0u64;
+    let mut last_reported = 0u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
         let read = response
@@ -165,6 +204,10 @@ fn download(
         hasher.update(&buffer[..read]);
         file.write_all(&buffer[..read])
             .map_err(|error| error.to_string())?;
+        if total == expected_size || total.saturating_sub(last_reported) >= 256 * 1024 {
+            last_reported = total;
+            on_progress(total, expected_size);
+        }
     }
     file.flush().map_err(|error| error.to_string())?;
     if total != expected_size {
@@ -383,11 +426,25 @@ pub fn prepare(root: &Path, candidate: &Value) -> Result<Value, String> {
     );
     let job = root.join(".updates").join(&job_id);
     fs::create_dir_all(&job).map_err(|error| error.to_string())?;
+    write_progress(root, &job, "download", 0.0, "正在下载升级包…");
     let prepared = (|| {
         let archive = job.join("download.zip");
-        download(url, &archive, size, sha)?;
+        download_with_progress(url, &archive, size, sha, |done, total| {
+            let ratio = done as f64 / total.max(1) as f64;
+            let bar_pct = (ratio * 75.0).min(75.0);
+            let dl_pct = (ratio * 100.0).min(100.0);
+            write_progress(
+                root,
+                &job,
+                "download",
+                bar_pct,
+                &format!("正在下载升级包（{dl_pct:.0}%）"),
+            );
+        })?;
+        write_progress(root, &job, "extract", 80.0, "正在解压并校验升级包…");
         let stage = job.join("stage");
         extract_archive(&archive, &stage, version)?;
+        write_progress(root, &job, "apply", 85.0, "准备重启并应用更新…");
         let helper = job.join("helper");
         fs::create_dir_all(&helper).map_err(|error| error.to_string())?;
         fs::copy(
@@ -403,6 +460,7 @@ pub fn prepare(root: &Path, candidate: &Value) -> Result<Value, String> {
     })();
     if let Err(error) = prepared {
         let _ = fs::remove_dir_all(&job);
+        write_progress(root, &job, "failed", 0.0, &format!("准备更新失败：{error}"));
         return Err(error);
     }
     Ok(json!({"restarting":true,"job":job_id,"version":version,
@@ -573,6 +631,7 @@ pub fn apply_update(root: &Path, stage: &Path) -> Result<(), String> {
     let job = stage.parent().ok_or("升级舞台路径无效")?;
     std::thread::sleep(Duration::from_secs(2));
     wait_for_app_exit()?;
+    write_progress(root, job, "apply", 90.0, "正在替换程序文件…");
     let manifest: Value = serde_json::from_slice(
         &fs::read(stage.join("update_manifest.json")).map_err(|error| error.to_string())?,
     )
@@ -585,6 +644,7 @@ pub fn apply_update(root: &Path, stage: &Path) -> Result<(), String> {
     let changed = match apply_files(root, stage, job) {
         Ok(changed) => changed,
         Err(error) => {
+            write_progress(root, job, "failed", 0.0, &format!("替换文件失败：{error}"));
             let _ = launch(root);
             let _ = atomic_json(&job.join("result.json"), &json!({"ok":false,"error":error}));
             return Err(error);
@@ -592,6 +652,13 @@ pub fn apply_update(root: &Path, stage: &Path) -> Result<(), String> {
     };
     if let Err(error) = launch(root).and_then(|_| wait_healthy(job)) {
         rollback(root, job, &changed);
+        write_progress(
+            root,
+            job,
+            "failed",
+            0.0,
+            &format!("新版本启动失败，已回滚：{error}"),
+        );
         let _ = launch(root);
         let _ = atomic_json(&job.join("result.json"), &json!({"ok":false,"error":error}));
         return Err(error);
@@ -602,6 +669,7 @@ pub fn apply_update(root: &Path, stage: &Path) -> Result<(), String> {
     let _ = fs::remove_file(job.join("download.zip"));
     let _ = fs::remove_file(job.join("pending.json"));
     let _ = fs::remove_dir_all(stage);
+    write_progress(root, job, "complete", 100.0, "更新完成！");
     atomic_json(
         &job.join("result.json"),
         &json!({"ok":true,"version":version}),
@@ -1053,6 +1121,26 @@ mod tests {
         assert!(extracted_cfg.get("token").is_none());
         assert!(!stage.join("local_config.json").exists());
         assert!(!stage.join("cache").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn install_progress_writes_and_expires_after_ttl() {
+        let root = temp_dir("progress");
+        let job = root.join(".updates/job-1");
+        fs::create_dir_all(&job).unwrap();
+        write_progress(&root, &job, "extract", 80.0, "正在解压");
+        let current = read_progress(&root).unwrap();
+        assert_eq!(current["phase"], "extract");
+        assert_eq!(current["percent"], 80.0);
+        assert!(job.join("progress.json").exists());
+
+        atomic_json(
+            &root.join(".updates/install-current.json"),
+            &json!({"phase": "download", "percent": 10.0, "updated_at": 1}),
+        )
+        .unwrap();
+        assert!(read_progress(&root).is_none());
         let _ = fs::remove_dir_all(root);
     }
 }

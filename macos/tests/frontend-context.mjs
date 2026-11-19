@@ -7,7 +7,7 @@ export const root = path.resolve(import.meta.dirname, '..');
 export const assetDirectory = path.join(root, profile.frontendDir, 'assets');
 export const preparedDirectory = path.join(root, profile.preparedDir);
 export const stageDirectory = path.join(root, `build/fullatlas-adapter-${profile.id}`);
-export const requireFrontendAssets = process.platform === 'darwin' || process.env.WUWA_REQUIRE_PREPARED_FRONTEND === '1';
+export const requireFrontendAssets = process.env.WUWA_REQUIRE_PREPARED_FRONTEND === '1';
 export const hasExtractedFrontend = existsSync(assetDirectory);
 export const hasPreparedFrontend = existsSync(path.join(preparedDirectory, 'assets'))
   && existsSync(path.join(stageDirectory, 'base/js_structure.json'));

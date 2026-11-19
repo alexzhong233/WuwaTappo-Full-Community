@@ -93,7 +93,6 @@ if (-not $KeepStaging) { Remove-Item -LiteralPath $staging -Recurse -Force -Erro
 
 $zipSize = (Get-Item -LiteralPath $zip).Length
 $sha = Get-Sha256Hex $zip
-"$sha  $name" | Set-Content -LiteralPath "$zip.sha256" -Encoding ASCII
 
 ''
 '打包完成'

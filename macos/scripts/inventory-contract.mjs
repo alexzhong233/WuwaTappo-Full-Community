@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { getRegionProfile } from './regions.mjs';
 
 const require = createRequire(import.meta.url);
-const { parse } = require(process.env.WUWA_ACORN_PATH || 'acorn');
+const { parse } = require(process.env.WUWA_ACORN_PATH || '../../shared/tools/acorn.cjs');
 const unknown = Symbol('unknown');
 const roles = new Set(['invoke', 'invoke$1', 'listen', 'listen$1', 'once', 'emit', 'emitTo']);
 const number = { type: 'number' }, string = { type: 'string' }, boolean = { type: 'boolean' };

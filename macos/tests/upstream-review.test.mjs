@@ -36,13 +36,15 @@ test('candidate summaries separate source churn from named command, payload and 
 
 test('candidate inventory is review evidence and never overwrites the accepted fixtures or resource lock', async t => {
   const profile = { ...getRegionProfile(), upstreamLock: 'upstream-cn.json' };
-  const assets = path.join(root, profile.frontendDir, 'assets');
-  if (!existsSync(assets) && !requireFrontendAssets) return t.skip(`缺少 ${profile.frontendDir}，先跑 npm run setup`);
+  const sourceAssets = path.join(root, profile.frontendDir, 'assets');
+  if (!existsSync(sourceAssets) && !requireFrontendAssets) {
+    return t.skip(`缺少 ${profile.frontendDir}，先跑 npm run setup`);
+  }
   const directory = await mkdtemp(path.join(tmpdir(), 'wuwa-upstream-review-'));
   try {
     await mkdir(path.join(directory, 'tests'));
     await mkdir(path.join(directory, profile.frontendDir));
-    await symlink(assets, path.join(directory, profile.frontendDir, 'assets'), 'dir');
+    await symlink(sourceAssets, path.join(directory, profile.frontendDir, 'assets'), 'dir');
     const filename = profile.id === 'cn' ? 'contracts.json' : 'contracts-global.json';
     const accepted = await readFile(path.join(root, 'tests', filename), 'utf8');
     const lock = JSON.stringify({ version: '9.9.9' });

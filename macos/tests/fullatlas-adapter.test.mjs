@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { parse } from 'acorn';
+import { parse } from '../../shared/tools/acorn.mjs';
 import { test } from 'node:test';
 import { adapterVersion } from '../scripts/fullatlas-frontend.mjs';
 import { getRegionProfile } from '../scripts/regions.mjs';
