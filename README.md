@@ -1,6 +1,6 @@
 # WuwaTappo Full Community
 
-> 当前整合版本为 **1.3.2-beta.1**（与 `package.json` 同步），Windows / macOS 国服与国际服均锁定官方客户端 **1.0.4**。FullAtlas 1.3.4–1.3.8 中适用于本项目双平台架构的功能已同步；前端三模块、注入核、控制台页签与 Rust 领域服务均收敛至根目录单一源码维护。详见 [架构说明](docs/ARCHITECTURE.md) 与 [开发说明](docs/DEVELOPMENT.md)。
+> 当前整合版本为 **1.3.2-beta.2**（与 `package.json` 同步），Windows / macOS 国服与国际服均锁定官方客户端 **1.0.4**。FullAtlas 1.3.4–1.3.8 中适用于本项目双平台架构的功能已同步；前端三模块、注入核、控制台页签与 Rust 领域服务均收敛至根目录单一源码维护。详见 [架构说明](docs/ARCHITECTURE.md) 与 [开发说明](docs/DEVELOPMENT.md)。
 
 让《鸣潮》桌宠在 macOS 和 Windows 上运行，并在原有面板中加入本地全图鉴和桌面助手。
 
@@ -65,7 +65,7 @@ npm run build:check -- --platform=win
 | --- | --- |
 | 服务区域 | 国服与国际服都构建：两个平台锁定同一份官方 1.0.4 基底，产物名带 `Full-CN-Community` / `Full-Global-Community` |
 | 系统 | macOS：Apple Silicon（M 系列），macOS 13 及以上；Windows：10/11 x64 |
-| 整合版本 | 与仓库根 `package.json` 同源（当前 `1.3.2-beta.1`），基于官方客户端 1.0.4 与 FullAtlas 兼容功能集；两个平台同一基底 |
+| 整合版本 | 与仓库根 `package.json` 同源（当前 `1.3.2-beta.2`），基于官方客户端 1.0.4 与 FullAtlas 兼容功能集；两个平台同一基底 |
 | 分支 | `main` 为 1.0.4 基底，两个平台同仓共用；`dev` 用于开发版；`official-1.0.3` 保留为历史适配分支 |
 | 验证 | 自动测试、原生构建、签名与 DMG / EXE 校验通过；角色和设置面板可显示，完整业务仍需实机验收 |
 | 应用标识 | 沿用 `dev.w33d.wuwatappo.fullatlas.mac`，改名只动显示名与产物名，既有数据目录和钥匙串不受影响 |

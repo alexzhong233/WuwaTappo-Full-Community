@@ -7,7 +7,7 @@ function resolveBalanceAutoClick(settings,balance) {
 }
 
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
-  const VERSION='1.3.2-beta.1', updateRequired=ref(false);
+  const VERSION='1.3.2-beta.2', updateRequired=ref(false);
   const state=ref({settings:__WUWA_ASSISTANT_DEFAULTS__});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
   const ready=atlas.ready.then(()=>request('state')).then(v=>{state.value=v;updateRequired.value=!!v.update_required;});
