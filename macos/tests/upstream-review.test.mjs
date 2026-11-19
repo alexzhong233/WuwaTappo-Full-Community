@@ -114,10 +114,11 @@ test('update PR execution commits its regional lock plus the regenerated contrac
 });
 
 test('a stale contract snapshot is regenerated and staged without touching the hand-written network contract', async (t) => {
-  // 只有跑过 npm run setup 的机器才有官方前端；CI 两个区域都会先跑 setup。
+  // 只有跑过国际服 setup 的机器才有 frontend-global；CN 矩阵只提取国服前端时跳过，Global 矩阵必须执行。
   const profile = { ...getRegionProfile('global'), upstreamLock: 'upstream-global.json' };
   const assets = path.join(root, profile.frontendDir, 'assets');
-  if (!existsSync(assets) && !requireFrontendAssets) return t.skip(`缺少 ${profile.frontendDir}，先跑 npm run setup`);
+  const requireGlobalAssets = requireFrontendAssets && getRegionProfile().id === 'global';
+  if (!existsSync(assets) && !requireGlobalAssets) return t.skip(`缺少 ${profile.frontendDir}，先跑 npm run setup`);
   const filename = 'contracts-global.json';
   const directory = await mkdtemp(path.join(tmpdir(), 'wuwa-upstream-snapshot-'));
   try {
