@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { exactIssueNumber, inventoryChanges, openUpdatePullRequest, reportFailure, updatePullRequestArguments, writeInventoryReview } from '../scripts/upstream-review.mjs';
 import { getRegionProfile } from '../scripts/regions.mjs';
+import { requireFrontendAssets } from './frontend-context.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const repoRoot = path.resolve(root, '..');
@@ -33,13 +34,15 @@ test('candidate summaries separate source churn from named command, payload and 
   assert.deepEqual(inventoryChanges(accepted, observed).commands.removed, ['load_key_press_count']);
 });
 
-test('candidate inventory is review evidence and never overwrites the accepted fixtures or resource lock', async () => {
+test('candidate inventory is review evidence and never overwrites the accepted fixtures or resource lock', async t => {
   const profile = { ...getRegionProfile(), upstreamLock: 'upstream-cn.json' };
+  const assets = path.join(root, profile.frontendDir, 'assets');
+  if (!existsSync(assets) && !requireFrontendAssets) return t.skip(`缺少 ${profile.frontendDir}，先跑 npm run setup`);
   const directory = await mkdtemp(path.join(tmpdir(), 'wuwa-upstream-review-'));
   try {
     await mkdir(path.join(directory, 'tests'));
     await mkdir(path.join(directory, profile.frontendDir));
-    await symlink(path.join(root, profile.frontendDir, 'assets'), path.join(directory, profile.frontendDir, 'assets'));
+    await symlink(assets, path.join(directory, profile.frontendDir, 'assets'), 'dir');
     const filename = profile.id === 'cn' ? 'contracts.json' : 'contracts-global.json';
     const accepted = await readFile(path.join(root, 'tests', filename), 'utf8');
     const lock = JSON.stringify({ version: '9.9.9' });
@@ -114,7 +117,7 @@ test('a stale contract snapshot is regenerated and staged without touching the h
   // 只有跑过 npm run setup 的机器才有官方前端；CI 两个区域都会先跑 setup。
   const profile = { ...getRegionProfile('global'), upstreamLock: 'upstream-global.json' };
   const assets = path.join(root, profile.frontendDir, 'assets');
-  if (!existsSync(assets)) return t.skip(`缺少 ${profile.frontendDir}，先跑 npm run setup`);
+  if (!existsSync(assets) && !requireFrontendAssets) return t.skip(`缺少 ${profile.frontendDir}，先跑 npm run setup`);
   const filename = 'contracts-global.json';
   const directory = await mkdtemp(path.join(tmpdir(), 'wuwa-upstream-snapshot-'));
   try {

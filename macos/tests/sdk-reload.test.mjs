@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { patchDomesticLoginReload } from '../scripts/patch-frontend.mjs';
-import { profile, findSource } from './frontend-context.mjs';
+import { profile, findSource, hasExtractedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 
-const original = profile.region === 'CN'
+const original = profile.region === 'CN' && (hasExtractedFrontend || requireFrontendAssets)
   ? findSource(source => source.includes('async function ge(e=!1)')).source
   : await readFile(new URL('./fixtures/domestic-sdk-loader.js', import.meta.url), 'utf8');
 const renderer = await readFile(new URL('./fixtures/kuro-sdk-preact.js', import.meta.url), 'utf8');

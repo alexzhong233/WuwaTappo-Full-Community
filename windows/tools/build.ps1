@@ -19,6 +19,8 @@ $Root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'region.ps1')
 $R = Get-RegionProfile -Root $Root -Region $Region
 $env:WUWA_REGION = $R.Id
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 $Py = Join-Path $Root '.venv\Scripts\python.exe'
 if (-not $Base) {
   # 默认用 fetch-official.ps1 最近一次取到的基底——跟着锁定的官方版本走，

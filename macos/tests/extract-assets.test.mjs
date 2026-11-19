@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { profile } from './frontend-context.mjs';
+import { profile, hasExtractedFrontend, requireFrontendAssets } from './frontend-context.mjs';
 import { brotliCompressSync } from 'node:zlib';
 import { extractAssets, findAssetEntries, findEmbeddedNsis, inspectStaticReferences, readPe, safeAssetPath, selectApplicationPayload } from '../../scripts/extract-assets.mjs';
 
@@ -115,7 +115,8 @@ test('finds embedded NSIS by PE section end and bounded NSIS header', () => {
   assert.throws(() => findEmbeddedNsis(bytes), /No structurally valid/);
 });
 
-test('all static references in the recovered production frontend exist', async () => {
+test('all static references in the recovered production frontend exist', async t => {
+  if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过静态引用检查');
   const root = path.resolve(import.meta.dirname, '..', profile.frontendDir);
   const entries = [];
   async function visit(directory) {
