@@ -103,7 +103,7 @@ test('the actual bundled Preact skips a new SDK App on a stale root but renders 
 test('domestic login reload patch still matches extracted CN frontend when available', t => {
   if (profile.region !== 'CN') return t.skip('仅国服启用国内 SDK 重载补丁');
   if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过国服 SDK 重载实包验证');
-  const live = findSource(source => source.includes('"KrSDK"') && !source.includes('const APP_REGION=')).source;
+  const live = findSource(source => source.includes('t.dataset.kuroSdkRetry="true"') && !source.includes('const APP_REGION=')).source;
   const livePatched = patchDomesticLoginReload(live);
   assert.ok(livePatched.includes('document.getElementById("KrSDK")?.remove()'));
 });

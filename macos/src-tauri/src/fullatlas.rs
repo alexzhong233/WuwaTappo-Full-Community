@@ -8,7 +8,10 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -50,9 +53,14 @@ fn unix_time() -> u64 {
         .as_secs()
 }
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    static NEXT_TMP: AtomicUsize = AtomicUsize::new(0);
     fs::create_dir_all(path.parent().ok_or("Missing state directory")?)
         .map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("tmp");
+    let tmp = path.with_extension(format!(
+        "{}-{}.tmp",
+        std::process::id(),
+        NEXT_TMP.fetch_add(1, Ordering::Relaxed)
+    ));
     fs::write(&tmp, serde_json::to_vec(value).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
@@ -513,13 +521,15 @@ pub async fn fullatlas_request(
 mod tests {
     use super::*;
     fn state() -> FullAtlasState {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
         FullAtlasState::new(std::env::temp_dir().join(format!(
-                "fullatlas-{}-{}",
+                "fullatlas-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
             )))
         .unwrap()
     }
