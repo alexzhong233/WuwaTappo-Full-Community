@@ -59,19 +59,45 @@ impl Inner {
         let method = request.next().unwrap_or_default();
         let target = request.next().unwrap_or_default();
         if method != "GET" && method != "HEAD" {
-            return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"", false).await;
+            return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"", false, false).await;
         }
-        let Some(file) = self.lookup(target) else {
-            return respond(&mut stream, "404 Not Found", "text/plain", b"", false).await;
+        let Some((file, cache_immutable)) = self.lookup(target) else {
+            return respond(
+                &mut stream,
+                "404 Not Found",
+                "text/plain",
+                b"",
+                false,
+                false,
+            )
+            .await;
         };
         let body = match fs::metadata(&file) {
             Ok(meta) if meta.len() <= MAX_FILE => match fs::read(&file) {
                 Ok(bytes) => bytes,
                 Err(_) => {
-                    return respond(&mut stream, "404 Not Found", "text/plain", b"", false).await
+                    return respond(
+                        &mut stream,
+                        "404 Not Found",
+                        "text/plain",
+                        b"",
+                        false,
+                        false,
+                    )
+                    .await
                 }
             },
-            _ => return respond(&mut stream, "404 Not Found", "text/plain", b"", false).await,
+            _ => {
+                return respond(
+                    &mut stream,
+                    "404 Not Found",
+                    "text/plain",
+                    b"",
+                    false,
+                    false,
+                )
+                .await
+            }
         };
         respond(
             &mut stream,
@@ -79,11 +105,12 @@ impl Inner {
             mime_type(&file),
             &body,
             method == "HEAD",
+            cache_immutable,
         )
         .await;
     }
 
-    fn lookup(&self, target: &str) -> Option<PathBuf> {
+    fn lookup(&self, target: &str) -> Option<(PathBuf, bool)> {
         let path = target
             .split(|value| value == '?' || value == '#')
             .next()
@@ -95,11 +122,14 @@ impl Inner {
                 &self.root.join("custom-atlas"),
                 key,
             )
+            .map(|file| (file, false))
         } else {
+            let immutable = key.starts_with("assets/");
             wuwatappo_assistant_core::resource_cache::resolve_cached_asset(
                 &self.root.join("cache"),
                 key,
             )
+            .map(|file| (file, immutable))
         }
     }
 }
@@ -114,11 +144,18 @@ async fn respond(
     kind: &str,
     body: &[u8],
     head_only: bool,
+    cache_immutable: bool,
 ) {
-    // no-store：同一个包或缓存更新后同名文件内容会变，让 WebView 每次都回源。
+    // assets/<sha256>.png 是内容寻址的不可变官方素材，允许 WebView 内核复用；
+    // custom-assets 与分类别名每次更新都可能换文件，继续保持 no-store。
     // ACAO 只是兜底：图片走 <img>，但官方有些预览会 fetch 成 blob，跨源要它。
+    let cache_control = if cache_immutable {
+        "private, max-age=3600, immutable"
+    } else {
+        "no-store"
+    };
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: {cache_control}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes()).await;
@@ -265,15 +302,15 @@ mod tests {
         };
         assert_eq!(
             inner.lookup("/abc123/custom-assets/mod-1/%E5%9B%BE.png").unwrap(),
-            custom_pack.join("图.png").canonicalize().unwrap()
+            (custom_pack.join("图.png").canonicalize().unwrap(), false)
         );
         assert_eq!(
             inner.lookup("/abc123/assets/deadbeef.png?t=1").unwrap(),
-            official_assets.join("deadbeef.png").canonicalize().unwrap()
+            (official_assets.join("deadbeef.png").canonicalize().unwrap(), true)
         );
         assert_eq!(
             inner.lookup("/abc123/emote/wave.png").unwrap(),
-            official_assets.join("deadbeef.png").canonicalize().unwrap()
+            (official_assets.join("deadbeef.png").canonicalize().unwrap(), false)
         );
         assert!(inner.lookup("/wrong/assets/deadbeef.png").is_none());
         assert!(inner.lookup("/abc123/assets/../secret.png").is_none());

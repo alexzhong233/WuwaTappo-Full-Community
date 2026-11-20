@@ -9,10 +9,10 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const MAX_JSON: u64 = 16 * 1024 * 1024;
@@ -563,6 +563,7 @@ where
         asset_count: records.len(),
     };
     atomic_replace(&root, &stage)?;
+    invalidate_manifest_cache(&root.join("cache"));
     Ok(summary)
 }
 
@@ -573,6 +574,128 @@ pub fn sync(root: &Path, region: &str) -> Result<SyncSummary, String> {
 
 fn read_json_value(path: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+#[derive(Clone)]
+struct CachedManifest {
+    len: usize,
+    crc32: u32,
+    has_errors: bool,
+    record_count: usize,
+    invalid_record: bool,
+    records: Vec<(String, u64)>,
+    by_suffix: HashMap<String, String>,
+    by_filename: HashMap<String, String>,
+    verified_at: Option<(Instant, Option<SystemTime>)>,
+}
+
+const MAX_CACHED_MANIFESTS: usize = 8;
+const VERIFIED_TTL: Duration = Duration::from_secs(15);
+static MANIFEST_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedManifest>>> = OnceLock::new();
+
+fn manifest_cache_key(cache_dir: &Path) -> PathBuf {
+    cache_dir
+        .canonicalize()
+        .unwrap_or_else(|_| cache_dir.to_path_buf())
+}
+
+fn invalidate_manifest_cache(cache_dir: &Path) {
+    if let Some(cache) = MANIFEST_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            let key = manifest_cache_key(cache_dir);
+            guard.remove(&key);
+            guard.remove(cache_dir);
+        }
+    }
+}
+
+fn clean_source(s: &str) -> &str {
+    s.split(['?', '#']).next().unwrap_or(s)
+}
+
+fn valid_asset_file_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\', ':']) && name != "." && name != ".."
+}
+
+fn build_cached_manifest(bytes: &[u8]) -> Option<CachedManifest> {
+    let manifest: Value = serde_json::from_slice(bytes).ok()?;
+    let records_arr = manifest["records"].as_array()?;
+    let has_errors = manifest["errors"]
+        .as_array()
+        .is_some_and(|errors| !errors.is_empty());
+    let mut records = Vec::with_capacity(records_arr.len());
+    let mut invalid_record = false;
+    let mut by_suffix = HashMap::with_capacity(records_arr.len() * 2);
+    let mut by_filename = HashMap::with_capacity(records_arr.len());
+
+    for record in records_arr {
+        let name = record["file"].as_str();
+        let size = record["size"].as_u64();
+        if let (Some(file), Some(expected_size)) = (name, size) {
+            if valid_asset_file_name(file) {
+                records.push((file.to_owned(), expected_size));
+            } else {
+                invalid_record = true;
+            }
+        } else {
+            invalid_record = true;
+        }
+        if let (Some(file), Some(source)) = (name, record["source"].as_str()) {
+            let cleaned = clean_source(source);
+            let path = cleaned
+                .split_once("://")
+                .and_then(|(_, rest)| rest.find('/').map(|idx| &rest[idx..]))
+                .unwrap_or(cleaned);
+            for (idx, _) in path.match_indices('/') {
+                let suffix_key = &path[idx + 1..];
+                if !suffix_key.is_empty() {
+                    by_suffix
+                        .entry(suffix_key.to_owned())
+                        .or_insert_with(|| file.to_owned());
+                }
+            }
+            if let Some(fname) = cleaned.rsplit('/').next().filter(|s| !s.is_empty()) {
+                by_filename
+                    .entry(fname.to_owned())
+                    .or_insert_with(|| file.to_owned());
+            }
+        }
+    }
+
+    Some(CachedManifest {
+        len: bytes.len(),
+        crc32: crc32fast::hash(bytes),
+        has_errors,
+        record_count: records_arr.len(),
+        invalid_record,
+        records,
+        by_suffix,
+        by_filename,
+        verified_at: None,
+    })
+}
+
+fn load_cached_manifest(cache_dir: &Path) -> Option<(PathBuf, CachedManifest)> {
+    let bytes = fs::read(cache_dir.join("asset_manifest.json")).ok()?;
+    let len = bytes.len();
+    let crc32 = crc32fast::hash(&bytes);
+    let key = manifest_cache_key(cache_dir);
+    let cache = MANIFEST_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(hit) = guard.get(&key) {
+            if hit.len == len && hit.crc32 == crc32 {
+                return Some((key, hit.clone()));
+            }
+        }
+    }
+    let parsed = build_cached_manifest(&bytes)?;
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= MAX_CACHED_MANIFESTS && !guard.contains_key(&key) {
+            guard.clear();
+        }
+        guard.insert(key.clone(), parsed.clone());
+    }
+    Some((key, parsed))
 }
 
 pub fn safe_relative_key(raw: &str) -> bool {
@@ -595,11 +718,8 @@ pub fn contained_file(root: &Path, relative: &str) -> Option<PathBuf> {
 
 /// 返回本地图鉴图片缓存摘要（实际已下载张数与预期张数）。
 pub fn cache_summary(root: &Path, expected_override: Option<u64>) -> Value {
-    let manifest = read_json_value(&root.join("cache/asset_manifest.json"));
-    let assets = manifest
-        .as_ref()
-        .and_then(|value| value["records"].as_array())
-        .map(Vec::len)
+    let assets = load_cached_manifest(&root.join("cache"))
+        .map(|(_, manifest)| manifest.record_count)
         .unwrap_or(0);
     json!({
         "assets": assets,
@@ -614,36 +734,42 @@ pub fn is_cache_ready(root: &Path, expected_override: Option<usize>) -> bool {
     {
         return false;
     }
-    let Some(manifest) = read_json_value(&cache_dir.join("asset_manifest.json")) else {
+    let Some((key, manifest)) = load_cached_manifest(&cache_dir) else {
         return false;
     };
-    let Some(records) = manifest["records"].as_array() else {
+    if manifest.record_count == 0 || manifest.has_errors || manifest.invalid_record {
         return false;
-    };
-    if records.is_empty()
-        || manifest["errors"]
-            .as_array()
-            .is_some_and(|errors| !errors.is_empty())
+    }
+    if expected_override.is_some_and(|expected| expected > 0 && manifest.record_count != expected)
     {
         return false;
     }
-    if expected_override.is_some_and(|expected| expected > 0 && records.len() != expected) {
-        return false;
-    }
     let assets_dir = cache_dir.join("assets");
-    records.iter().all(|record| {
-        let Some(name) = record["file"].as_str() else {
-            return false;
-        };
-        if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
-            return false;
+    let dir_mtime = fs::metadata(&assets_dir).and_then(|m| m.modified()).ok();
+    if manifest.records.len() > 32 {
+        if let Some((verified_at, cached_mtime)) = manifest.verified_at {
+            if dir_mtime.is_some()
+                && cached_mtime == dir_mtime
+                && verified_at.elapsed() < VERIFIED_TTL
+            {
+                return true;
+            }
         }
-        let Some(expected_size) = record["size"].as_u64() else {
-            return false;
-        };
+    }
+    let all_ok = manifest.records.iter().all(|(name, expected_size)| {
         fs::metadata(assets_dir.join(name))
-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected_size)
-    })
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == *expected_size)
+    });
+    if let Some(cache) = MANIFEST_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            if let Some(entry) = guard.get_mut(&key) {
+                if entry.len == manifest.len && entry.crc32 == manifest.crc32 {
+                    entry.verified_at = all_ok.then(|| (Instant::now(), dir_mtime));
+                }
+            }
+        }
+    }
+    all_ok
 }
 
 /// 解析离线缓存里的官方资源文件路径（支持 `assets/<sha>.png` 与官方按名称分类路径）。
@@ -684,32 +810,15 @@ pub fn resolve_cached_asset(cache_dir: &Path, relative_key: &str) -> Option<Path
             return Some(file);
         }
     }
-    let manifest = read_json_value(&cache_dir.join("asset_manifest.json"))?;
-    let records = manifest["records"].as_array()?;
-    fn clean_source(s: &str) -> &str {
-        s.split(['?', '#']).next().unwrap_or(s)
-    }
-    let suffix = format!("/{trimmed}");
-    let record = records
-        .iter()
-        .find(|record| {
-            record["source"]
-                .as_str()
-                .is_some_and(|source| clean_source(source).ends_with(&suffix))
-        })
-        .or_else(|| {
-            records.iter().find(|record| {
-                record["source"]
-                    .as_str()
-                    .and_then(|source| clean_source(source).rsplit('/').next())
-                    == Some(requested)
-            })
-        });
-    if let Some(file) = record
-        .and_then(|record| record["file"].as_str())
-        .and_then(|file| contained_file(&assets_dir, file))
-    {
-        return Some(file);
+    if let Some((_, manifest)) = load_cached_manifest(cache_dir) {
+        if let Some(file) = manifest
+            .by_suffix
+            .get(trimmed)
+            .or_else(|| manifest.by_filename.get(requested))
+            .and_then(|file| contained_file(&assets_dir, file))
+        {
+            return Some(file);
+        }
     }
     resolve_named_catalog_asset(cache_dir, trimmed)
 }
@@ -923,6 +1032,57 @@ mod tests {
             resolve_cached_asset(&cache, "character_atlas/role_1304_1007.png"),
             canon("icon.png")
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_cache_invalidates_when_bytes_change_even_at_same_length() {
+        let root = std::env::temp_dir().join(format!(
+            "wuwatappo-manifest-cache-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let cache = root.join("cache");
+        let assets = cache.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        fs::write(assets.join("a.png"), b"123").unwrap();
+        fs::write(assets.join("b.png"), b"123").unwrap();
+        fs::write(cache.join("offline_catalog.json"), "{}").unwrap();
+        fs::write(cache.join("atlas.json"), "{\"data\":[]}").unwrap();
+        fs::write(
+            cache.join("asset_manifest.json"),
+            r#"{"records":[{"file":"a.png","source":"https://example.com/emote/hero.png","size":3}],"errors":[]}"#,
+        )
+        .unwrap();
+
+        assert!(is_cache_ready(&root, Some(1)));
+        assert_eq!(
+            resolve_cached_asset(&cache, "emote/hero.png"),
+            fs::canonicalize(assets.join("a.png")).ok()
+        );
+
+        // Same byte length, different CRC32.
+        fs::write(
+            cache.join("asset_manifest.json"),
+            r#"{"records":[{"file":"b.png","source":"https://example.com/emote/hero.png","size":3}],"errors":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_cached_asset(&cache, "emote/hero.png"),
+            fs::canonicalize(assets.join("b.png")).ok()
+        );
+        assert!(is_cache_ready(&root, Some(1)));
+
+        // Same byte length, mismatched file size.
+        fs::write(
+            cache.join("asset_manifest.json"),
+            r#"{"records":[{"file":"b.png","source":"https://example.com/emote/hero.png","size":9}],"errors":[]}"#,
+        )
+        .unwrap();
+        assert!(!is_cache_ready(&root, Some(1)));
         let _ = fs::remove_dir_all(&root);
     }
 }

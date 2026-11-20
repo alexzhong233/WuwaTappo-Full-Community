@@ -201,3 +201,40 @@ test('click choices add independent local and official tags and local-only items
   assert.deepEqual({...instance.sourceFor(2, 'accessory')}, {local:true, official:false});
   instance.dispose();
 });
+
+test('non-panel views skip source badge DOM observation and quota failures throw clearly', async () => {
+  let observed = false;
+  const head = { append() {}, setAttribute() {}, removeAttribute() {} };
+  const doc = {
+    getElementById: () => null,
+    createElement: () => ({ id: '', textContent: '' }),
+    head, documentElement: head,
+    querySelectorAll: () => { observed = true; return []; },
+  };
+  class FakeObserver { observe() { observed = true; } disconnect() {} }
+  const calls = [];
+  const win = {
+    fetch: async () => { throw new Error('unexpected fetch'); },
+    addEventListener() {}, dispatchEvent() {}, setInterval: () => 1, clearInterval() {},
+    setTimeout: callback => { callback(); return 1; }, clearTimeout() {},
+    MutationObserver: FakeObserver,
+    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } },
+    location: { href: 'tauri://localhost/', hash: '#/' }, navigator: {}, document: doc,
+  };
+  const instance = factory({
+    ref: value => ({ value }), window: win,
+    storage: {
+      getItem: () => null,
+      setItem: key => { if (key === 'wuwatappo-capture-v1') throw new Error('QuotaExceededError'); },
+    },
+    origin: 'https://mc-wuwatappo.kurogames-global.com', atlasCount: 1, catalogConsumer: false,
+    normalizeAtlasList: value => value, resolvePetAssetIdFromAppearanceId: id => id,
+    snapshotCatalog: () => ({}), applyOfflineCatalog: () => {}, restoreCatalog: () => {},
+    getAppearanceAssetById: id => ({ asset_id: id, asset_type: 'character_skin' }),
+    request: async route => { calls.push(route); return route === '/status' ? { ready: true, enabled: true, mode_verified: true, network_policy: 'hybrid' } : {}; },
+  });
+  await instance.ready;
+  assert.equal(observed, false, 'main pet route must not run source badge DOM observer');
+  assert.throws(() => instance.setCapture({ panelBackground: 'data:image/png;base64,abc' }), /2 MB 以内/);
+  instance.dispose();
+});

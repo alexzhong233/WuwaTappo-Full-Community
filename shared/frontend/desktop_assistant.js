@@ -206,9 +206,12 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     await d.listenJoin(async code=>{if(!updateRequired.value)await d.join(code);});
     window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);window.removeEventListener?.('keydown',onEmoteHotkey,true);if(typeof stopClickWatch==='function')stopClickWatch();});
   }
-  let requestedTab='overview',lastTab='overview';
-  // 关面板时记下停在哪一页：右键「控制台」再打开时回到那一页，而不是永远回概览。
-  function closePanel(){if(dashboard)lastTab=dashboard.currentTab?.()||lastTab;dashboard?.close();dashboard=null;}
+  const CONSOLE_TAB_KEY='wuwatappo-console-tab-v1';
+  const readLastTab=()=>{try{return window.localStorage?.getItem(CONSOLE_TAB_KEY)||'overview';}catch{return 'overview';}};
+  const writeLastTab=next=>{try{if(next)window.localStorage?.setItem(CONSOLE_TAB_KEY,String(next));}catch{}};
+  let lastTab=readLastTab(),requestedTab=lastTab;
+  // 关面板时记下停在哪一页：右键「控制台」或重建面板窗口再打开时回到那一页，而不是永远回概览。
+  function closePanel(){if(dashboard){const current=dashboard.currentTab?.();if(current){lastTab=current;requestedTab=current;writeLastTab(current);}}dashboard?.close();dashboard=null;}
   async function deleteRoom(code){await ready;return (await request('delete-room',{code})).rooms||[];}
   // 「控制台」在支持面板页签的壳里是面板的一页（联机下方、设置上方）；
   // 壳没提供就退回桌宠窗口内的浮层，两种都拿到同一套界面。
@@ -222,7 +225,10 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     }
     // 先关再取：面板正开着时，「当前页」比「上次关面板那页」更准。
     closePanel();
+    const savedTab=readLastTab();
+    if(savedTab)lastTab=savedTab;
     requestedTab=initialTab=initialTab||lastTab;
+    writeLastTab(requestedTab);
     try { await ready; }
     catch (error) { console.warn('[console] 本地服务未就绪', error); }
     const openTab=window.__WUWA_OPEN_PANEL_TAB__;
@@ -238,7 +244,8 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       getState:async()=>{const v=await request('state');state.value=v;return v;},
       configure:async changes=>{state.value=await request('configure',{settings:changes});syncEmoteTarget();return state.value;},
       reset:()=>request('reset'),join:code=>window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'local-assistant-join',payload:code}),
-      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,onClose:()=>{dashboard=null;}});
+      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,
+      onTabChange:next=>{lastTab=next;requestedTab=next;writeLastTab(next);},onClose:()=>{dashboard=null;}});
   }
   // 面板「控制台」页挂载点：把同一套界面内嵌进去，不再叠一层浮层。
   async function mountConsole(mount){
@@ -250,11 +257,13 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     // 表现为卡 loading，而且不会自己恢复。挂载点还连着 DOM，就说明用户仍在这一页。
     if (!mount?.isConnected) return;
     dashboard?.close();
-    dashboard=createAssistantDashboard({window,version:VERSION,atlas,mount,initialTab:requestedTab,
+    const initialTab=requestedTab||readLastTab();
+    dashboard=createAssistantDashboard({window,version:VERSION,atlas,mount,initialTab,
       getState:async()=>{const v=await request('state');state.value=v;return v;},
       configure:async changes=>{state.value=await request('configure',{settings:changes});syncEmoteTarget();return state.value;},
       reset:()=>request('reset'),join:code=>window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'local-assistant-join',payload:code}),
-      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,onClose:()=>{dashboard=null;}});
+      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,
+      onTabChange:next=>{lastTab=next;requestedTab=next;writeLastTab(next);},onClose:()=>{dashboard=null;}});
   }
   async function pollPolicy(){
     if(disposed)return;

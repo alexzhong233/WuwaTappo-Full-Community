@@ -135,7 +135,7 @@ pub struct FullAtlasService {
     client_version: String,
     expected_asset_count: Mutex<Option<u64>>,
     inner: Mutex<AssistantInner>,
-    catalog: Mutex<Option<Value>>,
+    catalog: Mutex<Option<Box<str>>>,
     custom_error: Mutex<Option<String>>,
     sync: Mutex<Value>,
     updates: release_updates::UpdateTracker,
@@ -436,8 +436,9 @@ impl FullAtlasService {
             .catalog
             .lock()
             .map_err(|_| ServiceError::internal("图鉴缓存锁失败"))?;
-        let mut bundle = if let Some(cached) = memo.as_ref() {
-            cached.clone()
+        let mut bundle = if let Some(cached) = memo.as_deref() {
+            serde_json::from_str(cached)
+                .map_err(|e| ServiceError::internal(format!("图鉴缓存解析失败：{e}")))?
         } else {
             let cache = self.cache_dir();
             let catalog = read_json_value(&cache.join("offline_catalog.json"))
@@ -462,7 +463,9 @@ impl FullAtlasService {
             if let Ok(mut slot) = self.custom_error.lock() {
                 *slot = custom_err;
             }
-            *memo = Some(merged.clone());
+            if let Ok(compact) = serde_json::to_string(&merged) {
+                *memo = Some(compact.into_boxed_str());
+            }
             merged
         };
         if let Some(base) = custom_asset_base {

@@ -1666,7 +1666,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     shared = rec.replace(
         &shared,
         "function schedulePreloadAppUiImages() {",
-        "function schedulePreloadAppUiImages() {\n const route=(window.location.hash||'#/').slice(1).split('?')[0];\n if(!['/','/panel'].includes(route))return;",
+        "function schedulePreloadAppUiImages() {\n return;",
     )?;
 
     let report_sticker = require_import(&mi, "reportSendSticker")?;
@@ -1702,7 +1702,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         &main,
         &sync_call_caps[0],
         &format!(
-            "{store}.isLoggedIn && !__lg.enabled.value && {}(e.id);",
+            "{store}.isLoggedIn && (!__lg.enabled.value || __lg.officialOwned?.(e.id, 'emote')) && {}(e.id);",
             &sync_call_caps[1]
         ),
     )?;

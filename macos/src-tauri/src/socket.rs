@@ -290,13 +290,6 @@ pub fn native_ws_connect(
             .connections
             .lock()
             .map_err(|_| "WebSocket state is unavailable")?;
-        if window
-            .app_handle()
-            .try_state::<crate::fullatlas::FullAtlasState>()
-            .is_some_and(|state| state.enabled())
-        {
-            return Err("本地全图鉴开启时不能连接联机房间".into());
-        }
         if connections.contains_key(&key) {
             return Err("WebSocket id already exists".into());
         }

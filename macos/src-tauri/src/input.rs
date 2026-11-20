@@ -1078,6 +1078,7 @@ unsafe extern "C" {
     fn CGEventTapEnable(tap: *mut c_void, enabled: bool);
     fn CGEventTapIsEnabled(tap: *mut c_void) -> bool;
     fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
+    fn CGEventCreate(source: *const c_void) -> *mut c_void;
     fn CGEventGetLocation(event: *mut c_void) -> Point;
     fn CGEventGetFlags(event: *mut c_void) -> u64;
     fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
@@ -1112,6 +1113,16 @@ unsafe extern "C" {
     fn CFRunLoopRunInMode(mode: *mut c_void, seconds: f64, return_after_source_handled: u8) -> i32;
     fn CFRunLoopStop(run_loop: *mut c_void);
     fn CFRunLoopWakeUp(run_loop: *mut c_void);
+}
+
+pub(crate) fn current_logical_cursor() -> Option<(f64, f64)> {
+    let event = unsafe { CGEventCreate(std::ptr::null()) };
+    if event.is_null() {
+        return None;
+    }
+    let point = unsafe { CGEventGetLocation(event) };
+    unsafe { CFRelease(event) };
+    (point.x.is_finite() && point.y.is_finite()).then_some((point.x, point.y))
 }
 
 #[cfg(test)]

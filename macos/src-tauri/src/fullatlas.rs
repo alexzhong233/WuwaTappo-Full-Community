@@ -43,6 +43,7 @@ impl FullAtlasState {
         self.service.ensure_initial_sync();
     }
 
+    #[cfg(test)]
     pub fn enabled(&self) -> bool {
         self.service.enabled()
     }

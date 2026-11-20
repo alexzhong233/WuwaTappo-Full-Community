@@ -116,7 +116,7 @@ function createAssistantDashboard(d){
     }
   }
   function showTab(key){
-    tab=key;content.replaceChildren();notice.textContent='';for(const[k,n]of Object.entries(navButtons))n.className=k===key?'active':'';
+    tab=key;d.onTabChange?.(key);content.replaceChildren();notice.textContent='';for(const[k,n]of Object.entries(navButtons))n.className=k===key?'active':'';
     if(key==='overview'){
       const hero=card(content,'warm');el('h3','后台陪伴，安心打字',hero);const description=el('p','',hero,'wt-muted');
       const controls=el('div',undefined,hero,'wt-controls');button('启动后台',controls,()=>change({enabled:true}),'wt-primary');button('暂停点击',controls,()=>change({enabled:false}));button('停止全部自动任务',controls,()=>change({enabled:false,auto_chest:false,auto_emote:false}));
@@ -417,7 +417,7 @@ function createAssistantDashboard(d){
       const captureRow=el('div',undefined,captureCard,'wt-controls');
       for(const [mode,label] of [['off','关闭'],['green','绿幕'],['transparent','透明']])button(label,captureRow,()=>{d.atlas.setCapture?.({mode});applyDashboardStyle();},mode==='off'?'':'wt-primary');
       const bgLabel=el('label',undefined,captureCard,'wt-setting'),bgText=el('div',undefined,bgLabel);el('h3','面板背景图',bgText);el('p','选择一张本地图片作为控制台背景',bgText,'wt-muted');
-      const bgInput=el('input',undefined,bgLabel);bgInput.type='file';bgInput.accept='image/*';bgInput.onchange=()=>{const file=bgInput.files?.[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{d.atlas.setCapture?.({panelBackground:String(reader.result||'')});applyDashboardStyle();};reader.readAsDataURL(file);};
+      const bgInput=el('input',undefined,bgLabel);bgInput.type='file';bgInput.accept='image/*';bgInput.onchange=()=>{const file=bgInput.files?.[0];if(!file)return;if(file.size>2*1024*1024){notice.textContent='背景图片过大，请选择 2 MB 以内的图片';return;}const reader=new FileReader();reader.onload=()=>{try{d.atlas.setCapture?.({panelBackground:String(reader.result||'')});applyDashboardStyle();}catch(e){notice.textContent=e.message;}};reader.readAsDataURL(file);};
       const opacityRow=el('label',undefined,captureCard,'wt-setting'),opacityText=el('div',undefined,opacityRow);el('h3','面板透明度',opacityText);
       const opacity=el('input',undefined,opacityRow);opacity.type='range';opacity.min=.35;opacity.max=1;opacity.step=.01;opacity.oninput=()=>{d.atlas.setCapture?.({panelOpacity:Number(opacity.value)});applyDashboardStyle();};
       function applyDashboardStyle(){const c=d.atlas.capture?.value||{};root.style.opacity=String(Math.max(.35,Math.min(1,Number(c.panelOpacity)||.96)));root.style.backgroundImage=c.panelBackground?`url("${String(c.panelBackground).replace(/"/g,'%22')}")`:'';opacity.value=c.panelOpacity||.96;}

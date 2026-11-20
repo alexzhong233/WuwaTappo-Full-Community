@@ -101,6 +101,8 @@ function createLocalAtlasController(d) {
   let accountBag = null;
   let choiceNode = null;
   let refreshSourceBadges = null;
+  let badgeObserver = null;
+  const isPanelHash = () => String(d.window.location?.hash || '').startsWith('#/panel');
   const localMeta = new Map();
   const atlasIndex = new Map();
   const petIdByAtlasId = new Map();
@@ -181,8 +183,9 @@ function createLocalAtlasController(d) {
       html[data-wuwa-capture="transparent"] body{background:transparent!important}
     `;
     doc.head.append(style);
+    if (!isPanelHash()) return;
     const observe = () => {
-      if (typeof doc.querySelectorAll !== 'function') return;
+      if (disposed || typeof doc.querySelectorAll !== 'function' || !atlasIndex.size) return;
       for (const img of doc.querySelectorAll('img')) {
         const raw = String(img.currentSrc || img.src || '').split(/[?#]/)[0];
         const base = decodeURIComponent(raw.split('/').pop() || '').replace(/\.(png|webp|gif|jpe?g)$/i, '').toLowerCase();
@@ -209,11 +212,12 @@ function createLocalAtlasController(d) {
       }
     };
     let scheduled = false;
-    const schedule = () => { if (scheduled) return; scheduled = true; d.window.setTimeout(() => { scheduled = false; observe(); }, 80); };
+    const schedule = () => { if (disposed || scheduled) return; scheduled = true; d.window.setTimeout(() => { scheduled = false; observe(); }, 80); };
     refreshSourceBadges = schedule;
     const Observer = d.window.MutationObserver;
     if (typeof Observer === 'function' && doc.documentElement) {
-      new Observer(schedule).observe(doc.documentElement, {childList:true,subtree:true,attributes:true,attributeFilter:['src','style']});
+      badgeObserver = new Observer(schedule);
+      badgeObserver.observe(doc.documentElement, {childList:true,subtree:true,attributes:true,attributeFilter:['src','style']});
     }
     schedule();
   }
@@ -264,7 +268,18 @@ function createLocalAtlasController(d) {
     root.style.setProperty('--wuwa-panel-opacity',String(opacity));
     root.style.setProperty('--wuwa-panel-bg-image',capture.value.panelBackground?`url("${String(capture.value.panelBackground).replace(/"/g,'%22')}")`:'none');
   }
-  function setCapture(patch={}) { capture.value={...capture.value,...patch}; d.storage.setItem(CAPTURE_KEY,JSON.stringify(capture.value)); applyCaptureStyle(); revision.value++; return {...capture.value}; }
+  function setCapture(patch={}) {
+    const next={...capture.value,...patch};
+    try {
+      d.storage.setItem(CAPTURE_KEY,JSON.stringify(next));
+    } catch {
+      throw new Error('背景图片过大，请选择 2 MB 以内的图片');
+    }
+    capture.value=next;
+    applyCaptureStyle();
+    revision.value++;
+    return {...capture.value};
+  }
   const read = () => { try { return JSON.parse(d.storage.getItem(KEY) || '{}'); } catch { return {}; } };
   const remote = value => {
     try {
@@ -782,14 +797,15 @@ function createLocalAtlasController(d) {
   }
   async function pollGameMode() {
     try {
-      const status=await localRequest('/game/status');
-      const running=status?.running===true, enabled=await gameModeSetting();
+      const enabled=await gameModeSetting();
       if(!enabled){if(gameWasRunning===true)d.setGameMode?.(false);gameWasRunning=false;return;}
+      const status=await localRequest('/game/status');
+      const running=status?.running===true;
       if(running!==gameWasRunning){d.setGameMode?.(running);gameWasRunning=running;}
     } catch {}
   }
   function startGameWatch() {
-    if(gameTimer!==null||!d.window.setInterval)return;
+    if(isPanelHash()||gameTimer!==null||!d.window.setInterval)return;
     pollGameMode();
     gameTimer=d.window.setInterval(pollGameMode,3000);
   }
@@ -915,8 +931,15 @@ function createLocalAtlasController(d) {
   }
   if (d.window.setInterval) {
     let checkingStatus = false;
+    let idleStatusTicks = 0;
     statusTimer=d.window.setInterval(async () => {
       if (checkingStatus || busy.value) return;
+      if (cacheReady.value && syncStatus.value?.status !== 'running' && (!desiredLocal || enabled.value)) {
+        idleStatusTicks = (idleStatusTicks + 1) % 6;
+        if (idleStatusTicks !== 0) return;
+      } else {
+        idleStatusTicks = 0;
+      }
       checkingStatus = true;
       try {
         const status = await localRequest('/status');
@@ -931,7 +954,7 @@ function createLocalAtlasController(d) {
       finally { checkingStatus = false; }
     }, d.catalogConsumer===false?15000:1500);
   }
-  function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);if(gameTimer!==null)d.window.clearInterval?.(gameTimer);choiceNode?.remove();}
+  function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);if(gameTimer!==null)d.window.clearInterval?.(gameTimer);badgeObserver?.disconnect();badgeObserver=null;choiceNode?.remove();}
   return {enabled, busy, selection, favorites, marks, revision, ready, cacheReady, setEnabled, inventory, viewUser, select, mergeAtlas, canSelect,
     favorite, reorder, prepare, offlineData, get assetsHost() { return resolveAssetsHost(); }, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, assetUrl, request: localRequest, dispose,
     presetList, createLocalPreset, deleteLocalPreset, applyLocalPreset, collectionProgress,
