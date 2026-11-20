@@ -9,7 +9,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -17,8 +17,6 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use wuwatappo_assistant_core::AssistantCore;
 
-const UPDATE_MESSAGE: &str =
-    "这是 Mac 整合版；Windows FullAtlas 更新包不能安装到 Mac。请使用本项目的 Mac 安装包更新。";
 const COMMUNITY_RELEASES_URL: &str =
     "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 
@@ -44,6 +42,7 @@ pub struct FullAtlasState {
     official_catalog: Mutex<Option<Value>>,
     custom_error: Mutex<Option<String>>,
     updates: wuwatappo_assistant_core::release_updates::UpdateTracker,
+    installing: AtomicBool,
 }
 
 fn unix_time() -> u64 {
@@ -153,6 +152,7 @@ impl FullAtlasState {
             official_catalog: Mutex::new(None),
             custom_error: Mutex::new(None),
             updates: Default::default(),
+            installing: AtomicBool::new(false),
         })
     }
     fn include_prerelease(&self) -> bool {
@@ -318,11 +318,21 @@ impl FullAtlasState {
             "community/version" => Ok(json!({"current": community_current_version()})),
             "community/update-check" => {
                 let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
-                Ok(self.updates.check_community_cached(
+                let mut value = self.updates.check_community_cached(
                     community_current_version(),
                     self.include_prerelease(),
                     force,
-                ))
+                );
+                let bundle_check = crate::mac_updater::current_installable_bundle();
+                let available =
+                    value.get("updateAvailable").and_then(Value::as_bool) == Some(true);
+                value["installable"] = json!(available && bundle_check.is_ok());
+                if available {
+                    if let Err(reason) = bundle_check {
+                        value["installableReason"] = json!(reason);
+                    }
+                }
+                Ok(value)
             }
             "official/update-check" => {
                 official_update_status(crate::profile::Region::from_app(app))
@@ -422,22 +432,97 @@ impl FullAtlasState {
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"enabled":enabled,"mode_verified":true,"network_policy":"rooms-only"}))
             }
-            "update/status" => Ok(self.updates.policy_status(
-                community_current_version(),
-                self.include_prerelease(),
-                false,
-            )),
-            "update/check" => {
-                let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
-                Ok(self.updates.policy_check(
+            "update/status" => {
+                let bundle_check = crate::mac_updater::current_installable_bundle();
+                let mut status = self.updates.policy_status(
                     community_current_version(),
                     self.include_prerelease(),
-                    false,
-                    force,
-                ))
+                    bundle_check.is_ok(),
+                );
+                if status.get("available").and_then(Value::as_bool) == Some(true) {
+                    if let Err(reason) = bundle_check {
+                        status["installableReason"] = json!(reason);
+                    }
+                }
+                if let Some(installation) =
+                    wuwatappo_assistant_core::release_installer::read_progress(&self.dir)
+                {
+                    status["installation"] = installation;
+                }
+                Ok(status)
             }
-            "update/healthy" => Ok(json!({"healthy": true})),
-            "update/install" => Err(UPDATE_MESSAGE.into()),
+            "update/check" => {
+                let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
+                let bundle_check = crate::mac_updater::current_installable_bundle();
+                let mut status = self.updates.policy_check(
+                    community_current_version(),
+                    self.include_prerelease(),
+                    bundle_check.is_ok(),
+                    force,
+                );
+                if status.get("available").and_then(Value::as_bool) == Some(true) {
+                    if let Err(reason) = bundle_check {
+                        status["installableReason"] = json!(reason);
+                    }
+                }
+                if let Some(installation) =
+                    wuwatappo_assistant_core::release_installer::read_progress(&self.dir)
+                {
+                    status["installation"] = installation;
+                }
+                Ok(status)
+            }
+            "update/healthy" => {
+                wuwatappo_assistant_core::release_installer::ack_healthy(
+                    &self.dir,
+                    community_current_version(),
+                );
+                Ok(json!({"healthy": true}))
+            }
+            "update/install" => {
+                if self
+                    .installing
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return Err("更新正在进行中，请稍候…".into());
+                }
+                struct InstallGuard<'a> {
+                    flag: &'a AtomicBool,
+                    armed: bool,
+                }
+                impl Drop for InstallGuard<'_> {
+                    fn drop(&mut self) {
+                        if self.armed {
+                            self.flag.store(false, Ordering::Release);
+                        }
+                    }
+                }
+                let mut guard = InstallGuard {
+                    flag: &self.installing,
+                    armed: true,
+                };
+                crate::mac_updater::current_installable_bundle()?;
+                let region = crate::profile::Region::from_app(app);
+                let candidate =
+                    wuwatappo_assistant_core::release_updates::community_installer_for_kind(
+                        community_current_version(),
+                        self.include_prerelease(),
+                        region.id(),
+                        "macos",
+                    )?;
+                let value =
+                    crate::mac_updater::prepare_update(&self.dir, region.identifier(), &candidate)?;
+                guard.armed = false;
+                let handle = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(400));
+                    let _ = handle.emit("tray-quit", Value::Null);
+                    std::thread::sleep(Duration::from_millis(1400));
+                    handle.exit(0);
+                });
+                Ok(value)
+            }
             "diagnostic" => {
                 wuwatappo_assistant_core::append_diagnostic(&self.dir, body);
                 Ok(json!({"ok":true}))

@@ -193,6 +193,33 @@ fn client(timeout: Duration) -> Result<Client, String> {
         .map_err(|error| error.to_string())
 }
 
+pub fn is_trusted_github_download_url(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url
+            .host_str()
+            .is_some_and(|host| host == "github.com" || host.ends_with(".githubusercontent.com"))
+}
+
+pub(crate) fn github_download_client(timeout: Duration) -> Result<Client, String> {
+    let policy = Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 || !is_trusted_github_download_url(attempt.url()) {
+            attempt.stop()
+        } else {
+            attempt.follow()
+        }
+    });
+    Client::builder()
+        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(10))
+        .redirect(policy)
+        .user_agent("WuwaTappo-Full-Community")
+        .build()
+        .map_err(|error| error.to_string())
+}
+
 fn checked_at() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -539,8 +566,18 @@ pub fn community_installer(
     include_prerelease: bool,
     region: &str,
 ) -> Result<Value, String> {
+    community_installer_for_kind(current, include_prerelease, region, "windowsUpdate")
+}
+
+pub fn community_installer_for_kind(
+    current: &str,
+    include_prerelease: bool,
+    region: &str,
+    asset_kind: &str,
+) -> Result<Value, String> {
     let profile = crate::regions::profile(region).ok_or("未知官方服务区域")?;
     let client = client(Duration::from_secs(30))?;
+    let download_client = github_download_client(Duration::from_secs(30))?;
     let list_url = Url::parse(&format!(
         "https://api.github.com/repos/{REPOSITORY}/releases?per_page=100"
     ))
@@ -556,7 +593,7 @@ pub fn community_installer(
     if compare_versions(&version, current)? != std::cmp::Ordering::Greater {
         return Err("当前已经是最新版本".into());
     }
-    let asset_name = release_asset_name("windowsUpdate", &profile.artifact_prefix, &version)?;
+    let asset_name = release_asset_name(asset_kind, &profile.artifact_prefix, &version)?;
     let sums_name = release_contract()["checksumFile"]
         .as_str()
         .ok_or("共享发布契约缺少校验文件名")?;
@@ -582,7 +619,7 @@ pub fn community_installer(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let size = asset.get("size").and_then(Value::as_u64).unwrap_or(0);
-    if size == 0 || size > 500 * 1024 * 1024 {
+    if size == 0 || size > 512 * 1024 * 1024 {
         return Err("升级包大小无效".into());
     }
     let sums = find_asset(sums_name)?;
@@ -591,7 +628,7 @@ pub fn community_installer(
         .and_then(Value::as_str)
         .ok_or("校验文件缺少下载地址")?;
     let checksum_text = fetch_text(
-        &client,
+        &download_client,
         Url::parse(sums_url).map_err(|e| e.to_string())?,
         256 * 1024,
     )?;
@@ -855,9 +892,39 @@ mod tests {
             "WuwaTappo-Full-Global-Community-Windows-x64-1.3.2.exe"
         );
         assert_eq!(
+            release_asset_name(
+                "macos",
+                "WuwaTappo-Full-CN-Community",
+                "1.3.2-beta.5"
+            )
+            .unwrap(),
+            "WuwaTappo-Full-CN-Community-1.3.2-beta.5-macOS-arm64.dmg"
+        );
+        assert_eq!(
+            release_asset_name(
+                "macos",
+                "WuwaTappo-Full-Global-Community",
+                "1.3.2-beta.5"
+            )
+            .unwrap(),
+            "WuwaTappo-Full-Global-Community-1.3.2-beta.5-macOS-arm64.dmg"
+        );
+        assert_eq!(
             release_contract()["checksumFile"].as_str(),
             Some("SHA256SUMS.txt")
         );
+        assert!(is_trusted_github_download_url(
+            &Url::parse("https://github.com/alexzhong233/WuwaTappo-Full-Community/releases/download/v1.3.2-beta.5/SHA256SUMS.txt").unwrap()
+        ));
+        assert!(is_trusted_github_download_url(
+            &Url::parse("https://objects.githubusercontent.com/github-production-release-asset-2e65be/x").unwrap()
+        ));
+        assert!(!is_trusted_github_download_url(
+            &Url::parse("http://github.com/a/b").unwrap()
+        ));
+        assert!(!is_trusted_github_download_url(
+            &Url::parse("https://evil.example/a/b").unwrap()
+        ));
     }
 
     #[test]

@@ -62,7 +62,7 @@ function createAssistantUpdateGate({window,result,retry,install,quit}){
   const {el,button}=assistantUi(window),root=el('section',undefined,window.document.body,'wt-gate');
   root.setAttribute('role','alertdialog');root.setAttribute('aria-modal','true');root.tabIndex=-1;
   const card=el('article',undefined,root),title=el('h2','需要更新',card),message=el('p','',card);
-  el('p','新版本来自本项目 GitHub 发布。更新会保留账号、图鉴缓存与设置；Windows 版可自动下载、校验、备份并重启，macOS 版因系统限制只能跳转下载页。',card,'wt-muted');
+  el('p','新版本来自本项目 GitHub 发布。更新会保留账号、图鉴缓存与设置，支持自动下载、校验、备份并重启升级。',card,'wt-muted');
   const actions=el('div',undefined,card,'wt-controls'),status=el('p','',card,'wt-notice');
   let busy=false;
   const update=button('一键更新',actions,async()=>{
@@ -325,13 +325,20 @@ function createAssistantDashboard(d){
         // 其余情况（macOS 版、发布里没 zip、下载校验失败）都退回跳 GitHub 下载安装包。
         if(r.installable){
           const install=button('一键更新',row,async()=>{
-            install.disabled=true;status.textContent='正在下载并校验升级包…';
+            install.disabled=true;status.textContent='正在下载并校验安装包…';
+            const pollTimer=window.setInterval(async()=>{
+              try{
+                const s=await d.atlas.request('/update/status',{});
+                if(s?.installation?.message)status.textContent=s.installation.message;
+              }catch{}
+            },1000);
             try{const res=await d.atlas.request('/update/install',{});status.textContent=res.message||'正在退出桌宠并原地升级…';}
             catch(e){status.textContent='程序内更新失败：'+e.message+'。可以改为下载安装包覆盖安装。';install.disabled=false;if(!row.querySelector('[data-github-fallback]')){const fallback=button('前往 GitHub 下载',row,github);fallback.setAttribute('data-github-fallback','true');}}
+            finally{window.clearInterval(pollTimer);}
           },'wt-primary');
           button('前往 GitHub 下载',row,github);
         }else{
-          el('p','当前系统或这个发布不支持程序内更新，将打开 GitHub Releases 下载安装包。',box,'wt-muted');
+          el('p',r.installableReason||'当前系统或这个发布不支持程序内更新，将打开 GitHub Releases 下载安装包。',box,'wt-muted');
           button('前往 GitHub 下载',row,github,'wt-primary');
         }
         button('稍后',row,()=>gate.remove());

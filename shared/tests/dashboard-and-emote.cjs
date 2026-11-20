@@ -165,8 +165,11 @@ async function testDashboard(targetPath) {
         return { required: false, current: '1.3.2-beta.3', github_version: '1.3.2', checked_at: 100, release_notes: 'notes' };
       }
       if (route === '/update/check') throw new Error('offline');
+      if (route === '/update/install') throw new Error('network timeout');
       if (route === '/community/update-check') {
         if (communityMode === 'error') return { current: '1.3.2-beta.3', latest: '', updateAvailable: false, error: 'rate limit', message: 'GitHub 接口限流' };
+        if (communityMode === 'available-unwritable') return { current: '1.3.2-beta.3', latest: '1.3.2-beta.5', updateAvailable: true, installable: false, installableReason: '当前正直接在磁盘映像（DMG）中运行，请先将应用拖入「应用程序」文件夹后再打开' };
+        if (communityMode === 'available-installable') return { current: '1.3.2-beta.3', latest: '1.3.2-beta.5', updateAvailable: true, installable: true };
         return { current: '1.3.2-beta.3', latest: '1.3.2', updateAvailable: false, releaseNotes: 'Fixed' };
       }
       return {};
@@ -221,6 +224,26 @@ async function testDashboard(targetPath) {
   const communityReqs = requests.filter(r => r.route === '/community/update-check');
   assert.ok(communityReqs.length >= 2);
   assert.equal(communityReqs.at(-1).body?.force, true);
+
+  // Test confirmUpdate dialog: installable=true shows 一键更新 + fallback on error; installable=false shows installableReason
+  communityMode = 'available-unwritable';
+  await checkBtn.onclick();
+  let gate = doc.body.querySelector('.wt-gate');
+  assert.ok(gate, 'update modal shown when updateAvailable is true');
+  assert.ok(gate.textContent.includes('拖入「应用程序」'), gate.textContent);
+  assert.equal(gate.findAll(n => n.tagName === 'BUTTON' && n._text === '一键更新').length, 0);
+  gate.findAll(n => n.tagName === 'BUTTON' && n._text === '稍后')[0].onclick();
+
+  communityMode = 'available-installable';
+  await checkBtn.onclick();
+  gate = doc.body.querySelector('.wt-gate');
+  assert.ok(gate);
+  const oneClickBtn = gate.findAll(n => n.tagName === 'BUTTON' && n._text === '一键更新')[0];
+  assert.ok(oneClickBtn, '一键更新 button shown when installable is true');
+  await oneClickBtn.onclick();
+  assert.equal(requests.some(r => r.route === '/update/install'), true);
+  assert.ok(gate.querySelector('[data-github-fallback="true"]'), 'fallback GitHub button shown after install error');
+  gate.findAll(n => n.tagName === 'BUTTON' && n._text === '稍后')[0].onclick();
 
   // Test `settings` tab: no Accessibility button, frequency input, 1-5 slot picker, live emote hint
   dash.showTab('settings');

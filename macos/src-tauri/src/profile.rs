@@ -9,11 +9,15 @@ pub enum Region {
 }
 
 impl Region {
-    fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Self::Cn => "cn",
             Self::Global => "global",
         }
+    }
+
+    pub fn identifier(self) -> &'static str {
+        self.profile().mac_identifier.as_str()
     }
 
     fn profile(self) -> &'static RegionProfile {

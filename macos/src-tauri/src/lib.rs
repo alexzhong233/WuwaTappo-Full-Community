@@ -5,6 +5,7 @@ mod fullscreen;
 mod gamepad;
 mod geometry;
 mod input;
+mod mac_updater;
 mod menu;
 mod mod_assets;
 mod profile;

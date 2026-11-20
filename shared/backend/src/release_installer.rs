@@ -28,7 +28,7 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-fn write_progress(root: &Path, job: &Path, phase: &str, percent: f64, message: &str) {
+pub fn write_progress(root: &Path, job: &Path, phase: &str, percent: f64, message: &str) {
     let payload = json!({
         "phase": phase,
         "percent": percent,
@@ -41,6 +41,27 @@ fn write_progress(root: &Path, job: &Path, phase: &str, percent: f64, message: &
     let updates = root.join(".updates");
     let _ = fs::create_dir_all(&updates);
     let _ = atomic_json(&updates.join("install-current.json"), &payload);
+}
+
+pub fn prune_old_jobs(root: &Path) {
+    let updates = root.join(".updates");
+    let Ok(entries) = fs::read_dir(&updates) else {
+        return;
+    };
+    let cutoff = Duration::from_secs(24 * 3600);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let stale = fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .and_then(|mtime| SystemTime::now().duration_since(mtime).map_err(|e| std::io::Error::other(e)))
+            .is_ok_and(|age| age > cutoff);
+        if stale {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
 }
 
 /// 读取最近 15 分钟内（未过期）的升级进度快照。
@@ -156,7 +177,7 @@ fn atomic_json(path: &Path, value: &Value) -> Result<(), String> {
     replace_path(&temp, path).map_err(|error| error.to_string())
 }
 
-fn download_with_progress<F>(
+pub fn download_with_progress<F>(
     url: &str,
     target: &Path,
     expected_size: u64,
@@ -166,13 +187,12 @@ fn download_with_progress<F>(
 where
     F: FnMut(u64, u64),
 {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .connect_timeout(Duration::from_secs(10))
-        .user_agent("WuwaTappo-Full-Community-Updater")
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut response = client.get(url).send().map_err(|error| error.to_string())?;
+    let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
+    if !crate::release_updates::is_trusted_github_download_url(&parsed) {
+        return Err("升级包下载地址不受信任".into());
+    }
+    let client = crate::release_updates::github_download_client(Duration::from_secs(300))?;
+    let mut response = client.get(parsed).send().map_err(|error| error.to_string())?;
     if !response.status().is_success() {
         return Err(format!(
             "升级包下载失败：HTTP {}",
@@ -416,6 +436,7 @@ pub fn prepare(root: &Path, candidate: &Value) -> Result<Value, String> {
     if !url.starts_with("https://github.com/") || !version.starts_with(char::is_numeric) {
         return Err("升级包来源无效".into());
     }
+    prune_old_jobs(root);
     let job_id = format!(
         "{}-{}",
         SystemTime::now()
