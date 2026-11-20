@@ -639,7 +639,9 @@ fn controller_init(platform: Platform, config: &Value, controller: &str) -> Resu
     ).unwrap();
     Ok(format!(
         "{controller}\nconst localAtlasRoute = ['/', '/panel'].includes((window.location.hash || '#/').slice(1).split('?')[0]);\n\
-const localAtlasController = localAtlasRoute ? createLocalAtlasController({{\n\
+let localAtlasController = null;\n\
+if (localAtlasRoute) try {{\n\
+ localAtlasController = createLocalAtlasController({{\n\
 ref, window, storage: localStorage, {transport}, normalizeAtlasList, resolvePetAssetIdFromAppearanceId, getAppearanceAssetById,\n\
 apiBase: {api_base}, synthesisAtlas, synthesisAtlasSame, refreshBag: getBagList,\n\
 setGameMode: enabled => invoke('plugin:event|emit',{{event:'cat-settings-game-mode',payload:{{enabled:Boolean(enabled)}}}}).catch(()=>{{}}),\n\
@@ -650,12 +652,15 @@ catalogConsumer: localAtlasRoute,\n\
 applyOfflineCatalog: (payload, host) => applyCatalog(buildCatalogMaps(payload), host, Date.now()),\n\
 restoreCatalog: saved => applyCatalog({{assets: saved.assets, atlases: saved.atlases}}, saved.host, saved.ts),\n\
 onError: error => console.error('[local-gallery]', error)\n\
-}}) : null;\n\
+}});\n\
+}} catch (error) {{ console.error('[local-gallery] controller init failed; using official UI', error); }}\n\
 window.__WUWA_LOCAL_ATLAS__ = localAtlasController;\n\
 if (localAtlasController) {{\n\
-localAtlasController.ready.then(() => {{ localStartOnlineServices(); return bootstrap(); }}).catch(error => {{\n\
- console.error('[local-gallery] startup failed', error);\n\
- document.getElementById('app').textContent = {prefix_json} + (error?.message || '');\n\
+localAtlasController.ready.then(async () => {{ localStartOnlineServices(); await bootstrap(); localAtlasController.startOverlay(); }}).catch(error => {{\n\
+ console.error('[local-gallery] startup failed; falling back to official UI', {prefix_json}, error);\n\
+ localAtlasController.enabled.value = false;\n\
+ localStartOnlineServices();\n\
+ return bootstrap();\n\
 }});\n\
 watch(localAtlasController.enabled, on => {{ if (!on) localStartOnlineServices(); }});\n\
 }} else {{ localStartOnlineServices(); bootstrap(); }}\n",
@@ -1225,8 +1230,7 @@ function __localRefresh(){{
     let show_toast_p = require_import(&pi, "showToast")?;
 
     let setup = format!(
-        "const __localEnabled=__lg.enabled,__localBusy=__lg.busy,__localSync=__lg.syncStatus,__localCache=__lg.cacheReady;\n\
-async function __toggleLocal(event){{try{{await __lg.setEnabled(event.target.checked);}}catch(error){{{show_toast_p}(error.message);}}event.target.checked=__localEnabled.value;}}\n\
+        "const __localBusy=__lg.busy,__localSync=__lg.syncStatus,__localCache=__lg.cacheReady;\n\
 async function __syncLocal(){{try{{const status=await __lg.syncCache(true);{show_toast_p}('本地图鉴已同步：'+(status.result?.atlas_count||'')+'项');}}catch(error){{{show_toast_p}(error.message);}}}}\n\
 function __openCommunityUpdate(event){{try{{event&&event.stopPropagation&&event.stopPropagation();__lg.assistant.openPanel('update');}}catch(error){{console.error('[assistant]',error);}}}}\n"
     );
@@ -1381,19 +1385,6 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         .return_start
         .ok_or("面板根组件缺少 returnStart")?;
     panel_edits.push(Edit::new(panel_return, panel_return, ready_retry));
-
-    for condition in &p_raw.room_conditions {
-        if condition.test.contains("activeTab") {
-            let message = format!(
-                "{open_block_p}(), {create_elem_block_p}('div',{{class:'module-block',style:'padding:24px'}},'本地全图鉴已开启，无法进入联机。请先关闭开关。')"
-            );
-            panel_edits.push(Edit::new(
-                condition.start,
-                condition.start,
-                format!("__lg.enabled.value && {} ? ({message}) : ", condition.test),
-            ));
-        }
-    }
 
     let atlas_text = &panel_orig[atlas_component.start..atlas_component.end];
     let merge_check_re = Regex::new(&format!(
@@ -1750,8 +1741,8 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     )?;
     shared = rec.replace(
         &shared,
-        "localAtlasController.ready.then(() => { localStartOnlineServices(); return bootstrap(); })",
-        "Promise.all([localAtlasController.ready,localAtlasController.assistant.ready]).then(() => { localStartOnlineServices(); return bootstrap(); })",
+        "localAtlasController.ready.then(async () => { localStartOnlineServices(); await bootstrap(); localAtlasController.startOverlay(); })",
+        "Promise.all([localAtlasController.ready,localAtlasController.assistant.ready]).then(async () => { localStartOnlineServices(); await bootstrap(); localAtlasController.startOverlay(); })",
     )?;
 
     main = rec.replace(

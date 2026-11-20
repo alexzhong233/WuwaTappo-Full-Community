@@ -51,8 +51,9 @@ test('routes controller requests through the native bridge and never fetches loc
   await instance.ready;
   await instance.request('/assistant/state', {});
   // /asset-base 在启动时取一次本机取图前缀，其余请求照旧全部走原生桥。
-  assert.deepEqual(calls.map(([route]) => route).slice(0, 4), ['/status', '/asset-base', '/game/status', '/assistant/state']);
-  assert.ok(calls.some(([route]) => route === '/assistant/state'));
+  const routes = calls.map(([route]) => route);
+  assert.deepEqual(routes.slice(0, 2), ['/status', '/asset-base']);
+  assert.ok(routes.includes('/assistant/state'));
   instance.dispose();
 });
 
@@ -80,6 +81,7 @@ test('hybrid source labels, cloud preset decision, synthesis and capture stay sh
     : { asset_id: id, asset_type: 'character_skin', game_role_id: 0 };
   const { instance, calls } = controller({ appearance });
   await instance.ready;
+  instance.enabled.value = true;
   const atlas = [
     { asset_id: 1, asset_type: 'character_skin_atlas', asset_name: 'Official' },
     { asset_id: 2, asset_type: 'accessory_atlas', asset_name: 'Local ears' },

@@ -422,21 +422,8 @@ function createAssistantDashboard(d){
       const opacity=el('input',undefined,opacityRow);opacity.type='range';opacity.min=.35;opacity.max=1;opacity.step=.01;opacity.oninput=()=>{d.atlas.setCapture?.({panelOpacity:Number(opacity.value)});applyDashboardStyle();};
       function applyDashboardStyle(){const c=d.atlas.capture?.value||{};root.style.opacity=String(Math.max(.35,Math.min(1,Number(c.panelOpacity)||.96)));root.style.backgroundImage=c.panelBackground?`url("${String(c.panelBackground).replace(/"/g,'%22')}")`:'';opacity.value=c.panelOpacity||.96;}
       applyDashboardStyle();
-      // 本地全图鉴的开关在控制台里也放一份：改了外观想切回官方，不用再跑回设置页。
-      const lc=card();el('h3','本地全图鉴',lc);
-      const localRow=el('label',undefined,lc,'wt-setting'),localText=el('div',undefined,localRow);
-      el('h3','本机外观模式',localText);el('p','开启后使用全图鉴与本机 Mod；此时无法进入联机，关闭即恢复账号物品',localText,'wt-muted');
-      const localBox=el('input',undefined,localRow);localBox.type='checkbox';localBox.setAttribute('aria-label','本地全图鉴');
-      localBox.onchange=async()=>{
-        localBox.disabled=true;
-        try{await d.atlas.setEnabled(localBox.checked);notice.textContent=localBox.checked?'混合外观已开启：本机 Mod 与官方联机同时可用':'已切换为纯官方外观';}
-        catch(e){localBox.checked=!localBox.checked;notice.textContent=e.message;}
-        finally{localBox.disabled=false;}
-      };
       const emoteHint=el('p','',c,'wt-muted');emoteHint.setAttribute('data-emote-hint','true');
       renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox'){input.checked=!!value.settings[k];input.disabled=k==='auto_click_balance'&&!value.settings.enabled&&!value.settings.auto_click_balance;}else input.value=value.settings[k]??(k==='auto_emote_interval'?25:'');}
-        if(doc.activeElement!==localBox)localBox.checked=!!d.atlas.enabled.value;
-        localBox.disabled=!!d.atlas.busy.value;
         const stats=value?.runtime?.emote||d.atlas?.assistant?.emoteStats||{};
         const isRandom=value?.settings?.auto_emote_random!==false;
         randBtn.className='wt-slot'+(isRandom?' active':'');

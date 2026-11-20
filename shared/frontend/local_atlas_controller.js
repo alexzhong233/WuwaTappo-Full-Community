@@ -704,7 +704,7 @@ function createLocalAtlasController(d) {
   }
   const initial = read();
   let desiredLocal = initial.desired !== false && initial.enabled !== false;
-  enabled.value = desiredLocal;
+  enabled.value = false;
   selection.value = initial.selection || {}; favorites.value = initial.favorites || {};
   installLoadingFade();
   installModBadge();
@@ -749,27 +749,44 @@ function createLocalAtlasController(d) {
     cacheBootstrapStarted = true;
     localRequest('/sync', {force: false}).then(status => { syncStatus.value = status; }).catch(() => {});
   }
-  const ready = waitForHost().then(async status => {
-    syncStatus.value = status.sync || syncStatus.value;
-    cacheReady.value = status.ready === true;
-    const on = status.enabled === true && status.mode_verified === true && ['rooms-only','hybrid'].includes(status.network_policy);
-    if (!cacheReady.value) {
-      // 全新安装：发行包不带素材缓存（近百 MB），宿主此刻正在后台下载。
-      // 这里绝对不能 throw —— ready 是主渲染进程的启动闸门，抛错会把整个界面
-      // 替换成一行「请通过本地版启动器运行」，装完就完全没法用。
+  async function activateLocalIfReady() {
+    try {
+      const status = await localRequest('/status');
+      syncStatus.value = status.sync || syncStatus.value;
+      cacheReady.value = status.ready === true;
+      if (!cacheReady.value) { kickCacheBootstrap(); return false; }
+      await prepare(true);
+      const response = await localRequest('/mode', {enabled:true});
+      if (!response.enabled || !response.mode_verified || !['rooms-only','hybrid'].includes(response.network_policy)) {
+        throw new Error('本地外观叠加层未就绪');
+      }
+      await applyMode(true);
+      enabled.value = true;
+      desiredLocal = true;
+      save();
+      startGameWatch();
+      return true;
+    } catch (error) {
       enabled.value = false;
       save();
-      kickCacheBootstrap();
-      return;
+      console.warn('[local-gallery] overlay disabled; official UI remains active', error);
+      return false;
     }
-    const wantOn = desiredLocal || enabled.value || on;
-    if (wantOn && !on) await localRequest('/mode',{enabled:true});
-    await applyMode(wantOn);
-    enabled.value = wantOn;
-    startGameWatch();
-    save();
-    if (d.catalogConsumer!==false&&d.window.setTimeout) d.window.setTimeout(() => syncCache(false).catch(() => {}), 2000);
+  }
+  const ready = waitForHost().then(status => {
+    syncStatus.value = status.sync || syncStatus.value;
+    cacheReady.value = status.ready === true;
+    if (!cacheReady.value) kickCacheBootstrap();
+    return status;
   });
+  let overlayPromise = null;
+  function startOverlay() {
+    if (overlayPromise) return overlayPromise;
+    overlayPromise = Promise.resolve()
+      .then(() => desiredLocal && cacheReady.value ? activateLocalIfReady() : false)
+      .finally(() => { overlayPromise = null; });
+    return overlayPromise;
+  }
   if (d.window.setInterval) {
     let checkingStatus = false;
     statusTimer=d.window.setInterval(async () => {
@@ -781,7 +798,7 @@ function createLocalAtlasController(d) {
         const wasReady = cacheReady.value;
         cacheReady.value = status.ready === true;
         const on = cacheReady.value && status.enabled === true && status.mode_verified === true && ['rooms-only','hybrid'].includes(status.network_policy);
-        if (cacheReady.value && desiredLocal && !on) { await localRequest('/mode',{enabled:true}); await applyMode(true); save(); }
+        if (cacheReady.value && desiredLocal && !enabled.value) { await startOverlay(); }
         else if (on !== enabled.value) { await applyMode(on); save(); }
         else if (!wasReady && cacheReady.value) revision.value++;
       } catch {}
@@ -793,7 +810,7 @@ function createLocalAtlasController(d) {
     favorite, reorder, prepare, offlineData, get assetsHost() { return resolveAssetsHost(); }, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, assetUrl, request: localRequest, dispose,
     presetList, createLocalPreset, deleteLocalPreset, applyLocalPreset, collectionProgress,
     mergePresets, applyPreset,
-    ownedBag, accessoryTransform, setAccessoryTransform, resetAccessoryTransform,
+    ownedBag, accessoryTransform, setAccessoryTransform, resetAccessoryTransform, activateLocalIfReady, startOverlay,
     officialOwned, sourceFor, afterOfficialSelect, clearLocal, shouldCreateLocalPreset,
     synthesizeDuplicates, capture, setCapture, applyCaptureStyle,
     restricted,normalCumulative:()=>d.getAccountCumulative?.()??0,normalPending:()=>d.getAccountPending?.()??0};

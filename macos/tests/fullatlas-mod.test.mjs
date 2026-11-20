@@ -126,6 +126,7 @@ for (const platform of ['macos', 'windows']) {
     first.controller.select({ asset_type: 'emote', asset_id: 1000000005, asset_name: 'Happy' }, officialUser, 8);
     const restarted = app.open();
     await restarted.controller.ready;
+    await restarted.controller.startOverlay();
     assert.equal(restarted.controller.viewUser(officialUser).character.id, 1000000001);
     await first.controller.removeCustomResource('mod-example');
     await new Promise(resolve => setImmediate(resolve));
