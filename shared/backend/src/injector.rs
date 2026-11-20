@@ -117,9 +117,9 @@ fn patch_accessory_transform(
     let y = &caps[4];
     let user = &caps[5];
     let declaration = if whole.trim_start().starts_with("const ") { "const " } else { "" };
-    let replacement = "__DECL__NAME=__COMP(()=>{const{x:__X,y:__Y}=__ALIAS(__USER);const __t=window.__WUWA_LOCAL_ATLAS__?.accessoryTransform?.(__USER);return __t?{transform:`translate(${__X+__t.dx}px, ${__Y+__t.dy}px) rotate(${__t.rotate}deg) scale(${__t.scale})`,transformOrigin:'50% 50%'}:{transform:`translate(${__X}px, ${__Y}px)`}})"
+    let replacement = "__DECL____NAME__=__COMP(()=>{const{x:__X,y:__Y}=__ALIAS(__USER);const __t=window.__WUWA_LOCAL_ATLAS__?.accessoryTransform?.(__USER);return __t?{transform:`translate(${__X+__t.dx}px, ${__Y+__t.dy}px) rotate(${__t.rotate}deg) scale(${__t.scale})`,transformOrigin:'50% 50%'}:{transform:`translate(${__X}px, ${__Y}px)`}})"
         .replace("__DECL__", declaration)
-        .replace("__NAME", name)
+        .replace("__NAME__", name)
         .replace("__COMP", computed)
         .replace("__ALIAS", alias)
         .replace("__USER", user)
@@ -546,21 +546,10 @@ pub fn patch_atlas_guards(
     text: &str,
     extra_interceptor: &str,
 ) -> Result<String, String> {
-    let text = rec.replace(
-        text,
-        "async function ensureAppearanceAssetCatalog(e) {",
-        "async function ensureAppearanceAssetCatalog(e) {\n if (window.__WUWA_LOCAL_ATLAS__?.enabled.value) return true;",
-    )?;
-    let text = rec.replace(
-        &text,
-        "function applyCatalog(e, t, n) {",
-        "function applyCatalog(e, t, n) {\n if (window.__WUWA_LOCAL_ATLAS__?.enabled.value && t !== window.__WUWA_LOCAL_ATLAS__.assetsHost) return;",
-    )?;
-    let text = rec.replace(
-        &text,
-        "function atlas() {",
-        "function atlas() {\n if (window.__WUWA_LOCAL_ATLAS__?.enabled.value) return Promise.resolve({code: 0, data: window.__WUWA_LOCAL_ATLAS__.offlineData.value.atlas});",
-    )?;
+    // Local resources augment the official catalog; they must never replace
+    // the official catalog fetch or prevent the official network catalog from
+    // applying. The panel snapshot merges only missing local entries later.
+    let text = text.to_owned();
     let interceptor = format!(
         "this.instance.interceptors.request.use(t => {{\n if (window.__WUWA_LOCAL_ATLAS__?.enabled.value && window.__WUWA_LOCAL_ATLAS__.restricted(t.url,t.method)) throw window.__WUWA_LOCAL_ATLAS__.offlineError();{ACTIVITY_LOADING_GUARD}{extra_interceptor}"
     );
@@ -966,7 +955,6 @@ pub fn integrate_build(
     let host = req_field("assetsCdnHost")?;
     let bag = req_field("bagList")?;
     let atlas = req_field("atlasList")?;
-    let atlas_loading = req_field("atlasListLoading")?;
     let preset_list_field = req_field("presetList")?;
     let preset_loading_field = req_field("presetListLoading")?;
     let user_info_field = req_field("userInfo")?;
@@ -997,22 +985,13 @@ pub fn integrate_build(
     };
 
     let get_bag_list = require_import(&mi, "getBagList")?;
-    let atlas_imp = require_import(&mi, "atlas")?;
     let activity_info_imp = require_import(&mi, "activityInfo")?;
     let get_preset_list = require_import(&mi, "getPresetList")?;
 
     let bag_loader = function_for(&component_functions, &main_orig, &format!("await {get_bag_list}()"))?;
-    let atlas_loader = function_for(&component_functions, &main_orig, &format!("await {atlas_imp}()"))?;
     let activity_loader =
         function_for(&component_functions, &main_orig, &format!("await {activity_info_imp}()"))?;
 
-    insert_fn(
-        &mut edits,
-        &atlas_loader.name,
-        format!(
-            "if(__lg.enabled.value){{{atlas}=__lg.offlineData.value.atlas;{atlas_loading}=false;return;}}"
-        ),
-    )?;
     insert_fn(&mut edits, &activity_loader.name, "try {".into())?;
     edits.push(Edit::new(
         activity_loader.body_end - 1,
@@ -1041,9 +1020,11 @@ pub fn integrate_build(
         &mut edits,
         select_name,
         format!(
-            "if(__lg.enabled.value){{
- if(__lg.officialOwned({select_param}.asset_id,{select_param}.asset_type)){{__lg.afterOfficialSelect({select_param},{store}.userInfo,{max_emotes});}}
- else{{try{{__lg.select({select_param},{store}.userInfo,{max_emotes});__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}
+            "if(__lg.enabled.value && !__skipLocalSelectChoice){{
+ if(__lg.beginSelect({select_param},{store}.userInfo,{max_emotes},()=>{{
+  __skipLocalSelectChoice=true;
+  try{{return {select_name}({select_param});}}finally{{__skipLocalSelectChoice=false;}}
+ }}))return;
 }}"
         ),
     )?;
@@ -1129,7 +1110,7 @@ pub fn integrate_build(
     );
     snap_text = snap_text.replace(
         &format!("atlasList: {atlas}"),
-        &format!("atlasList: __lg.enabled.value ? __lg.offlineData.value.atlas : {atlas}"),
+        &format!("atlasList: __lg.enabled.value ? __lg.mergeAtlas({atlas}) : {atlas}"),
     );
     snap_text = snap_text.replace(
         &format!("presetList: {preset_list_field}"),
@@ -1182,7 +1163,7 @@ pub fn integrate_build(
 
     let local_code = format!(
         r#"
-let __localSaved=null;
+ let __localSaved=null,__skipLocalSelectChoice=false;
 function __localRefresh(){{
  if(!__lg.enabled.value)return;
  const user=__lg.viewUser({store}.userInfo);
@@ -1190,7 +1171,7 @@ function __localRefresh(){{
  const name={getchar_sym}(user);if(name){role}=name.replace(/\.png$/i,'');
  {accessory}={getaccess_sym}(user)||null;
  {emotes}={getemotes_sym}(user).map(item=>({{id:item.id,name:item.name}}));
- {atlas}=__lg.offlineData.value.atlas;
+  {atlas}=__lg.mergeAtlas({atlas});
 }}
 {watch_sym}(__lg.enabled,on=>{{
  if(on){{__localSaved={{role:{role},accessory:{accessory},emotes:[...{emotes}],host:{host},atlas:{atlas}}};__localRefresh();}}
@@ -1231,14 +1212,14 @@ function __localRefresh(){{
 
     let setup = format!(
         "const __localBusy=__lg.busy,__localSync=__lg.syncStatus,__localCache=__lg.cacheReady;\n\
-async function __syncLocal(){{try{{const status=await __lg.syncCache(true);{show_toast_p}('本地图鉴已同步：'+(status.result?.atlas_count||'')+'项');}}catch(error){{{show_toast_p}(error.message);}}}}\n\
+async function __syncLocal(){{try{{const status=await __lg.syncCache(true);{show_toast_p}('素材缓存已同步：'+(status.result?.atlas_count||'')+'项');}}catch(error){{{show_toast_p}(error.message);}}}}\n\
 function __openCommunityUpdate(event){{try{{event&&event.stopPropagation&&event.stopPropagation();__lg.assistant.openPanel('update');}}catch(error){{console.error('[assistant]',error);}}}}\n"
     );
     let row = format!(
         "{h}('div',{{class:'setting-item','data-local-gallery-setting':'true'}},[\n\
- {h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'外观模式'),{h}('div',{{class:'setting-sub'}},'官方图鉴与联机保持可用；本机 Mod 和仅本地外观作为叠加层显示。',1)]),\n\
+ {h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'外观与挂饰调节'),{h}('div',{{class:'setting-sub'}},'官方图鉴、背包和联机保持原样；本地资源只补充本机显示。',1)]),\n\
  {h}('div',{{class:'setting-content'}},[{h}('button',{{class:'setting-btn',type:'button',style:'white-space:nowrap',onMousedown:{with_modifiers}(()=>{{}},['stop']),onClick:()=>__lg.assistant.openPanel('mods')}},'外观与挂饰')])]),\n\
- {h}('div',{{class:'setting-item','data-local-gallery-sync':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'更新本地图鉴'),{h}('div',{{class:'setting-sub'}},__localSync.value.status==='running'?'正在同步 '+__localSync.value.done+'/'+__localSync.value.total:!__localCache.value?'首次启动要联网补齐本地素材':'官方图鉴与本地图片已就绪',1)]),{h}('div',{{class:'setting-content'}},[{h}('button',{{class:'setting-btn',type:'button',disabled:__localBusy.value||__localSync.value.status==='running',onClick:__syncLocal}},'检查并同步')])]),\n\
+ {h}('div',{{class:'setting-item','data-local-gallery-sync':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'同步素材缓存'),{h}('div',{{class:'setting-sub'}},__localSync.value.status==='running'?'正在同步 '+__localSync.value.done+'/'+__localSync.value.total:!__localCache.value?'首次启动需要联网补齐素材缓存':'本机素材缓存已就绪',1)]),{h}('div',{{class:'setting-content'}},[{h}('button',{{class:'setting-btn',type:'button',disabled:__localBusy.value||__localSync.value.status==='running',onClick:__syncLocal}},'检查并同步')])]),\n\
 ");
     let mut panel_edits = vec![
         Edit::new(
@@ -1468,7 +1449,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
             m.start(),
             m.end(),
             format!(
-                "\"is-item-clickable\": (__c => window.__WUWA_LOCAL_ATLAS__?.enabled.value ? !0 : {name}(__c))"
+                "\"is-item-clickable\": (__c => window.__WUWA_LOCAL_ATLAS__?.enabled.value ? window.__WUWA_LOCAL_ATLAS__.canSelect(__c) : {name}(__c))"
             ),
         ));
     }
@@ -1900,7 +1881,11 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         emote_send = emote_fn.name,
         bag_fn = bag_loader.name,
     );
-    main = rec.replace(&main, "let __localSaved=null;", &format!("{code}\nlet __localSaved=null;"))?;
+    main = rec.replace(
+        &main,
+        "let __localSaved=null,__skipLocalSelectChoice=false;",
+        &format!("{code}\nlet __localSaved=null,__skipLocalSelectChoice=false;"),
+    )?;
 
     let monitor_name = fs::read_dir(&readable_assets)
         .map_err(|e| e.to_string())?
@@ -2235,6 +2220,8 @@ mod tests {
         let out = patch_accessory_transform(&mut rec, source, "Du").unwrap();
         assert!(out.contains("accessoryTransform?.(A.userInfo)"), "{out}");
         assert!(out.contains("rotate(${__t.rotate}deg)"), "{out}");
+        assert!(out.contains("sn=pe(()=>"), "{out}");
+        assert!(!out.contains("NAME=pe(()=>"), "{out}");
     }
 
     #[test]

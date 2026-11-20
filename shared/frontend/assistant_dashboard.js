@@ -129,7 +129,7 @@ function createAssistantDashboard(d){
       for(const[n,label]of [[1,'轻缓'],[5,'标准'],[10,'快速']]){const b=button('',speedGrid,()=>change({speed:n}),'wt-speed');el('strong',label+' · '+n+' 次/秒',b);el('span','键盘或鼠标操作时自动暂停',b);speedButtons[n]=b;}
       const recent=card(),r=el('div',undefined,recent,'wt-row wt-between');el('h3','最近获得',r);button('查看全部',r,()=>showTab('rewards'));const logs=el('div',undefined,recent);
       renderView=()=>{const r=value.runtime||{},s=value.settings;
-        description.textContent=(r.local_atlas?'全图鉴 + Mod 已开启':'官方模式（账号背包）')+' · 点数与开箱始终使用同一个真实账号';
+        description.textContent='官方图鉴与账号背包 · 本地资源作为补充 · 点数与开箱始终使用同一个真实账号';
         [r.balance,r.total,value.session,value.session_chests].forEach((n,i)=>numbers[i].textContent=n===undefined?'—':fmt(n));
         for(const side of ['left','right']){const c=r.chests?.[side],ms=c?.remaining||0;progress[side].text.textContent=!r.logged_in?'需要登录':c?.ready?'可开启':Math.floor(ms/60000)+':'+String(Math.ceil(ms/1000)%60).padStart(2,'0');progress[side].fill.style.width=(c?.ready?100:Math.max(0,100*(1-ms/(r.chests?.cooldown||1800000))))+'%';}
         hint.textContent=(s.auto_chest?'自动开箱已开启':'自动开箱已关闭')+' · 余额至少 '+fmt(Math.max(s.threshold,1000))+'，按钮出现约 2 秒后领取';
@@ -137,7 +137,7 @@ function createAssistantDashboard(d){
     }else if(key==='rewards'){
       const c=card();el('h3','真实开箱获得记录',c);el('p','两种图鉴模式共用记录，仅记录原版服务器成功返回的奖励。最近保留 1,000 条。',c,'wt-muted');const list=el('div',undefined,c);renderView=()=>logRows(list,value.rewards||[]);
     }else if(key==='daily'){
-      const c=card();el('h3','最近 7 天',c);el('p','根据原版累计点击数的增量统计；切换本地图鉴不会切换账本。首次读取仅建立基线。',c,'wt-muted');const summary=el('div','',c),chart=el('div',undefined,c,'wt-chart');
+      const c=card();el('h3','最近 7 天',c);el('p','根据原版累计点击数的增量统计；本地资源不会切换账本。首次读取仅建立基线。',c,'wt-muted');const summary=el('div','',c),chart=el('div',undefined,c,'wt-chart');
       const reset=button('清零本次发送与开箱次数',c,async()=>{try{await d.reset();await refresh();}catch(e){notice.textContent=e.message;}});
       const legacy=el('p','',c,'wt-muted');legacy.style.marginTop='14px';
       renderView=()=>{const week=value.weekly?.normal||[],max=Math.max(1,...week.map(x=>x.count));summary.textContent='今日 '+fmt(week.at(-1)?.count)+' · 昨日 '+fmt(week.at(-2)?.count);chart.replaceChildren();for(const day of week){const col=el('div',undefined,chart,'wt-column');el('div',fmt(day.count),col);const bar=el('div','',col,'wt-bar');bar.style.height=Math.max(3,120*day.count/max)+'px';el('div',day.date.slice(5),col);}legacy.textContent=value.legacy_local?.total?'旧版模拟点数 '+fmt(value.legacy_local.total)+' 已单独存档，不计入真实账号与此统计。':'';};
@@ -145,7 +145,7 @@ function createAssistantDashboard(d){
       const c=card();el('h3','去过的房间',c);el('p','成功进入后记录房间号与房主，收藏后置顶。官方联机始终可用；仅本地外观只在本机显示。',c,'wt-muted');const list=el('div',undefined,c);
       renderView=()=>{list.replaceChildren();if(!value.rooms?.length)el('div','还没有房间历史',list,'wt-empty');for(const room of value.rooms||[]){const row=el('div',undefined,list,'wt-log');button(room.favorite?'★':'☆',row,async()=>{try{await d.favorite(room.code,!room.favorite);await refresh();}catch(e){notice.textContent=e.message;}});const join=button(room.code+' · '+(room.host||'未知房主'),row,()=>d.join(room.code).catch(e=>{notice.textContent=e.message;}));join.disabled=value.update_required;button('删除记录',row,async()=>{try{await d.deleteRoom(room.code);await refresh();}catch(e){notice.textContent=e.message;}});}};
     }else if(key==='mods'){
-      const hero=card(content,'warm');el('h3','混合外观模式');const modeText=el('p','正在读取外观模式…',hero,'wt-muted');
+      const hero=card(content,'warm');el('h3','官方与本地外观');const modeText=el('p','正在读取外观资源…',hero,'wt-muted');
       const modeActions=el('div',undefined,hero,'wt-controls');
       button('检查并同步官方图鉴',modeActions,async()=>{try{await d.atlas.syncCache(true);notice.textContent='官方图鉴与本地素材已同步';}catch(e){notice.textContent=e.message;}},'wt-primary');
       const xform=card();el('h3','挂饰位置 / 大小 / 角度',xform);
@@ -165,7 +165,7 @@ function createAssistantDashboard(d){
       const importPack=button('导入 Mod ZIP',actions,importArchive,'wt-primary');button('重新扫描',actions,()=>refreshPacks());
       const list=el('div',undefined,tools);
       function paintMode(){
-        modeText.textContent='当前：全图鉴 + Mod 本机覆盖。官方已有外观仍可设为联机外观；仅本地外观不会写入账号。';
+        modeText.textContent='当前：官方图鉴与账号背包正常使用，本地资源只补充本机显示；官方已有外观可设为联机外观，仅本地外观不会写入账号。';
         paintTransform();
       }
       async function importArchive(){
@@ -185,7 +185,7 @@ function createAssistantDashboard(d){
           const r=await d.atlas.request('/custom/status');
           const packs=r.packs||[];
           list.replaceChildren();
-          summary.textContent=packs.length?('共 '+packs.length+' 个包 · '+r.atlas_count+' 项 · '+r.asset_count+' 张图片'):'还没有导入资源包。没有 Mod 时「全图鉴 + Mod」等同于原有全图鉴。';
+          summary.textContent=packs.length?('共 '+packs.length+' 个包 · '+r.atlas_count+' 项 · '+r.asset_count+' 张图片'):'还没有导入资源包；本地资源为空时直接使用官方图鉴。';
           if(r.error)el('p','Mod 叠加失败，已回退到官方图鉴：'+r.error,list,'wt-muted');
           if(!packs.length)el('div','点上方「导入 Mod ZIP」选择资源包；格式见 docs/MODS.md',list,'wt-empty');
           for(const pack of packs){
@@ -238,7 +238,7 @@ function createAssistantDashboard(d){
       button('打开官方桌宠下载页',actions,openPetSite,'wt-primary');
       // 拿不到发布号就说「未知」，不要一直挂着「检测中」——那看着像还在等网络。
       withTimeout(d.atlas.request('/community/version',{}),'本机版本读取').then(r=>{modValue.textContent=r.current||'未知';}).catch(()=>{modValue.textContent=d.version||'未知';});
-      withTimeout(d.atlas.request('/official/update-check',{}),'官方版本检查').then(paintOfficial).catch(e=>{baseValue.textContent='未知';updates.textContent='官方版本检查失败：'+e.message+'；不影响全图鉴版本检查。';});
+      withTimeout(d.atlas.request('/official/update-check',{}),'官方版本检查').then(paintOfficial).catch(e=>{baseValue.textContent='未知';updates.textContent='官方版本检查失败：'+e.message+'；不影响本机资源同步。';});
       // 官方清单偶尔会落后于我们已整合的基底（CDN 缓存或发布节奏差），
       // 这时说「已是最新（旧号）」会让人以为检查坏了，改成把两个号都摆出来。
       function versionParts(value){return String(value||'').split(/[.+-]/).map(n=>parseInt(n,10)||0).slice(0,3);}
@@ -364,7 +364,7 @@ function createAssistantDashboard(d){
         }
         button('稍后',row,()=>gate.remove());
       }
-      const sync=card();el('h3','本地图鉴资源',sync);el('p','本地开关只影响物品展示与本机装扮，登录、点数、开箱和版本检查仍使用原账号。',sync,'wt-muted');button('检查并同步官方图鉴',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'官方图鉴资源正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});
+      const sync=card();el('h3','本机素材资源',sync);el('p','本地素材只影响本机显示与装扮；官方背包、联机、登录、点数、开箱和版本检查仍使用原账号。',sync,'wt-muted');button('检查并同步素材缓存',sync,async()=>{try{const r=await d.atlas.request('/sync',{force:true});notice.textContent=r.status==='running'?'素材缓存正在后台同步':'同步请求已提交';}catch(e){notice.textContent=e.message;}});
       renderView=()=>{
         if(doc.activeElement!==preBox&&value?.settings)preBox.checked=!!value.settings.prerelease_updates;
         pollInstall();

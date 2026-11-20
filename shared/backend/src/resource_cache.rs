@@ -675,6 +675,15 @@ pub fn resolve_cached_asset(cache_dir: &Path, relative_key: &str) -> Option<Path
         return None;
     }
     let requested = trimmed.rsplit('/').next().filter(|s| !s.is_empty())?;
+    // The official renderer turns cached catalog keys such as
+    // `assets/<sha256>.png` into `<category>/<sha256>.png` when it builds
+    // pet/backpack image URLs. The cache file itself is already named by
+    // that digest, so resolve it before consulting the source manifest.
+    if !requested.contains('/') {
+        if let Some(file) = contained_file(&assets_dir, requested) {
+            return Some(file);
+        }
+    }
     let manifest = read_json_value(&cache_dir.join("asset_manifest.json"))?;
     let records = manifest["records"].as_array()?;
     fn clean_source(s: &str) -> &str {
@@ -695,9 +704,68 @@ pub fn resolve_cached_asset(cache_dir: &Path, relative_key: &str) -> Option<Path
                     .and_then(|source| clean_source(source).rsplit('/').next())
                     == Some(requested)
             })
-        })?;
-    let file = record["file"].as_str()?;
-    contained_file(&assets_dir, file)
+        });
+    if let Some(file) = record
+        .and_then(|record| record["file"].as_str())
+        .and_then(|file| contained_file(&assets_dir, file))
+    {
+        return Some(file);
+    }
+    resolve_named_catalog_asset(cache_dir, trimmed)
+}
+
+/// Resolve names emitted by the official renderer (for example
+/// `character/role_1304_1007_body_1.png`). The download manifest is keyed by
+/// official UUID URLs, while the renderer often composes paths from atlas
+/// names. The cached atlas + catalog contain the authoritative mapping.
+fn resolve_named_catalog_asset(cache_dir: &Path, relative_key: &str) -> Option<PathBuf> {
+    let (category, requested) = relative_key.split_once('/')?;
+    let category = category.to_ascii_lowercase();
+    let stem = requested
+        .strip_suffix(".png")
+        .or_else(|| requested.strip_suffix(".webp"))?;
+    let (atlas_type, primary_type) = match category.as_str() {
+        "character" | "character_atlas" => ("character_skin_atlas", "character_skin"),
+        "accessory" | "accessory_atlas" => ("accessory_atlas", "accessory"),
+        "emote" | "emote_atlas" => ("emote_atlas", "emote"),
+        _ => return None,
+    };
+    let atlas_doc = read_json_value(&cache_dir.join("atlas.json"))?;
+    let rows = atlas_doc.get("data")?.as_array()?;
+    let (row, base) = rows
+        .iter()
+        .filter(|row| row["asset_type"].as_str() == Some(atlas_type))
+        .filter_map(|row| {
+            let base = row["asset_name"].as_str()?.strip_suffix(".png")?;
+            (stem == base || stem.starts_with(&format!("{base}_")))
+                .then_some((row, base))
+        })
+        .max_by_key(|(_, base)| base.len())?;
+    let atlas_id = row["asset_id"].as_u64()?;
+    let catalog = read_json_value(&cache_dir.join("offline_catalog.json"))?;
+    let atlas_meta = catalog.get(atlas_type)?.get(atlas_id.to_string())?;
+    let url_key = if category.ends_with("_atlas") {
+        "url".to_owned()
+    } else if primary_type == "character_skin" {
+        match stem.strip_prefix(base).unwrap_or_default() {
+            "" => "url".to_owned(),
+            suffix if suffix.starts_with("_body_") => format!("body{}", &suffix[6..]),
+            suffix if suffix.starts_with("_head_") => format!("head{}", &suffix[6..]),
+            _ => return None,
+        }
+    } else {
+        "url".to_owned()
+    };
+    let id = atlas_meta["height_light_id"].as_u64().unwrap_or(atlas_id);
+    let meta = catalog
+        .get(if category.ends_with("_atlas") { atlas_type } else { primary_type })?
+        .get(if category.ends_with("_atlas") { atlas_id } else { id }.to_string())?;
+    let target = meta.get(&url_key)?;
+    let asset = target
+        .as_str()
+        .or_else(|| target.get("url").and_then(Value::as_str))?;
+    let file = asset.strip_prefix("assets/")?;
+    contained_file(&cache_dir.join("assets"), file)
 }
 
 #[cfg(test)]
@@ -822,6 +890,38 @@ mod tests {
         assert_eq!(
             resolve_cached_asset(&cache, "character_atlas/same.png"),
             canon("atlas.png")
+        );
+        fs::write(assets.join("0123456789abcdef.png"), b"digest").unwrap();
+        fs::write(assets.join("body1.png"), b"body1").unwrap();
+        fs::write(assets.join("icon.png"), b"icon").unwrap();
+        fs::write(
+            cache.join("atlas.json"),
+            serde_json::to_vec(&json!({"data":[{
+                "asset_id": 20,
+                "asset_type": "character_skin_atlas",
+                "asset_name": "role_1304_1007.png"
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            cache.join("offline_catalog.json"),
+            serde_json::to_vec(&json!({
+                "character_skin": {"890": {"url":"assets/char.png","body1":{"url":"assets/body1.png"}}},
+                "character_skin_atlas": {"20": {"height_light_id":890,"url":"assets/icon.png"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_cached_asset(&cache, "character/0123456789abcdef.png"),
+            canon("0123456789abcdef.png")
+        );
+        let composed = format!("character/role_{}_{}_body_1.png", "1304", "1007");
+        assert_eq!(resolve_cached_asset(&cache, &composed), canon("body1.png"));
+        assert_eq!(
+            resolve_cached_asset(&cache, "character_atlas/role_1304_1007.png"),
+            canon("icon.png")
         );
         let _ = fs::remove_dir_all(&root);
     }
