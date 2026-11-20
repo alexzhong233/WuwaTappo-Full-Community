@@ -7,7 +7,7 @@ function resolveBalanceAutoClick(settings,balance) {
 }
 
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
-  const VERSION='1.3.2', updateRequired=ref(false);
+  const VERSION='1.4.0-beta.1', updateRequired=ref(false);
   const state=ref({settings:__WUWA_ASSISTANT_DEFAULTS__});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
   const ready=atlas.ready.then(()=>request('state')).then(v=>{state.value=v;updateRequired.value=!!v.update_required;});
@@ -45,6 +45,13 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   function currentEmoteSnapshot(){
     emoteStats.slots=slotLabels();
     return {...emoteStats,slots:[...emoteStats.slots]};
+  }
+  function sendEmoteSlot(index){
+    const item=(mainDependencies?.emotes?.()||[])[Number(index)];
+    if(!item?.id||!item?.src)return false;
+    if(mainDependencies?.blocked?.())return false;
+    mainDependencies.sendEmote(item);emoteStats.sent++;emoteStats.reason='hotkey';
+    return true;
   }
   function userClick(step=1){
     if(virtualClicking||!started||disposed)return;
@@ -146,6 +153,13 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     if(started)return;started=true;mainDependencies=d;
     await ready;state.value=await request('renderer-start');
     syncEmoteTarget();
+    const onEmoteHotkey=event=>{
+      if(!state.value.settings?.emote_hotkeys||event.repeat||!event.altKey)return;
+      const match=/^Digit([1-5])$/.exec(String(event.code||''));
+      if(!match)return;
+      if(sendEmoteSlot(Number(match[1])-1)){event.preventDefault();event.stopPropagation();}
+    };
+    window.addEventListener('keydown',onEmoteHotkey,true);
     const stopClickWatch=d.listenClicks?.(n=>userClick(n));
     async function loop(){
       if(disposed)return;
@@ -189,8 +203,8 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     await atlas.request('/update/healthy',{version:VERSION});
     let observedRoom=null;
     d.listenRoom(async(code,host)=>{const new_visit=String(code||'')!==observedRoom;observedRoom=String(code||'');if(!atlas.enabled.value&&code)await request('room',{code,host,new_visit});});
-    await d.listenJoin(async code=>{if(atlas.enabled.value){d.toast('本地全图鉴开启时无法进入联机');return;}if(!updateRequired.value)await d.join(code);});
-    window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);if(typeof stopClickWatch==='function')stopClickWatch();});
+    await d.listenJoin(async code=>{if(!updateRequired.value)await d.join(code);});
+    window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);window.removeEventListener?.('keydown',onEmoteHotkey,true);if(typeof stopClickWatch==='function')stopClickWatch();});
   }
   let requestedTab='overview',lastTab='overview';
   // 关面板时记下停在哪一页：右键「控制台」再打开时回到那一页，而不是永远回概览。
@@ -250,5 +264,5 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   ready.then(pollPolicy).catch(()=>{});
   window.addEventListener('pagehide',()=>{disposed=true;closePanel();});
   return {ready,state,updateRequired,startMain,openPanel,mountConsole,closePanel,flush,flushBeforeSwitch,beginChest,chestSucceeded,
-    userClick,emoteStats};
+    userClick,sendEmoteSlot,emoteStats};
 }

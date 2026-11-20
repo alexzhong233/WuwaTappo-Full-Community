@@ -100,9 +100,10 @@ for (const platform of ['macos', 'windows']) {
     const app = harness(), first = app.open();
     await first.controller.ready;
     const officialUser = { character: { id: 1 }, accessory: null, emote: [] }, bag = [{ asset_id: 1 }];
+    await first.controller.setEnabled(false);
     assert.equal(first.controller.inventory(officialAtlas, bag), bag);
     await first.controller.importCustomResources('/tmp/mod.zip');
-    assert.equal(first.controller.enabled.value, false, 'import preserves official mode');
+    assert.equal(first.controller.enabled.value, false, 'import preserves the explicit official view');
     await first.controller.setEnabled(true);
     assert.equal(first.controller.inventory([], bag).length, 4);
     // 两端都走宿主本机 HTTP 路由：asset:// 在 Mac 的 WebView 里取不到图。

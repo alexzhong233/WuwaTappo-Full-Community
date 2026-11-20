@@ -11,6 +11,7 @@ use std::{
 };
 
 pub mod custom_resources;
+pub mod game_watch;
 pub mod demo_packs;
 pub mod injector;
 pub mod lnk;
@@ -38,6 +39,8 @@ pub struct AssistantSettings {
     pub auto_emote_interval: u32,
     pub auto_emote_random: bool,
     pub auto_emote_slots: u32,
+    pub auto_game_mode: bool,
+    pub emote_hotkeys: bool,
 }
 
 impl Default for AssistantSettings {
@@ -54,6 +57,8 @@ impl Default for AssistantSettings {
             remember_monitor: values["remember_monitor"].as_bool().unwrap(),
             prerelease_updates: values["prerelease_updates"].as_bool().unwrap(),
             auto_emote: values["auto_emote"].as_bool().unwrap(),
+            auto_game_mode: values["auto_game_mode"].as_bool().unwrap(),
+            emote_hotkeys: values["emote_hotkeys"].as_bool().unwrap(),
             auto_emote_interval: values["auto_emote_interval"].as_u64().unwrap() as u32,
             auto_emote_random: values["auto_emote_random"].as_bool().unwrap(),
             auto_emote_slots: values["auto_emote_slots"].as_u64().unwrap() as u32,

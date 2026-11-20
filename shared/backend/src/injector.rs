@@ -97,6 +97,37 @@ impl PatchRecorder {
     }
 }
 
+fn patch_accessory_transform(
+    rec: &mut PatchRecorder,
+    text: &str,
+    alias: &str,
+) -> Result<String, String> {
+    let pattern = format!(
+        r"(?s)([A-Za-z0-9_$]+)\s*=\s*([A-Za-z0-9_$]+)\(\(\)\s*=>\s*\{{\s*const\s*\{{\s*x:\s*([A-Za-z0-9_$]+),\s*y:\s*([A-Za-z0-9_$]+)\s*\}}\s*=\s*{}\(\s*(.*?)\s*\)\s*;\s*return\s*\{{\s*transform:\s*`translate\(\$\{{[^}}]+\}}px,\s*\$\{{[^}}]+\}}px\)`\s*\}}\s*\}}\s*\)",
+        regex::escape(alias)
+    );
+    let re = Regex::new(&pattern).map_err(|error| error.to_string())?;
+    let Some(caps) = re.captures(text) else {
+        return Err(format!("accessory transform binding missing: {alias}"));
+    };
+    let whole = caps.get(0).ok_or("accessory transform match missing")?.as_str();
+    let name = &caps[1];
+    let computed = &caps[2];
+    let x = &caps[3];
+    let y = &caps[4];
+    let user = &caps[5];
+    let declaration = if whole.trim_start().starts_with("const ") { "const " } else { "" };
+    let replacement = "__DECL__NAME=__COMP(()=>{const{x:__X,y:__Y}=__ALIAS(__USER);const __t=window.__WUWA_LOCAL_ATLAS__?.accessoryTransform?.(__USER);return __t?{transform:`translate(${__X+__t.dx}px, ${__Y+__t.dy}px) rotate(${__t.rotate}deg) scale(${__t.scale})`,transformOrigin:'50% 50%'}:{transform:`translate(${__X}px, ${__Y}px)`}})"
+        .replace("__DECL__", declaration)
+        .replace("__NAME", name)
+        .replace("__COMP", computed)
+        .replace("__ALIAS", alias)
+        .replace("__USER", user)
+        .replace("__X", x)
+        .replace("__Y", y);
+    rec.replace(text, whole, &replacement)
+}
+
 /// Convert `inspect_js.cjs` Unicode codepoint (char) indices into UTF-8 byte offsets.
 pub fn char_to_byte_map(text: &str) -> Vec<usize> {
     let mut map = Vec::with_capacity(text.chars().count() + 1);
@@ -603,10 +634,15 @@ fn transport_options(platform: Platform, config: &Value) -> Result<String, Strin
 fn controller_init(platform: Platform, config: &Value, controller: &str) -> Result<String, String> {
     let transport = transport_options(platform, config)?;
     let prefix_json = serde_json::to_string(platform.startup_error_prefix()).unwrap();
+    let api_base = serde_json::to_string(
+        config.get("api_base").and_then(Value::as_str).unwrap_or(""),
+    ).unwrap();
     Ok(format!(
         "{controller}\nconst localAtlasRoute = ['/', '/panel'].includes((window.location.hash || '#/').slice(1).split('?')[0]);\n\
 const localAtlasController = localAtlasRoute ? createLocalAtlasController({{\n\
 ref, window, storage: localStorage, {transport}, normalizeAtlasList, resolvePetAssetIdFromAppearanceId, getAppearanceAssetById,\n\
+apiBase: {api_base}, synthesisAtlas, synthesisAtlasSame, refreshBag: getBagList,\n\
+setGameMode: enabled => invoke('plugin:event|emit',{{event:'cat-settings-game-mode',payload:{{enabled:Boolean(enabled)}}}}).catch(()=>{{}}),\n\
 snapshotCatalog: () => ({{assets: appearanceAssetCatalog.value, atlases: appearanceAtlasCatalog.value, host: loadedAssetsHost, ts: loadedAssetsJsonTs}}),\n\
 getAccountCumulative: () => globalStore.userInfo ? isFrozenClickCount(globalStore.serverClickTotal) ? globalStore.serverClickTotal : clampClickCountSum(globalStore.serverClickTotal+globalStore.localClickCount) : parseSafeClickCount(globalStore.localClickCount),\n\
 getAccountPending: () => parseSafeClickCount(globalStore.localClickCount),\n\
@@ -622,7 +658,8 @@ localAtlasController.ready.then(() => {{ localStartOnlineServices(); return boot
  document.getElementById('app').textContent = {prefix_json} + (error?.message || '');\n\
 }});\n\
 watch(localAtlasController.enabled, on => {{ if (!on) localStartOnlineServices(); }});\n\
-}} else {{ localStartOnlineServices(); bootstrap(); }}\n"
+}} else {{ localStartOnlineServices(); bootstrap(); }}\n",
+        api_base = api_base
     ))
 }
 
@@ -978,20 +1015,6 @@ pub fn integrate_build(
         "}finally{if(__lg.enabled.value)__localRefresh();}",
     ));
 
-    for action in ["create-room", "join-room"] {
-        let fn_name = m_raw
-            .cases
-            .get(action)
-            .ok_or_else(|| format!("缺少 switch case {action}"))?;
-        insert_fn(
-            &mut edits,
-            fn_name,
-            format!(
-                "if(__lg.enabled.value){{{show_toast_sym}('本地全图鉴已开启，无法进入联机。请先关闭开关。');return;}}"
-            ),
-        )?;
-    }
-
     let param_of = |fn_name: &str| -> Result<Option<String>, String> {
         let re = Regex::new(&format!(r"function\s+{}\((\w+)", regex::escape(fn_name))).unwrap();
         Ok(re.captures(&main_orig).map(|c| c[1].to_owned()))
@@ -1013,7 +1036,10 @@ pub fn integrate_build(
         &mut edits,
         select_name,
         format!(
-            "if(__lg.enabled.value){{try{{__lg.select({select_param},{store}.userInfo,{max_emotes});__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}"
+            "if(__lg.enabled.value){{
+ if(__lg.officialOwned({select_param}.asset_id,{select_param}.asset_type)){{__lg.afterOfficialSelect({select_param},{store}.userInfo,{max_emotes});}}
+ else{{try{{__lg.select({select_param},{store}.userInfo,{max_emotes});__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}
+}}"
         ),
     )?;
 
@@ -1071,8 +1097,8 @@ pub fn integrate_build(
     let create_op = format!("__lg.createLocalPreset({store}.userInfo,{preset_limit})");
     for (action, template) in [
         ("create-preset", create_op.as_str()),
-        ("delete-preset", "__lg.deleteLocalPreset({arg})"),
-        ("apply-preset", "__lg.applyPreset({arg}.preset_id)"),
+        ("delete-preset", "__lg.deleteLocalPreset({arg}.preset_id)"),
+        ("apply-preset", "__lg.applyLocalPreset({arg}.preset_id)"),
     ] {
         let action_name = m_raw
             .cases
@@ -1080,13 +1106,15 @@ pub fn integrate_build(
             .ok_or_else(|| format!("缺少 case {action}"))?;
         let arg = param_of(action_name)?.unwrap_or_else(|| "null".into());
         let op = template.replace("{arg}", &arg);
-        insert_fn(
-            &mut edits,
-            action_name,
-            format!(
-                "if(__lg.enabled.value){{try{{{op};__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}"
+        let guard = match action {
+            "create-preset" => format!(
+                "if(__lg.enabled.value && __lg.shouldCreateLocalPreset({store}.userInfo)){{try{{{op};__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}"
             ),
-        )?;
+            _ => format!(
+                "if(__lg.enabled.value && Number({arg}?.preset_id)<0){{try{{{op};__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}"
+            ),
+        };
+        insert_fn(&mut edits, action_name, guard)?;
     }
 
     let mut snap_text = main_orig[snapshot.start..snapshot.end].to_owned();
@@ -1174,14 +1202,8 @@ function __localRefresh(){{
         .ok_or("主组件缺少 returnStart")?;
     edits.push(Edit::new(main_return, main_return, local_code));
     let mut main = apply_edits(&main_orig, edits)?;
-    for key in ["canCreateRoom", "canJoinRoom"] {
-        let field_val = req_field(key)?;
-        main = main.replace(
-            &format!("{key}: {field_val}"),
-            &format!("{key}: !__lg.enabled.value && {field_val}"),
-        );
-    }
-
+    let accessory_alias = require_import(&mi, "getUserAccessoryOffset")?;
+    main = patch_accessory_transform(&mut rec, &main, accessory_alias)?;
     // Panel edits
     let p_raw = structure
         .files
@@ -1210,11 +1232,10 @@ function __openCommunityUpdate(event){{try{{event&&event.stopPropagation&&event.
     );
     let row = format!(
         "{h}('div',{{class:'setting-item','data-local-gallery-setting':'true'}},[\n\
- {h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'外观模式'),{h}('div',{{class:'setting-sub'}},__localBusy.value?'正在切换本地显示模式…':!__localCache.value?(__localSync.value.status==='running'?'正在下载本地素材 '+__localSync.value.done+'/'+__localSync.value.total+'，完成后自动可用':__localSync.value.status==='failed'?'本地素材下载失败，点下方「检查并同步」重试':'本地素材还没准备好，点下方「检查并同步」开始下载'):__localEnabled.value?'当前：全图鉴 + Mod · 联机不可用，其他网络功能正常':'当前：官方 · 开启后使用全图鉴和已导入 Mod',1)]),\n\
- {h}('div',{{class:'setting-content'}},[{h}('label',{{class:'setting-switch'}},[{h}('input',{{type:'checkbox',role:'switch','aria-label':'全图鉴 + Mod',style:'display:block;position:absolute;width:1px;height:1px;opacity:0',checked:__localEnabled.value,disabled:__localBusy.value||!__localCache.value||__localSync.value.status==='running',onChange:__toggleLocal,onMousedown:{with_modifiers}(()=>{{}},['stop'])}},null,40,['checked','disabled']),{h}('span',{{class:'setting-slider'}})]),{h}('button',{{class:'setting-btn',type:'button',style:'margin-left:10px;white-space:nowrap',onMousedown:{with_modifiers}(()=>{{}},['stop']),onClick:()=>__lg.assistant.openPanel('mods')}},'Mod 管理')])]),\n\
- {h}('div',{{class:'setting-item','data-local-gallery-sync':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'更新本地图鉴'),{h}('div',{{class:'setting-sub'}},__localSync.value.status==='running'?'正在同步 '+__localSync.value.done+'/'+__localSync.value.total:!__localCache.value?'首次启动要联网补齐本地素材（后台进行，不耽误玩）':'联网检查新增图鉴，本地全图鉴开启时也可同步',1)]),{h}('button',{{class:'setting-btn',type:'button',disabled:__localSync.value.status==='running',onClick:__syncLocal}},'检查并同步',8,['disabled'])]),\n"
-    );
-
+ {h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'外观模式'),{h}('div',{{class:'setting-sub'}},'官方图鉴与联机保持可用；本机 Mod 和仅本地外观作为叠加层显示。',1)]),\n\
+ {h}('div',{{class:'setting-content'}},[{h}('button',{{class:'setting-btn',type:'button',style:'white-space:nowrap',onMousedown:{with_modifiers}(()=>{{}},['stop']),onClick:()=>__lg.assistant.openPanel('mods')}},'外观与挂饰')])]),\n\
+ {h}('div',{{class:'setting-item','data-local-gallery-sync':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'更新本地图鉴'),{h}('div',{{class:'setting-sub'}},__localSync.value.status==='running'?'正在同步 '+__localSync.value.done+'/'+__localSync.value.total:!__localCache.value?'首次启动要联网补齐本地素材':'官方图鉴与本地图片已就绪',1)]),{h}('div',{{class:'setting-content'}},[{h}('button',{{class:'setting-btn',type:'button',disabled:__localBusy.value||__localSync.value.status==='running',onClick:__syncLocal}},'检查并同步')])]),\n\
+");
     let mut panel_edits = vec![
         Edit::new(
             0,
@@ -1509,6 +1530,10 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     ));
 
     let mut panel = apply_edits(&panel_orig, panel_edits)?;
+    let panel_accessory_alias = require_import(&pi, "getUserAccessoryOffset")?;
+    if let Ok(patched) = patch_accessory_transform(&mut rec, &panel, panel_accessory_alias) {
+        panel = patched;
+    }
     let update_marker = "\"setting-btn btn-check-update\"";
     if panel.match_indices(update_marker).count() != 1 {
         return Err("official update button contract changed".into());
@@ -1870,6 +1895,8 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
  }},\n\
  quit:{quit_fn},\n\
  persistOriginal:async()=>{{{persist_original}}},\n\
+ refreshBag:async()=>{{await {bag_fn}();}},\n\
+ setGameMode:enabled=>{{return {invoke_m}('plugin:event|emit',{{event:'cat-settings-game-mode',payload:{{enabled:Boolean(enabled)}}}}).catch(()=>{{}});}},\n\
  listenClicks:callback=>{watch_sym}(()=>{store}.localClickCount,(next,prev)=>{{if(Number(next)===Number(prev)+1)callback(1);}},{{flush:'sync'}}),\n\
  listenRoom:callback=>{watch_sym}([()=>{room_field},()=>{members}.map(x=>[x.id,x.nickname,x.isOwner]).join('|')],()=>{{
    const owner={members}.find(x=>x.isOwner);if({room_field})callback(String({room_field}),owner?.nickname||'').catch(()=>{{}});
@@ -1880,6 +1907,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         press_h = handlers[0],
         release_h = handlers[1],
         emote_send = emote_fn.name,
+        bag_fn = bag_loader.name,
     );
     main = rec.replace(&main, "let __localSaved=null;", &format!("{code}\nlet __localSaved=null;"))?;
 
@@ -2207,6 +2235,15 @@ mod tests {
             render_frontend_module(repo, "assistant_dashboard.js", Platform::Windows).unwrap();
         assert!(mac_dash.contains("WUWA TAPPO FULLATLAS / MAC"));
         assert!(win_dash.contains("WUWA TAPPO / 后台助手"));
+    }
+
+    #[test]
+    fn accessory_transform_patch_wraps_the_official_computed() {
+        let source = "const Be = V(gi),\n        sn = pe(() => {\n          const {\n            x: e,\n            y: t\n          } = Du(A.userInfo);\n          return {\n            transform: `translate(${e}px, ${t}px)`\n          }\n        }),\n        next = 1;";
+        let mut rec = PatchRecorder::default();
+        let out = patch_accessory_transform(&mut rec, source, "Du").unwrap();
+        assert!(out.contains("accessoryTransform?.(A.userInfo)"), "{out}");
+        assert!(out.contains("rotate(${__t.rotate}deg)"), "{out}");
     }
 
     #[test]

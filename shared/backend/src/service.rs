@@ -330,7 +330,7 @@ impl FullAtlasService {
         obj.insert("ready".into(), json!(self.cache_ready()));
         obj.insert("enabled".into(), json!(self.enabled()));
         obj.insert("mode_verified".into(), json!(true));
-        obj.insert("network_policy".into(), json!("rooms-only"));
+        obj.insert("network_policy".into(), json!("hybrid"));
         obj.insert("sync".into(), self.sync_status());
         obj.insert("cache".into(), self.cache_summary());
         if let Some(extra) = extra_fields {
@@ -743,6 +743,7 @@ impl FullAtlasService {
         match action {
             "community/version" => Some(Ok(self.community_version())),
             "status" => Some(Ok(self.status_snapshot(None))),
+            "game/status" => Some(Ok(crate::game_watch::status())),
             "sync/status" => Some(Ok(self.sync_status())),
             "sync" => {
                 let force = body.get("force") == Some(&Value::Bool(true));

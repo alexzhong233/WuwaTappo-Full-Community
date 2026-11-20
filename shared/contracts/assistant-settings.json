@@ -13,7 +13,9 @@
     "auto_emote": false,
     "auto_emote_interval": 25,
     "auto_emote_random": true,
-    "auto_emote_slots": 31
+    "auto_emote_slots": 31,
+    "auto_game_mode": true,
+    "emote_hotkeys": true
   },
   "properties": {
     "enabled": { "type": "boolean" },
@@ -28,7 +30,9 @@
     "auto_emote": { "type": "boolean" },
     "auto_emote_interval": { "type": "integer", "minimum": 1, "maximum": 1000 },
     "auto_emote_random": { "type": "boolean" },
-    "auto_emote_slots": { "type": "integer", "minimum": 1, "maximum": 31 }
+    "auto_emote_slots": { "type": "integer", "minimum": 1, "maximum": 31 },
+    "auto_game_mode": { "type": "boolean" },
+    "emote_hotkeys": { "type": "boolean" }
   },
   "constraints": [
     { "relation": "lessThan", "left": "auto_click_below", "right": "auto_click_above" }

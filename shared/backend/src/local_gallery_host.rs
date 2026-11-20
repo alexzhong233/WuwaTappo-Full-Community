@@ -275,6 +275,7 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
             response(request, 200, app.service.status_snapshot(Some(extra)));
         }
         "/sync/status" => response(request, 200, app.service.sync_status()),
+        "/game/status" => response(request, 200, wuwatappo_assistant_core::game_watch::status()),
         "/custom/status" => response(request, 200, app.service.custom_status()),
         "/offline-data" => send_service_result(request, app.service.offline_bundle(None)),
         "/asset-base" => {
@@ -366,6 +367,12 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         };
     }
 
+    if path == "/assistant/state" {
+        return send_service_result(
+            request,
+            app.service.assistant("state", &body, false),
+        );
+    }
     let action = path.trim_start_matches('/');
     let quiet = if action == "assistant/tick" {
         physical_quiet()

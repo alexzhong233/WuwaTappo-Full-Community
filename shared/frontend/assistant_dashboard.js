@@ -28,6 +28,7 @@ function assistantUi(window) {
     .wt-console input[type=checkbox]{appearance:none;flex-shrink:0;width:38px;height:22px;background:#d7d3ca;border:0;border-radius:15px;position:relative;cursor:pointer}.wt-console input[type=checkbox]:after{content:'';display:block;background:white;box-shadow:0 1px 3px #0002;width:16px;height:16px;border-radius:50%;position:absolute;top:3px;left:3px;transition:transform .15s}.wt-console input[type=checkbox]:checked{background:#b8965a}.wt-console input[type=checkbox]:checked:after{transform:translateX(16px)}
     .wt-console input[type=number]{font:inherit;color:var(--ink);width:112px;border:1px solid var(--line);padding:6px 10px;border-radius:8px;background:#faf9f7}.wt-chart{display:flex;gap:14px;align-items:flex-end;height:180px;margin:20px 0 8px}.wt-column{flex:1;min-width:0;text-align:center;font-size:11px;color:var(--muted)}.wt-bar{margin:5px auto;background:#ddc292;border-radius:5px 5px 2px 2px;width:70%}.wt-empty{padding:28px 10px;text-align:center;color:var(--muted);font-size:12px}
     .wt-console footer{padding:10px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:11px;color:var(--muted);background:#faf9f6;flex-shrink:0}.wt-console footer button{font-size:11px;padding:4px 10px;min-height:28px}.wt-notice{font-size:12px;color:#9c6c32;padding:6px 0;min-height:20px}
+    .wt-transform-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-top:12px}.wt-transform-field{display:grid;gap:5px;font-size:12px;color:var(--muted)}.wt-transform-field input{width:100%}
     .wt-versions{margin-top:10px;border-top:1px solid var(--line)}
     .wt-notes{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
     .wt-notes h3{margin-bottom:6px}
@@ -141,27 +142,31 @@ function createAssistantDashboard(d){
       const legacy=el('p','',c,'wt-muted');legacy.style.marginTop='14px';
       renderView=()=>{const week=value.weekly?.normal||[],max=Math.max(1,...week.map(x=>x.count));summary.textContent='今日 '+fmt(week.at(-1)?.count)+' · 昨日 '+fmt(week.at(-2)?.count);chart.replaceChildren();for(const day of week){const col=el('div',undefined,chart,'wt-column');el('div',fmt(day.count),col);const bar=el('div','',col,'wt-bar');bar.style.height=Math.max(3,120*day.count/max)+'px';el('div',day.date.slice(5),col);}legacy.textContent=value.legacy_local?.total?'旧版模拟点数 '+fmt(value.legacy_local.total)+' 已单独存档，不计入真实账号与此统计。':'';};
     }else if(key==='rooms'){
-      const c=card();el('h3','去过的房间',c);el('p','成功进入后记录房间号与房主，收藏后置顶。本地全图鉴开启时不能进入联机。',c,'wt-muted');const list=el('div',undefined,c);
-      renderView=()=>{list.replaceChildren();if(!value.rooms?.length)el('div','还没有房间历史',list,'wt-empty');for(const room of value.rooms||[]){const row=el('div',undefined,list,'wt-log');button(room.favorite?'★':'☆',row,async()=>{try{await d.favorite(room.code,!room.favorite);await refresh();}catch(e){notice.textContent=e.message;}});const join=button(room.code+' · '+(room.host||'未知房主'),row,()=>d.join(room.code).catch(e=>{notice.textContent=e.message;}));join.disabled=d.atlas.enabled.value||value.update_required;button('删除记录',row,async()=>{try{await d.deleteRoom(room.code);await refresh();}catch(e){notice.textContent=e.message;}});}};
+      const c=card();el('h3','去过的房间',c);el('p','成功进入后记录房间号与房主，收藏后置顶。官方联机始终可用；仅本地外观只在本机显示。',c,'wt-muted');const list=el('div',undefined,c);
+      renderView=()=>{list.replaceChildren();if(!value.rooms?.length)el('div','还没有房间历史',list,'wt-empty');for(const room of value.rooms||[]){const row=el('div',undefined,list,'wt-log');button(room.favorite?'★':'☆',row,async()=>{try{await d.favorite(room.code,!room.favorite);await refresh();}catch(e){notice.textContent=e.message;}});const join=button(room.code+' · '+(room.host||'未知房主'),row,()=>d.join(room.code).catch(e=>{notice.textContent=e.message;}));join.disabled=value.update_required;button('删除记录',row,async()=>{try{await d.deleteRoom(room.code);await refresh();}catch(e){notice.textContent=e.message;}});}};
     }else if(key==='mods'){
-      const hero=card(content,'warm');el('h3','外观模式');const modeText=el('p','正在读取外观模式…',hero,'wt-muted');
+      const hero=card(content,'warm');el('h3','混合外观模式');const modeText=el('p','正在读取外观模式…',hero,'wt-muted');
       const modeActions=el('div',undefined,hero,'wt-controls');
-      const toOfficial=button('官方（只用账号背包）',modeActions,()=>switchMode(false)),toCustom=button('全图鉴 + Mod',modeActions,()=>switchMode(true),'wt-primary');
+      button('检查并同步官方图鉴',modeActions,async()=>{try{await d.atlas.syncCache(true);notice.textContent='官方图鉴与本地素材已同步';}catch(e){notice.textContent=e.message;}},'wt-primary');
+      const xform=card();el('h3','挂饰位置 / 大小 / 角度',xform);
+      el('p','只修改本机显示，不影响账号联机外观。选择本地挂饰后拖动滑杆即可。',xform,'wt-muted');
+      const xformControls={};const xformRow=el('div',undefined,xform,'wt-transform-grid');
+      for(const [key,label,min,max,step] of [['dx','水平位置',-400,400,1],['dy','垂直位置',-400,400,1],['scale','大小',0.3,3,0.01],['rotate','角度',-180,180,1]]){
+        const field=el('label',undefined,xformRow,'wt-transform-field');el('span',label,field);
+        const input=el('input',undefined,field);input.type='range';input.min=min;input.max=max;input.step=step;
+        input.oninput=()=>{try{d.atlas.setAccessoryTransform?.({[key]:Number(input.value)});}catch(e){notice.textContent=e.message;}};
+        xformControls[key]=input;
+      }
+      const xformActions=el('div',undefined,xform,'wt-controls');
+      button('恢复默认',xformActions,()=>{try{d.atlas.resetAccessoryTransform?.();paintTransform();}catch(e){notice.textContent=e.message;}});
+      function paintTransform(){const row=d.atlas.accessoryTransform?.(null)||{dx:0,dy:0,scale:1,rotate:0};for(const key of Object.keys(xformControls))xformControls[key].value=row[key];}
       const tools=card();el('h3','已安装的资源包',tools);const summary=el('p','正在读取…',tools,'wt-muted');
       const actions=el('div',undefined,tools,'wt-controls');
       const importPack=button('导入 Mod ZIP',actions,importArchive,'wt-primary');button('重新扫描',actions,()=>refreshPacks());
       const list=el('div',undefined,tools);
-      async function switchMode(on){
-        toOfficial.disabled=toCustom.disabled=true;
-        try{await d.atlas.setEnabled(on);notice.textContent=on?'已切换到全图鉴 + Mod':'已切换到官方模式';}
-        catch(e){notice.textContent='切换失败：'+e.message;}
-        finally{paintMode();}
-      }
       function paintMode(){
-        const on=d.atlas.enabled.value;
-        modeText.textContent=on?'当前：全图鉴 + Mod —— 本机资源包会出现在背包和图鉴里':'当前：官方模式 —— 背包只显示账号已拥有的物品，本机 Mod 不参与';
-        toOfficial.disabled=d.atlas.busy.value||!on;
-        toCustom.disabled=d.atlas.busy.value||on||!d.atlas.cacheReady.value;
+        modeText.textContent='当前：全图鉴 + Mod 本机覆盖。官方已有外观仍可设为联机外观；仅本地外观不会写入账号。';
+        paintTransform();
       }
       async function importArchive(){
         importPack.disabled=true;
@@ -200,7 +205,7 @@ function createAssistantDashboard(d){
         }catch(e){notice.textContent='读取 Mod 列表失败：'+e.message;}
       }
       paintMode();refreshPacks();
-      renderView=paintMode;
+      renderView=()=>{paintMode();paintTransform();};
     }else if(key==='update'){
       const u=card();el('h3','版本与更新',u);const fields={};
       const versions=el('div',undefined,u,'wt-versions');
@@ -367,7 +372,7 @@ function createAssistantDashboard(d){
       };
     }else{
       const c=card();el('h3','自动化设置',c);const fields={};
-      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；跟随真实打字与点击次数弹出（支持随机或固定间隔），自动避让后台连点，无需辅助功能权限'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
+      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；跟随真实打字与点击次数弹出（支持随机或固定间隔），自动避让后台连点，无需辅助功能权限'],['emote_hotkeys','Alt+1～5 快捷表情','窗口聚焦时按 Alt+数字直接发送对应槽位表情'],['auto_game_mode','按游戏进程自动游戏模式','检测鸣潮进程启动/退出，自动切换官方游戏模式与鼠标穿透'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
         const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>{
           if(key==='enabled'&&!input.checked)change({enabled:false,auto_click_balance:false});
           else change({[key]:input.checked});
@@ -405,6 +410,18 @@ function createAssistantDashboard(d){
         const input=el('input',undefined,row);input.type='number';input.min=0;input.max=1000000000;input.step=1;input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:Number(input.value)});fields[key]=input;
       }
       const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
+      const toolsCard=card();el('h3','联机工具',toolsCard);el('p','只使用官方背包与官方接口；仅本地外观不会被提交。',toolsCard,'wt-muted');
+      const toolRow=el('div',undefined,toolsCard,'wt-controls');const synthStatus=el('p','',toolsCard,'wt-notice');
+      button('批量同阶合成',toolRow,async()=>{synthStatus.textContent='正在按官方背包重复数量批量合成…';try{const r=await d.atlas.synthesizeDuplicates?.('same-level');synthStatus.textContent=r.count?('已提交 '+r.count+' 个重复素材'):'没有可合成的重复素材';}catch(e){synthStatus.textContent='合成失败：'+e.message;}},'wt-primary');
+      const captureCard=card();el('h3','OBS / 面板外观',captureCard);el('p','绿色背景适合色键，透明背景适合窗口捕获；面板背景图只保存在本机。',captureCard,'wt-muted');
+      const captureRow=el('div',undefined,captureCard,'wt-controls');
+      for(const [mode,label] of [['off','关闭'],['green','绿幕'],['transparent','透明']])button(label,captureRow,()=>{d.atlas.setCapture?.({mode});applyDashboardStyle();},mode==='off'?'':'wt-primary');
+      const bgLabel=el('label',undefined,captureCard,'wt-setting'),bgText=el('div',undefined,bgLabel);el('h3','面板背景图',bgText);el('p','选择一张本地图片作为控制台背景',bgText,'wt-muted');
+      const bgInput=el('input',undefined,bgLabel);bgInput.type='file';bgInput.accept='image/*';bgInput.onchange=()=>{const file=bgInput.files?.[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{d.atlas.setCapture?.({panelBackground:String(reader.result||'')});applyDashboardStyle();};reader.readAsDataURL(file);};
+      const opacityRow=el('label',undefined,captureCard,'wt-setting'),opacityText=el('div',undefined,opacityRow);el('h3','面板透明度',opacityText);
+      const opacity=el('input',undefined,opacityRow);opacity.type='range';opacity.min=.35;opacity.max=1;opacity.step=.01;opacity.oninput=()=>{d.atlas.setCapture?.({panelOpacity:Number(opacity.value)});applyDashboardStyle();};
+      function applyDashboardStyle(){const c=d.atlas.capture?.value||{};root.style.opacity=String(Math.max(.35,Math.min(1,Number(c.panelOpacity)||.96)));root.style.backgroundImage=c.panelBackground?`url("${String(c.panelBackground).replace(/"/g,'%22')}")`:'';opacity.value=c.panelOpacity||.96;}
+      applyDashboardStyle();
       // 本地全图鉴的开关在控制台里也放一份：改了外观想切回官方，不用再跑回设置页。
       const lc=card();el('h3','本地全图鉴',lc);
       const localRow=el('label',undefined,lc,'wt-setting'),localText=el('div',undefined,localRow);
@@ -412,7 +429,7 @@ function createAssistantDashboard(d){
       const localBox=el('input',undefined,localRow);localBox.type='checkbox';localBox.setAttribute('aria-label','本地全图鉴');
       localBox.onchange=async()=>{
         localBox.disabled=true;
-        try{await d.atlas.setEnabled(localBox.checked);notice.textContent=localBox.checked?'本地全图鉴已开启：不能进入联机':'已恢复官方外观，可以联机了';}
+        try{await d.atlas.setEnabled(localBox.checked);notice.textContent=localBox.checked?'混合外观已开启：本机 Mod 与官方联机同时可用':'已切换为纯官方外观';}
         catch(e){localBox.checked=!localBox.checked;notice.textContent=e.message;}
         finally{localBox.disabled=false;}
       };

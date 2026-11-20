@@ -8,5 +8,14 @@
     "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSSnV4aU5ob1MxTGVIbVBZYkpaTVcxK0tvOG9XbFhjVTZIN3lpTFAxVmxVQ1FsOGt2OHJON3dSVUk4T0d4VkgxL0J2dnZ6YjRpWnVsaWxJZm1UNVFzbnlaRGtOZ0UwQnc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDg4MjQ2CWZpbGU6V3V3YVRhcHBvLWdsb2JhbF8xLjAuNV94NjQtc2V0dXAuZXhlCjdTdmlSbm8zeTBVVlRRa0R1dWhuQWNNL2pCRkxESkhsMmd4eXZKVENQU0F6ZXhCYk5LS2lydlJMNGpJRElRWUlDcE05NTlkMkhrNTRqRjVYelFMUUJ3PT0K",
     "sha256": "9f42ac95c1f634bc573250503b285cd22668b1b4374457f94585b39225ca8465",
     "size": 201970400
+  },
+  "platforms": {
+    "windows": {
+      "executable": {
+        "sha256": "70616cd36320b573084a99ec955cfd88f481e8c2a0fd2c0ac4f2de6217767267",
+        "size": 79173344
+      },
+      "adapterNotes": "国际服 1.0.5 官方主程序指纹；构建前按 canonical lock 校验。"
+    }
   }
 }
