@@ -33,6 +33,7 @@ pub const COMMANDS: &[&str] = &[
     "get_maintenance_notice_payload",
     "has_maintenance_notice",
     "hide_main_after_maintenance_notice_ready",
+    "hide_toast_overlay",
     "is_force_update_locked",
     "open_about_window",
     "open_login_window",
@@ -71,6 +72,12 @@ pub struct WindowState {
     auxiliary: RwLock<BTreeMap<String, HitRegion>>,
     main_geometry: RwLock<MainGeometry>,
     stop: AtomicBool,
+}
+
+impl WindowState {
+    pub fn mark_stopping(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Default)]
@@ -669,6 +676,11 @@ pub fn dispatch(
             center_on_main(app, &w)?;
             w.set_ignore_cursor_events(true).map_err(err)?;
             w.show().map_err(err)?;
+        }
+        "hide_toast_overlay" => {
+            if let Some(w) = app.get_webview_window("toast") {
+                w.hide().map_err(err)?;
+            }
         }
         "sync_native_menu" => return crate::menu::sync(app, args),
         "popup_main_dock_context_menu" => {

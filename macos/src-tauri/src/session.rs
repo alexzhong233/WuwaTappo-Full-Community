@@ -186,6 +186,25 @@ impl SessionStore {
         matches!(&self.backend, SessionBackend::Memory)
     }
 
+    pub fn clear(&self) -> Result<(), String> {
+        let mut current = self
+            .inner
+            .lock()
+            .map_err(|_| "App sign-in session lock failed".to_owned())?;
+        let mut cleared = SessionSnapshot {
+            revision: current.revision + 1,
+            persistence: current.persistence,
+            ..SessionSnapshot::default()
+        };
+        cleared.cookies.clear();
+        cleared.storage.clear();
+        if let SessionBackend::Keychain { service } = &self.backend {
+            deletion_result(delete_generic_password(service, ACCOUNT))?;
+        }
+        *current = cleared;
+        Ok(())
+    }
+
     pub fn open(identifier: impl Into<String>) -> Result<Self, String> {
         let service = format!("{}.session", identifier.into());
         let mut snapshot = match get_generic_password(&service, ACCOUNT) {

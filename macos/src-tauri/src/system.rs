@@ -7,7 +7,10 @@ use std::{
     path::Path,
     process::Command,
     ptr::NonNull,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -20,6 +23,7 @@ const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
 const COMMUNITY_RELEASES_URL: &str =
     "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 static LOG_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static NETWORK_DIAGNOSTICS_COLLECTED: AtomicBool = AtomicBool::new(false);
 
 // These describe the recovered production frontends, not Rust's compilation profile.
 const INTERNAL_TESTING_BUILD: bool = false;
@@ -617,6 +621,59 @@ fn check_app_update(region: Region, endpoint: &str) -> Result<Value, String> {
     mac_update_status(&manifest, target, region)
 }
 
+fn valid_region_assets_host(region: Region, assets_host: Option<&str>) -> Option<String> {
+    let raw = assets_host?.trim();
+    let url = reqwest::Url::parse(raw).ok()?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str() != Some(region.asset_host())
+        || url.port_or_known_default() != Some(443)
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    Some(format!("https://{}", region.asset_host()))
+}
+
+fn network_diagnostics_payload(region: Region, assets_host: Option<&str>) -> Value {
+    let host_file = match region {
+        Region::Cn => "latest_host.json",
+        Region::Global => "latest-global_host.json",
+    };
+    let validated = valid_region_assets_host(region, assets_host);
+    let base = validated
+        .as_deref()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("https://{}", region.asset_host()));
+    json!({
+        "status": "complete",
+        "resource_url": format!("{base}/app/json-host/{host_file}"),
+        "resource_source": if validated.is_some() { "webview_activity_config" } else { "native_region_profile" },
+    })
+}
+
+fn run_network_diagnostics(app: &AppHandle, args: &Value) -> Value {
+    if NETWORK_DIAGNOSTICS_COLLECTED.swap(true, Ordering::AcqRel) {
+        return json!({ "status": "already_collected" });
+    }
+    let region = Region::from_app(app);
+    let assets_host = args.get("assetsHost").and_then(Value::as_str);
+    let run_id = args.get("runId").and_then(Value::as_str).unwrap_or("");
+    let payload = network_diagnostics_payload(region, assets_host);
+    let _ = write_message(
+        app,
+        "info",
+        &format!(
+            "[network-diagnostics] region={} run_id={} source={}",
+            region.id(),
+            run_id,
+            payload["resource_source"].as_str().unwrap_or("")
+        ),
+    );
+    payload
+}
+
 pub fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Option<Result<Value, String>> {
     let result = match command {
         "get_track_os_info" => {
@@ -659,6 +716,7 @@ pub fn dispatch(app: &AppHandle, command: &str, args: &Value) -> Option<Result<V
         },
         "open_app_log_dir" => open_log_dir(app).map(|_| Value::Null),
         "open_community_releases" => open_community_releases(app).map(|_| Value::Null),
+        "run_network_diagnostics" => Ok(run_network_diagnostics(app, args)),
         _ => return None,
     };
     Some(result)
@@ -832,5 +890,26 @@ mod tests {
             &format!("https://{}:444/latest.json", Region::Global.asset_host())
         )
         .is_err());
+    }
+
+    #[test]
+    fn network_diagnostics_keeps_region_asset_host_and_rejects_foreign_hosts() {
+        let valid = network_diagnostics_payload(
+            Region::Cn,
+            Some("https://mc-wuwatappo.kurogames-global.com"),
+        );
+        assert_eq!(valid["status"], "complete");
+        assert_eq!(valid["resource_source"], "webview_activity_config");
+        assert_eq!(
+            valid["resource_url"],
+            "https://mc-wuwatappo.kurogames-global.com/app/json-host/latest_host.json"
+        );
+
+        let rejected = network_diagnostics_payload(Region::Global, Some("https://evil.example"));
+        assert_eq!(rejected["resource_source"], "native_region_profile");
+        assert_eq!(
+            rejected["resource_url"],
+            "https://wutheringwaves-wuwatappo.kurogames-global.com/app/json-host/latest-global_host.json"
+        );
     }
 }

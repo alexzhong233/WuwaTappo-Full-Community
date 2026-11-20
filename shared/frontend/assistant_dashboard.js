@@ -222,6 +222,8 @@ function createAssistantDashboard(d){
       const progress=el('div',undefined,u,'wt-progress');progress.hidden=true;
       const progressText=el('p','',progress,'wt-notice');
       const track=el('div',undefined,progress,'wt-track'),fill=el('span',undefined,track);
+      const installActions=el('div',undefined,progress,'wt-controls');installActions.hidden=true;installActions.style.marginTop='8px';
+      const installFallback=button('前往 GitHub 手动下载',installActions,openReleases);installFallback.setAttribute('data-install-github-fallback','true');
       progress.style.margin='4px 0 10px';
       const notes=el('section',undefined,u,'wt-notes');notes.hidden=true;
       el('h3','这次更新了什么',notes);
@@ -284,12 +286,14 @@ function createAssistantDashboard(d){
         notesBody.textContent=body;notes.hidden=false;
       }
       function paintInstall(v){
-        if(!v||!v.phase){progress.hidden=true;return;}
+        if(!v||!v.phase){progress.hidden=true;installActions.hidden=true;return;}
         progress.hidden=false;
-        const pct=Math.max(0,Math.min(100,Number(v.percent)||0));
+        const failed=v.phase==='failed';
+        const pct=failed?0:Math.max(0,Math.min(100,Number(v.percent)||0));
         fill.style.width=pct+'%';
-        progressText.textContent=(v.message||'正在更新…')+(v.phase==='download'?'':' · '+pct.toFixed(0)+'%');
-        if(v.phase==='complete'||v.phase==='failed'){window.clearInterval(installTimer);installTimer=null;}
+        progressText.textContent=failed?(v.message||'自动更新失败，可前往 GitHub 手动下载覆盖安装。'):((v.message||'正在更新…')+(v.phase==='download'&&pct<=2?'':' · '+pct.toFixed(0)+'%'));
+        installActions.hidden=!failed;
+        if(v.phase==='complete'||failed){window.clearInterval(installTimer);installTimer=null;}
       }
       let installChecked=false;
       async function pollInstall(){
@@ -325,16 +329,28 @@ function createAssistantDashboard(d){
         // 其余情况（macOS 版、发布里没 zip、下载校验失败）都退回跳 GitHub 下载安装包。
         if(r.installable){
           const install=button('一键更新',row,async()=>{
-            install.disabled=true;status.textContent='正在下载并校验安装包…';
-            const pollTimer=window.setInterval(async()=>{
-              try{
-                const s=await d.atlas.request('/update/status',{});
-                if(s?.installation?.message)status.textContent=s.installation.message;
-              }catch{}
-            },1000);
-            try{const res=await d.atlas.request('/update/install',{});status.textContent=res.message||'正在退出桌宠并原地升级…';}
-            catch(e){status.textContent='程序内更新失败：'+e.message+'。可以改为下载安装包覆盖安装。';install.disabled=false;if(!row.querySelector('[data-github-fallback]')){const fallback=button('前往 GitHub 下载',row,github);fallback.setAttribute('data-github-fallback','true');}}
-            finally{window.clearInterval(pollTimer);}
+            install.disabled=true;status.textContent='正在启动更新任务…';
+            try{
+              const res=await d.atlas.request('/update/install',{});
+              gate.remove();
+              if(tab!=='update')showTab('update');
+              paintInstall({phase:'download',percent:2,message:res.message||'已开始后台下载并校验安装包…'});
+              window.clearInterval(installTimer);
+              installTimer=window.setInterval(pollInstall,800);
+              pollInstall();
+            }catch(e){
+              if(String(e?.message||'').includes('更新正在进行中')){
+                gate.remove();
+                if(tab!=='update')showTab('update');
+                window.clearInterval(installTimer);
+                installTimer=window.setInterval(pollInstall,800);
+                pollInstall();
+                return;
+              }
+              status.textContent='程序内更新失败：'+e.message+'。可以改为下载安装包覆盖安装。';
+              install.disabled=false;
+              if(!row.querySelector('[data-github-fallback]')){const fallback=button('前往 GitHub 下载',row,github);fallback.setAttribute('data-github-fallback','true');}
+            }
           },'wt-primary');
           button('前往 GitHub 下载',row,github);
         }else{

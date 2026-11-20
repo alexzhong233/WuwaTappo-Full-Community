@@ -649,6 +649,7 @@ pub fn is_cache_ready(root: &Path, expected_override: Option<usize>) -> bool {
 /// 解析离线缓存里的官方资源文件路径（支持 `assets/<sha>.png` 与官方按名称分类路径）。
 pub fn resolve_cached_asset(cache_dir: &Path, relative_key: &str) -> Option<PathBuf> {
     let trimmed = relative_key.trim_start_matches('/');
+    let trimmed = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
     if !safe_relative_key(trimmed) {
         return None;
     }
@@ -675,12 +676,26 @@ pub fn resolve_cached_asset(cache_dir: &Path, relative_key: &str) -> Option<Path
     }
     let requested = trimmed.rsplit('/').next().filter(|s| !s.is_empty())?;
     let manifest = read_json_value(&cache_dir.join("asset_manifest.json"))?;
-    let record = manifest["records"].as_array()?.iter().find(|record| {
-        record["source"]
-            .as_str()
-            .and_then(|source| source.rsplit('/').next())
-            == Some(requested)
-    })?;
+    let records = manifest["records"].as_array()?;
+    fn clean_source(s: &str) -> &str {
+        s.split(['?', '#']).next().unwrap_or(s)
+    }
+    let suffix = format!("/{trimmed}");
+    let record = records
+        .iter()
+        .find(|record| {
+            record["source"]
+                .as_str()
+                .is_some_and(|source| clean_source(source).ends_with(&suffix))
+        })
+        .or_else(|| {
+            records.iter().find(|record| {
+                record["source"]
+                    .as_str()
+                    .and_then(|source| clean_source(source).rsplit('/').next())
+                    == Some(requested)
+            })
+        })?;
     let file = record["file"].as_str()?;
     contained_file(&assets_dir, file)
 }
@@ -757,5 +772,57 @@ mod tests {
             .unwrap()
             .remove("42");
         assert!(validate_catalog(&broken).is_err());
+    }
+
+    #[test]
+    fn resolve_cached_asset_strips_version_queries_and_prefers_category_match() {
+        let root = std::env::temp_dir().join(format!("wuwatappo-resolve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let cache = root.join("cache");
+        let assets = cache.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        fs::write(assets.join("skin.png"), b"skin").unwrap();
+        fs::write(assets.join("atlas.png"), b"atlas").unwrap();
+        fs::write(assets.join("char.png"), b"char").unwrap();
+        fs::write(
+            cache.join("asset_manifest.json"),
+            json!({
+                "records": [
+                    {
+                        "file": "atlas.png",
+                        "source": "https://mc-wuwatappo.kurogames-global.com/character_atlas/same.png?v=1791270689726"
+                    },
+                    {
+                        "file": "skin.png",
+                        "source": "https://mc-wuwatappo.kurogames-global.com/character/same.png?v=1791270689726#frag"
+                    },
+                    {
+                        "file": "char.png",
+                        "source": "https://mc-wuwatappo.kurogames-global.com/character/41dd9bb6-2191-405b-be64-e09cb969add6.png?v=1791270689726"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let canon = |name: &str| fs::canonicalize(assets.join(name)).ok();
+        assert_eq!(
+            resolve_cached_asset(&cache, "character/41dd9bb6-2191-405b-be64-e09cb969add6.png"),
+            canon("char.png")
+        );
+        assert_eq!(
+            resolve_cached_asset(&cache, "character/41dd9bb6-2191-405b-be64-e09cb969add6.png?v=999"),
+            canon("char.png")
+        );
+        assert_eq!(
+            resolve_cached_asset(&cache, "character/same.png"),
+            canon("skin.png")
+        );
+        assert_eq!(
+            resolve_cached_asset(&cache, "character_atlas/same.png"),
+            canon("atlas.png")
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -36,7 +36,6 @@ export function patchDomesticSdkUrls(source) {
 
 export function patchDomesticLoginReload(source) {
   const marker = 't.dataset.kuroSdkRetry="true"';
-  const insertion = ',document.head.appendChild(t),r=window.setTimeout(';
   const markerIdx = source.indexOf(marker);
   // When the marker is corrupted, fall back to the module's unique log marker to
   // still locate the enclosing function and report the precise insertion error.
@@ -47,11 +46,13 @@ export function patchDomesticLoginReload(source) {
     throw new Error('Original CN SDK reload function changed; reconcile the login reload patch before building.');
   }
   const loader = source.slice(offset, limit);
-  if (source.split(marker).length !== 2 || loader.split(insertion).length !== 2) {
+  const insertionPattern = /,document\.head\.appendChild\(t\),([$\w]+)=window\.setTimeout\(/g;
+  const insertionMatches = [...loader.matchAll(insertionPattern)];
+  if (source.split(marker).length !== 2 || insertionMatches.length !== 1) {
     throw new Error('Original CN SDK script insertion changed; reconcile the login reload patch before building.');
   }
-  const replacement = ',e&&([...document.scripts].filter(s=>s.src===t.src).forEach(s=>s.remove()),document.getElementById("KrSDK")?.remove())' + insertion;
-  return source.slice(0, offset) + loader.replace(insertion, replacement) + source.slice(limit);
+  const prefix = ',e&&([...document.scripts].filter(s=>s.src===t.src).forEach(s=>s.remove()),document.getElementById("KrSDK")?.remove())';
+  return source.slice(0, offset) + loader.replace(insertionMatches[0][0], prefix + insertionMatches[0][0]) + source.slice(limit);
 }
 
 export function patchMacUpdateFeedback(source) {
@@ -70,12 +71,14 @@ export function patchMacShortcutLabels(source) {
 export function patchMacUpdater(source) {
   const resolver = 'async function resolveUpdaterLatestJsonUrl(){const e=resolveUpdaterLatestHostJsonUrl();if(!e)return null;';
   const recovery = 'async function resolveUpdaterLatestJsonUrl(){let e=resolveUpdaterLatestHostJsonUrl();if(!e){const config=unwrapApiData(await activityInfo());const host=typeof config?.assets_host==="string"?config.assets_host.trim():"";if(!host||host===LOCAL_ROLE_ASSETS_HOST)throw new Error("官方配置缺少更新资源地址");setUpdaterAssetsHost(host,{triggerSilentCheck:!1});e=resolveUpdaterLatestHostJsonUrl()}';
-  const failure = 'if(logDiagnostic("UPDATE","check_failed",{stage:"check",reason_code:diagnosticErrorCode(t),fallback:e?.interactive?"report_error":"treat_as_latest"},"warn"),e?.interactive)return{kind:"error",message:n};try{const s=await getVersion();return console.warn("[updater] check skipped (treat as latest)",t),{kind:"none",currentVersion:s}}catch{return{kind:"error",message:n}}';
-  const report = 'return logDiagnostic("UPDATE","check_failed",{stage:"check",reason_code:diagnosticErrorCode(t),fallback:"report_error"},"warn"),{kind:"error",message:n}';
-  for (const original of [resolver, failure]) {
-    if (source.split(original).length !== 2) throw new Error('Original updater flow changed; reconcile the Mac update path before building.');
+  const failurePattern = /if\(logDiagnostic\("UPDATE","check_failed",\{([^{}]*?),fallback:([$\w]+)\?\.interactive\?"report_error":"treat_as_latest"\},"warn"\),\2\?\.interactive\)return\{kind:"error",message:([$\w]+)\};try\{const [$\w]+=await getVersion\(\);return console\.warn\("\[updater\] check skipped \(treat as latest\)",[$\w]+\),\{kind:"none",currentVersion:[$\w]+\}\}catch\{return\{kind:"error",message:\3\}\}/g;
+  const failures = [...source.matchAll(failurePattern)];
+  if (source.split(resolver).length !== 2 || failures.length !== 1) {
+    throw new Error('Original updater flow changed; reconcile the Mac update path before building.');
   }
-  return source.replace(resolver, recovery).replace(failure, report);
+  return source
+    .replace(resolver, recovery)
+    .replace(failurePattern, (_, fields, _options, message) => `return logDiagnostic("UPDATE","check_failed",{${fields},fallback:"report_error"},"warn"),{kind:"error",message:${message}}`);
 }
 
 export function patchMacAbout(source, region = 'CN') {

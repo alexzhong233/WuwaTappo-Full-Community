@@ -146,6 +146,8 @@ async function testDashboard(platform) {
   };
 
   let communityMode = 'error';
+  let installMode = 'error';
+  let installStatusOverride = null;
   let statusCalls = 0;
   const atlas = {
     enabled: { value: false },
@@ -161,11 +163,17 @@ async function testDashboard(platform) {
       if (route === '/custom/status') return { packs: [], atlas_count: 10, asset_count: 20 };
       if (route === '/update/status') {
         statusCalls++;
+        if (installStatusOverride) {
+          return { required: false, current: '1.3.2-beta.3', github_version: '1.3.2-beta.5', checked_at: 100, release_notes: 'notes', installation: installStatusOverride };
+        }
         if (statusCalls <= 2) return { required: false, current: '1.3.2-beta.3', github_version: '', checked_at: 0, error: null, release_notes: '' };
         return { required: false, current: '1.3.2-beta.3', github_version: '1.3.2', checked_at: 100, release_notes: 'notes' };
       }
       if (route === '/update/check') throw new Error('offline');
-      if (route === '/update/install') throw new Error('network timeout');
+      if (route === '/update/install') {
+        if (installMode === 'ok') return { started: true, message: '已开始后台下载并校验安装包…' };
+        throw new Error('network timeout');
+      }
       if (route === '/community/update-check') {
         if (communityMode === 'error') return { current: '1.3.2-beta.3', latest: '', updateAvailable: false, error: 'rate limit', message: 'GitHub 接口限流' };
         if (communityMode === 'available-unwritable') return { current: '1.3.2-beta.3', latest: '1.3.2-beta.5', updateAvailable: true, installable: false, installableReason: '当前正直接在磁盘映像（DMG）中运行，请先将应用拖入「应用程序」文件夹后再打开' };
@@ -242,8 +250,34 @@ async function testDashboard(platform) {
   assert.ok(oneClickBtn, '一键更新 button shown when installable is true');
   await oneClickBtn.onclick();
   assert.equal(requests.some(r => r.route === '/update/install'), true);
-  assert.ok(gate.querySelector('[data-github-fallback="true"]'), 'fallback GitHub button shown after install error');
+  assert.ok(gate.querySelector('[data-github-fallback="true"]'), 'fallback GitHub button shown after synchronous install error');
   gate.findAll(n => n.tagName === 'BUTTON' && n._text === '稍后')[0].onclick();
+
+  // When /update/install starts background download cleanly, modal closes immediately and returns to update tab with progress bar
+  installMode = 'ok';
+  installStatusOverride = { phase: 'download', percent: 45, message: '正在下载更新包（45%）' };
+  await checkBtn.onclick();
+  gate = doc.body.querySelector('.wt-gate');
+  assert.ok(gate);
+  await gate.findAll(n => n.tagName === 'BUTTON' && n._text === '一键更新')[0].onclick();
+  await flush();
+  assert.equal(doc.body.querySelector('.wt-gate'), null, 'update modal closes immediately and returns to update page');
+  const progressBox = doc.body.querySelector('.wt-progress');
+  assert.ok(progressBox && progressBox.hidden === false, 'update progress bar shown after returning to update tab');
+  assert.ok(progressBox.textContent.includes('45%'), progressBox.textContent);
+  const installFallbackBtn = doc.body.querySelector('[data-install-github-fallback="true"]');
+  assert.ok(installFallbackBtn);
+  assert.equal(installFallbackBtn.parentNode.hidden, true);
+
+  // Background download failure surfaces on the update tab alongside a manual GitHub fallback button
+  installStatusOverride = { phase: 'failed', percent: 0, message: '准备更新失败：SHA-256 校验失败' };
+  await checkBtn.onclick();
+  gate = doc.body.querySelector('.wt-gate');
+  await gate.findAll(n => n.tagName === 'BUTTON' && n._text === '一键更新')[0].onclick();
+  await flush();
+  assert.ok(progressBox.textContent.includes('SHA-256'), progressBox.textContent);
+  assert.equal(installFallbackBtn.parentNode.hidden, false, 'manual GitHub fallback shown on update tab when background install fails');
+  installStatusOverride = null;
 
   // Test `settings` tab: no Accessibility button, frequency input, 1-5 slot picker, live emote hint
   dash.showTab('settings');

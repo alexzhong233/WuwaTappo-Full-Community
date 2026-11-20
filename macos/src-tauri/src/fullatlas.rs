@@ -163,30 +163,63 @@ impl FullAtlasState {
                 Ok(self.service.update_check(force, bundle_check))
             }
             "update/install" => {
-                let guard = self.service.begin_install().map_err(|e| e.message)?;
                 crate::mac_updater::current_installable_bundle()?;
-                let region = crate::profile::Region::from_app(app);
-                let candidate =
-                    wuwatappo_assistant_core::release_updates::community_installer_for_kind(
-                        self.service.current_community_version(),
-                        self.service.include_prerelease(),
-                        region.id(),
-                        "macos",
-                    )?;
-                let value = crate::mac_updater::prepare_update(
+                let guard = self.service.begin_install().map_err(|e| e.message)?;
+                wuwatappo_assistant_core::release_installer::write_current_status(
                     self.service.root(),
-                    region.identifier(),
-                    &candidate,
-                )?;
-                guard.disarm();
+                    "download",
+                    2.0,
+                    "正在获取更新信息并后台下载安装包…",
+                );
+                let service = Arc::clone(&self.service);
+                let region = crate::profile::Region::from_app(app);
                 let handle = app.clone();
                 std::thread::spawn(move || {
+                    let _guard = guard;
+                    let candidate =
+                        match wuwatappo_assistant_core::release_updates::community_installer_for_kind(
+                            service.current_community_version(),
+                            service.include_prerelease(),
+                            region.id(),
+                            "macos",
+                        ) {
+                            Ok(candidate) => candidate,
+                            Err(error) => {
+                                wuwatappo_assistant_core::release_installer::write_current_status(
+                                    service.root(),
+                                    "failed",
+                                    0.0,
+                                    &format!("准备更新失败：{error}"),
+                                );
+                                return;
+                            }
+                        };
+                    if let Err(error) = crate::mac_updater::prepare_update(
+                        service.root(),
+                        region.identifier(),
+                        &candidate,
+                    ) {
+                        wuwatappo_assistant_core::release_installer::write_current_status(
+                            service.root(),
+                            "failed",
+                            0.0,
+                            &format!("准备更新失败：{error}"),
+                        );
+                        return;
+                    }
+                    _guard.disarm();
                     std::thread::sleep(Duration::from_millis(400));
                     let _ = handle.emit("tray-quit", Value::Null);
-                    std::thread::sleep(Duration::from_millis(1400));
+                    std::thread::sleep(Duration::from_millis(1200));
+                    if let Some(windows) = handle.try_state::<crate::windows::WindowState>() {
+                        windows.mark_stopping();
+                    }
                     handle.exit(0);
                 });
-                Ok(value)
+                Ok(json!({
+                    "started": true,
+                    "message": "已开始后台下载并校验安装包…",
+                }))
             }
             _ => Err(format!("未知全图鉴操作：{action}")),
         }

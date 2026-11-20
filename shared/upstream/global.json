@@ -1,12 +1,12 @@
 {
   "schemaVersion": 2,
   "region": "GLOBAL",
-  "version": "1.0.4",
-  "manifestUrl": "https://wutheringwaves-wuwatappo.kurogames-global.com/app/version-json/latest-global.json?t=1793876749",
+  "version": "1.0.5",
+  "manifestUrl": "https://wutheringwaves-wuwatappo.kurogames-global.com/app/version-json/latest-global.json?t=1795140567",
   "installer": {
-    "url": "https://wutheringwaves-wuwatappo.kurogames-global.com/app/bcea8e4b-6805-407e-af8d-a45a26bc3727/WuwaTappo-global_1.0.4_x64-setup.exe",
-    "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSSnV4aU5ob1MxTGExeVdtek1DZ0hWVDBRN21zWEY5d01QbzA0UXErMEU2N2pHS2M5bUU4UzFHbXFUK0lxd055dXRUOEt6ZUM0bGdubHZOdjRrcnNqSzgvMExtM3dScFF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODc1Mzg0CWZpbGU6V3V3YVRhcHBvLWdsb2JhbF8xLjAuNF94NjQtc2V0dXAuZXhlCnpQMVFuWXdYYXdUZmhudWJoejZSZ1pPYjRPc3ljYUN1blI1R2ZRQ2hNd1ZvdDdXU2RZeFRpV0h3UzZKY3ZQWWtDOW5UYWpvMThRZC85VmpxY1NMaERRPT0K",
-    "sha256": "674d4932c1fa1818406246669d2ab4027a8f70dbca6f365755b23210678d7ff5",
-    "size": 201766624
+    "url": "https://wutheringwaves-wuwatappo.kurogames-global.com/app/0953b761-d797-408b-abbf-64e289a0fb7b/WuwaTappo-global_1.0.5_x64-setup.exe",
+    "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSSnV4aU5ob1MxTGVIbVBZYkpaTVcxK0tvOG9XbFhjVTZIN3lpTFAxVmxVQ1FsOGt2OHJON3dSVUk4T0d4VkgxL0J2dnZ6YjRpWnVsaWxJZm1UNVFzbnlaRGtOZ0UwQnc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDg4MjQ2CWZpbGU6V3V3YVRhcHBvLWdsb2JhbF8xLjAuNV94NjQtc2V0dXAuZXhlCjdTdmlSbm8zeTBVVlRRa0R1dWhuQWNNL2pCRkxESkhsMmd4eXZKVENQU0F6ZXhCYk5LS2lydlJMNGpJRElRWUlDcE05NTlkMkhrNTRqRjVYelFMUUJ3PT0K",
+    "sha256": "9f42ac95c1f634bc573250503b285cd22668b1b4374457f94585b39225ca8465",
+    "size": 201970400
   }
 }

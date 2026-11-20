@@ -28,6 +28,18 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+pub fn write_current_status(root: &Path, phase: &str, percent: f64, message: &str) {
+    let payload = json!({
+        "phase": phase,
+        "percent": percent,
+        "message": message,
+        "updated_at": now_secs(),
+    });
+    let updates = root.join(".updates");
+    let _ = fs::create_dir_all(&updates);
+    let _ = atomic_json(&updates.join("install-current.json"), &payload);
+}
+
 pub fn write_progress(root: &Path, job: &Path, phase: &str, percent: f64, message: &str) {
     let payload = json!({
         "phase": phase,

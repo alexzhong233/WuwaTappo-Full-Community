@@ -409,9 +409,8 @@ pub fn prepare_update(
 
     if let Err(error) = prepared {
         let _ = fs::remove_dir_all(&job);
-        release_installer::write_progress(
+        release_installer::write_current_status(
             state_dir,
-            &job,
             "failed",
             0.0,
             &format!("准备更新失败：{error}"),

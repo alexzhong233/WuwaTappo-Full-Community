@@ -56,6 +56,7 @@ test('official shortcut bindings retain VK values while macOS displays Option an
   const clone = value => JSON.parse(JSON.stringify(value));
   assert.deepEqual(clone(api.defaults), {
     gameMode: { modifiers: 0, key: 118 }, switchScreen: { modifiers: 0, key: 119 }, togglePet: { modifiers: 0, key: 120 },
+    alwaysOnTop: { modifiers: 0, key: 0 }, autoGameModeOnFullscreen: { modifiers: 0, key: 0 }, disablePointerMonitoring: { modifiers: 0, key: 0 },
   });
   assert.deepEqual(clone(api.formatModifiers(15)), ['Ctrl', 'Option', 'Shift', 'Cmd']);
   assert.equal(api.formatShortcut({ modifiers: 8, key: 75 }), 'Cmd+K');
@@ -83,7 +84,7 @@ test('official settings save the complete shortcut map and retain actionable nat
   const save = settings.source.slice(saveNodes[0].start, saveNodes[0].end);
   assert.match(save, /set_app_shortcuts/);
   assert.match(save, /setting_shortcut_/);
-  for (const key of ['gameMode', 'switchScreen', 'togglePet']) {
+  for (const key of ['gameMode', 'switchScreen', 'togglePet', 'alwaysOnTop', 'autoGameModeOnFullscreen', 'disablePointerMonitoring']) {
     assert.ok(settings.source.includes(key), `Shortcut settings must reference ${key}`);
   }
 });
@@ -105,14 +106,22 @@ test('official shortcut capture pairs focus lock and unlock calls cleanly', t =>
 test('official app-shortcut consumer dispatches exactly one enabled action and honors the lock', t => {
   if (!hasExtractedFrontend && !requireFrontendAssets) return t.skip('缺少已提取前端，跳过官方前端契约测试');
   const { view } = sources();
-  // 压缩名每次官方重建都会漂移（1.0.3: Ch/Ie/ly/mc…，1.0.4: Ip/Pe/py/wc…），按分派形状解析。
-  const match = /function ([\w$]+)\(e\)\{([\w$]+)\(\)\|\|\(e==="togglePet"&&([\w$]+)\(\)&&([\w$]+)\(\),e==="gameMode"&&([\w$]+)\(\)&&([\w$]+)\(\),e==="switchScreen"&&([\w$]+)\(\)&&([\w$]+)\(\)\)\}/.exec(view.source);
+  // 压缩名每次官方重建都会漂移，按 1.0.5 六键分派形状解析。
+  const match = /function ([\w$]+)\(e\)\{if\(!([\w$]+)\(\)\)\{if\(e==="alwaysOnTop"&&([\w$]+)\(\),e==="autoGameModeOnFullscreen"\)\{const t=!([\w$]+)\(\)\.autoGameModeOnFullscreen;([\w$]+)\(\{autoGameModeOnFullscreen:t\}\),t\|\|\(([\w$]+)=!1\),([\w$]+)\(t\)\}if\(e==="disablePointerMonitoring"\)\{const t=!\4\(\)\.disablePointerMonitoring;\5\(\{disablePointerMonitoring:t\}\),([\w$]+)\.value=t,([\w$]+)\(t\)\}e==="togglePet"&&([\w$]+)\(\)&&([\w$]+)\(\),e==="gameMode"&&([\w$]+)\(\)&&([\w$]+)\(\),e==="switchScreen"&&([\w$]+)\(\)&&([\w$]+)\(\)\}\}/.exec(view.source);
   assert.ok(match, 'app-shortcut dispatch contract');
-  const [, name, guard, petEnabled, petAction, modeEnabled, modeAction, screenEnabled, screenAction] = match;
+  const [, name, guard, onTopFn, settingsFn, patchSettingsFn, fullscreenFlag, emitAutoModeFn, disablePtrRef, emitDisablePtrFn, petEnabled, petAction, modeEnabled, modeAction, screenEnabled, screenAction] = match;
   for (const locked of [false, true]) for (const enabled of [false, true]) {
     const effects = [];
+    const settingsState = { autoGameModeOnFullscreen: false, disablePointerMonitoring: false };
     const env = vm.createContext({
       [guard]: () => locked,
+      [onTopFn]: () => effects.push('alwaysOnTop'),
+      [settingsFn]: () => settingsState,
+      [patchSettingsFn]: patch => Object.assign(settingsState, patch),
+      [fullscreenFlag]: true,
+      [emitAutoModeFn]: v => effects.push(`autoGameModeOnFullscreen:${v}`),
+      [disablePtrRef]: { value: false },
+      [emitDisablePtrFn]: v => effects.push(`disablePointerMonitoring:${v}`),
       [petEnabled]: () => enabled, [modeEnabled]: () => enabled, [screenEnabled]: () => enabled,
       [petAction]: () => effects.push('togglePet'),
       [modeAction]: () => effects.push('gameMode'),
@@ -121,8 +130,13 @@ test('official app-shortcut consumer dispatches exactly one enabled action and h
     vm.runInContext(declaration(view.source, name), env);
     for (const action of ['togglePet', 'gameMode', 'switchScreen', 'unknown']) env[name](action);
     assert.deepEqual(effects, !locked && enabled ? ['togglePet', 'gameMode', 'switchScreen'] : []);
+    effects.length = 0;
+    for (const action of ['alwaysOnTop', 'autoGameModeOnFullscreen', 'disablePointerMonitoring']) env[name](action);
+    assert.deepEqual(effects, !locked ? ['alwaysOnTop', 'autoGameModeOnFullscreen:true', 'disablePointerMonitoring:true'] : []);
   }
-  assert.deepEqual(contract.events.find(event => event.name === 'app-shortcut').payload.enum, ['gameMode', 'switchScreen', 'togglePet']);
+  assert.deepEqual(contract.events.find(event => event.name === 'app-shortcut').payload.enum, [
+    'gameMode', 'switchScreen', 'togglePet', 'alwaysOnTop', 'autoGameModeOnFullscreen', 'disablePointerMonitoring',
+  ]);
 });
 
 test('official fullscreen automation follows transitions without clearing a manually enabled mode when disabled', t => {

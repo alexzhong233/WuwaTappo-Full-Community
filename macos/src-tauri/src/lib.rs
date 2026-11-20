@@ -164,6 +164,7 @@ const SYSTEM_COMMANDS: &[&str] = &[
     "is_elevated_autostart_enabled",
     "set_elevated_autostart",
     "open_community_releases",
+    "run_network_diagnostics",
 ];
 
 fn handle(invoke: Invoke) -> bool {
@@ -251,6 +252,8 @@ fn handle(invoke: Invoke) -> bool {
         storage::save_key_press_count,
         storage::load_cumulative_click_count,
         storage::save_cumulative_click_count,
+        storage::load_reset_click_archive,
+        storage::reset_local_data,
         input::get_input_status,
         input::get_input_access_diagnostics,
         input::request_input_access,

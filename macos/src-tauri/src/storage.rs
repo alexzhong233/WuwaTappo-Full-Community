@@ -8,7 +8,9 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Mutex,
     },
+    time::Duration,
 };
+use tauri::Manager;
 
 pub const MAX_SAFE_COUNT: u64 = 9_007_199_254_740_991;
 static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -31,6 +33,21 @@ struct EnvironmentCounters {
 struct CounterData {
     version: u32,
     environments: BTreeMap<String, EnvironmentCounters>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ResetArchiveData {
+    version: u32,
+    environments: BTreeMap<String, BTreeMap<String, u64>>,
+}
+
+impl Default for ResetArchiveData {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            environments: BTreeMap::new(),
+        }
+    }
 }
 
 impl Default for CounterData {
@@ -156,47 +173,152 @@ impl CounterStore {
         Ok(data)
     }
 
-    fn write(&self, data: &CounterData) -> Result<(), String> {
-        let directory = self
-            .path
-            .parent()
-            .ok_or("counter_store_directory_missing")?;
-        create_private_directory(directory)
-            .map_err(|error| format!("counter_store_directory_failed: {error}"))?;
-        let temporary = directory.join(format!(
-            ".counters-{}-{}.tmp",
-            std::process::id(),
-            WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let result = (|| {
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
+    fn archive_path(&self) -> PathBuf {
+        self.path.with_file_name("reset-click-archive.json")
+    }
+
+    pub fn load_reset_archive(&self, environment: &str, cuid: &str) -> Result<u64, String> {
+        validate_environment(environment)?;
+        let cuid = cuid.trim();
+        if cuid.is_empty() {
+            return Ok(0);
+        }
+        let _transaction = self
+            .transaction
+            .lock()
+            .map_err(|_| "counter_store_lock_poisoned")?;
+        let data = self.read_archive()?;
+        Ok(data
+            .environments
+            .get(environment)
+            .and_then(|accounts| accounts.get(cuid))
+            .copied()
+            .unwrap_or(0))
+    }
+
+    pub fn reset_and_archive(
+        &self,
+        environment: &str,
+        cuid: &str,
+        local_count: u64,
+        cumulative_count: Option<u64>,
+    ) -> Result<(), String> {
+        validate_environment(environment)?;
+        validate_count(local_count)?;
+        if let Some(total) = cumulative_count {
+            validate_count(total)?;
+        }
+        let _transaction = self
+            .transaction
+            .lock()
+            .map_err(|_| "counter_store_lock_poisoned")?;
+        let data = self.read()?;
+        let cuid = cuid.trim();
+        if !cuid.is_empty() {
+            let stored = data
+                .environments
+                .get(environment)
+                .and_then(|entry| entry.cumulative.get(cuid))
+                .copied()
+                .unwrap_or(0);
+            let mut archive = self.read_archive()?;
+            let prev_archived = archive
+                .environments
+                .get(environment)
+                .and_then(|accounts| accounts.get(cuid))
+                .copied()
+                .unwrap_or(0);
+            let archived = prev_archived
+                .max(stored)
+                .max(cumulative_count.unwrap_or(0))
+                .max(local_count);
+            if archived > 0 {
+                archive
+                    .environments
+                    .entry(environment.to_owned())
+                    .or_default()
+                    .insert(cuid.to_owned(), archived);
+                write_private_json(&self.archive_path(), &archive)?;
             }
-            let mut file = options
-                .open(&temporary)
-                .map_err(|error| format!("counter_store_write_failed: {error}"))?;
-            serde_json::to_writer(&mut file, data)
-                .map_err(|error| format!("counter_store_serialize_failed: {error}"))?;
-            file.write_all(b"\n")
-                .and_then(|_| file.sync_all())
-                .map_err(|error| format!("counter_store_sync_failed: {error}"))?;
-            fs::rename(&temporary, &self.path)
-                .map_err(|error| format!("counter_store_replace_failed: {error}"))
-        })();
-        match result {
-            Ok(()) => Ok(()),
-            Err(original) => {
-                if let Err(error) = fs::remove_file(&temporary) {
-                    if error.kind() != io::ErrorKind::NotFound {
-                        return Err(format!("{original}; counter_store_cleanup_failed: {error}"));
-                    }
+        }
+        if let Err(error) = fs::remove_file(&self.path) {
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(format!("counter_store_reset_failed: {error}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn read_archive(&self) -> Result<ResetArchiveData, String> {
+        let file = match File::open(self.archive_path()) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(ResetArchiveData::default())
+            }
+            Err(error) => return Err(format!("reset_archive_read_failed: {error}")),
+        };
+        let data: ResetArchiveData = serde_json::from_reader(file)
+            .map_err(|error| format!("reset_archive_invalid_json: {error}"))?;
+        if data.version != 1 {
+            return Err(format!(
+                "reset_archive_unsupported_version: {}",
+                data.version
+            ));
+        }
+        for (environment, accounts) in &data.environments {
+            validate_environment(environment)?;
+            for (cuid, count) in accounts {
+                if cuid.trim().is_empty() {
+                    return Err("reset_archive_invalid_account".into());
                 }
-                Err(original)
+                validate_count(*count)?;
             }
+        }
+        Ok(data)
+    }
+
+    fn write(&self, data: &CounterData) -> Result<(), String> {
+        write_private_json(&self.path, data)
+    }
+}
+
+fn write_private_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let directory = path.parent().ok_or("counter_store_directory_missing")?;
+    create_private_directory(directory)
+        .map_err(|error| format!("counter_store_directory_failed: {error}"))?;
+    let temporary = directory.join(format!(
+        ".counters-{}-{}.tmp",
+        std::process::id(),
+        WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .map_err(|error| format!("counter_store_write_failed: {error}"))?;
+        serde_json::to_writer(&mut file, value)
+            .map_err(|error| format!("counter_store_serialize_failed: {error}"))?;
+        file.write_all(b"\n")
+            .and_then(|_| file.sync_all())
+            .map_err(|error| format!("counter_store_sync_failed: {error}"))?;
+        fs::rename(&temporary, path)
+            .map_err(|error| format!("counter_store_replace_failed: {error}"))
+    })();
+    match result {
+        Ok(()) => Ok(()),
+        Err(original) => {
+            if let Err(error) = fs::remove_file(&temporary) {
+                if error.kind() != io::ErrorKind::NotFound {
+                    return Err(format!("{original}; counter_store_cleanup_failed: {error}"));
+                }
+            }
+            Err(original)
         }
     }
 }
@@ -261,6 +383,66 @@ pub fn save_cumulative_click_count(
     environment: String,
 ) -> Result<(), String> {
     store.save_cumulative(&environment, &cuid, count)
+}
+
+#[tauri::command]
+pub fn load_reset_click_archive(
+    store: tauri::State<'_, CounterStore>,
+    environment: String,
+    cuid: String,
+) -> Result<u64, String> {
+    store.load_reset_archive(&environment, &cuid)
+}
+
+#[tauri::command]
+pub fn reset_local_data(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, CounterStore>,
+    environment: String,
+    local_count: u64,
+    cumulative_count: Option<u64>,
+    cuid: String,
+    failure_message: String,
+) -> Result<(), String> {
+    store
+        .reset_and_archive(&environment, &cuid, local_count, cumulative_count)
+        .map_err(|error| {
+            eprintln!("[reset-local-data] archive failed: {error}");
+            failure_message.clone()
+        })?;
+    let _ = tauri_plugin_autostart::ManagerExt::autolaunch(&app).disable();
+    if let Some(session) = app.try_state::<crate::session::SessionStore>() {
+        session.clear().map_err(|error| {
+            eprintln!("[reset-local-data] session clear failed: {error}");
+            failure_message.clone()
+        })?;
+    }
+    if let Ok(config_dir) = app.path().app_config_dir() {
+        for filename in ["shortcuts.json", "session-mode.json"] {
+            if let Err(error) = fs::remove_file(config_dir.join(filename)) {
+                if error.kind() != io::ErrorKind::NotFound {
+                    eprintln!("[reset-local-data] remove {filename} failed: {error}");
+                    return Err(failure_message);
+                }
+            }
+        }
+    }
+    for (_, window) in app.webview_windows() {
+        if let Err(error) = window.clear_all_browsing_data() {
+            eprintln!("[reset-local-data] clear browsing data failed: {error}");
+            return Err(failure_message);
+        }
+    }
+    if let Some(windows) = app.try_state::<crate::windows::WindowState>() {
+        windows.mark_stopping();
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(250));
+        crate::socket::shutdown(&handle);
+        handle.restart();
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -435,5 +617,31 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn reset_and_archive_preserves_highest_click_total_per_account() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        assert_eq!(store.load_reset_archive("cn-cn-prod", "").unwrap(), 0);
+        store
+            .save_cumulative("cn-cn-prod", "1001", 250)
+            .unwrap();
+        store
+            .reset_and_archive("cn-cn-prod", "1001", 30, Some(300))
+            .unwrap();
+        assert!(!store.path.exists());
+        assert_eq!(store.load_reset_archive("cn-cn-prod", "1001").unwrap(), 300);
+        // 再次重置时若服务器读到的数值较小，也绝不倒退已归档的最大累计值。
+        store
+            .reset_and_archive("cn-cn-prod", "1001", 10, Some(120))
+            .unwrap();
+        assert_eq!(store.load_reset_archive("cn-cn-prod", "1001").unwrap(), 300);
+        // 访客状态下 cuid 为空：不写账户归档，但 counters.json 仍清掉。
+        store.save_key_press("cn-cn-prod", 50).unwrap();
+        store
+            .reset_and_archive("cn-cn-prod", "", 50, None)
+            .unwrap();
+        assert!(!store.path.exists());
     }
 }

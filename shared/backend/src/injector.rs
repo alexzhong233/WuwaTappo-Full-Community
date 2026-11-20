@@ -584,7 +584,7 @@ fn transport_options(platform: Platform, config: &Value) -> Result<String, Strin
         Platform::Mac => Ok(concat!(
             "origin: window.__WUWATAPPO_PROFILE__.assetHost, ",
             "request: (route,payload) => window.__TAURI_INTERNALS__.invoke('fullatlas_request',{action:route.replace(/^\\//,''),payload:payload||{}}), ",
-            "token: null, customAssetUrl: (reference, file) => window.__TAURI_INTERNALS__.convertFileSrc(file)"
+            "token: null, customAssetUrl: () => \"\""
         )
         .to_owned()),
         Platform::Windows => {
@@ -717,7 +717,7 @@ fn patch_windows_context_menu(
 fn patch_windows_monitor_autostart(monitor: &str) -> String {
     let mut out = monitor.to_owned();
     let status_re = Regex::new(
-        r#"return Fe\(\) \? await [A-Za-z0-9_$]+\("is_elevated_autostart_enabled"\) : await [A-Za-z0-9_$]+\(\)"#,
+        r#"return [A-Za-z0-9_$]+\(\) \? await [A-Za-z0-9_$]+\("is_elevated_autostart_enabled"\) : await [A-Za-z0-9_$]+\(\)"#,
     )
     .unwrap();
     if let Some(m) = status_re.find(&out) {
@@ -728,7 +728,7 @@ fn patch_windows_monitor_autostart(monitor: &str) -> String {
     }
 
     let set_re =
-        Regex::new(r"(async function ([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\) \{)\s*try \{\s*if \(Fe\(\)\)")
+        Regex::new(r"(async function ([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\) \{)\s*try \{\s*if \([A-Za-z0-9_$]+\(\)\)")
             .unwrap();
     if let Some(caps) = set_re.captures(&out) {
         let header = caps.get(1).unwrap();
@@ -1518,10 +1518,11 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         .find("onClick:")
         .map(|o| marker_at + o)
         .ok_or("official update button onClick missing")?;
+    let mod_call = format!("{with_modifiers}(");
     let handler_rel = panel[call_at..]
-        .find("R(")
-        .map(|o| call_at + o + 2)
-        .ok_or("official update button R( missing")?;
+        .find(&mod_call)
+        .map(|o| call_at + o + mod_call.len())
+        .ok_or("official update button withModifiers( missing")?;
     let handler_end = panel[handler_rel..]
         .find(',')
         .map(|o| handler_rel + o)
@@ -1620,11 +1621,12 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         .captures(chest_text)
         .ok_or("chest cost anchor missing")?[1]
         .to_owned();
-    let animation = Regex::new(r"const \w+ = ([A-Za-z0-9_$]+)\(e\);")
+    let anim_caps = Regex::new(r"const (\w+) = ([A-Za-z0-9_$]+)\(e\);")
         .unwrap()
         .captures(chest_text)
-        .ok_or("chest animation anchor missing")?[1]
-        .to_owned();
+        .ok_or("chest animation anchor missing")?;
+    let anim_var = anim_caps[1].to_owned();
+    let animation = anim_caps[2].to_owned();
 
     let ready_re = Regex::new(&format!(
         r"([A-Za-z0-9_$]+) = {}\(\(\) => ([A-Za-z0-9_$]+)\.value \|\| ![A-Za-z0-9_$]+\.isLoggedIn \? !0 : ([A-Za-z0-9_$]+)\.value <= 0\)",
@@ -1729,17 +1731,29 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
 
     main = rec.replace(
         &main,
-        &format!("const f = {animation}(e);"),
+        &format!("const {anim_var} = {animation}(e);"),
         &format!(
-            "const __assistantAttempt=__lg.assistant.beginChest(e);\n        const f = {animation}(e);"
+            "const __assistantAttempt=__lg.assistant.beginChest(e);\n        const {anim_var} = {animation}(e);"
         ),
     )?;
     let report_reward_succ = require_import(&mi, "reportRewardClaimSucc")?;
-    let reward_anchor = format!("          {report_reward_succ}({{\n            itemId: M.data.asset_id,");
+    let reward_re = Regex::new(&format!(
+        r"(?m)^([ \t]*){}\(\{{\s*\n\s*itemId:\s*([A-Za-z0-9_$]+)\.data\.asset_id,",
+        regex::escape(report_reward_succ)
+    ))
+    .unwrap();
+    let reward_caps = reward_re
+        .captures(&main)
+        .ok_or("chest reward success anchor missing")?;
+    let reward_whole = reward_caps[0].to_owned();
+    let reward_indent = &reward_caps[1];
+    let reward_var = &reward_caps[2];
     main = rec.replace(
         &main,
-        &reward_anchor,
-        &format!("          __lg.assistant.chestSucceeded(__assistantAttempt,M.data);\n{reward_anchor}"),
+        &reward_whole,
+        &format!(
+            "{reward_indent}__lg.assistant.chestSucceeded(__assistantAttempt,{reward_var}.data);\n{reward_whole}"
+        ),
     )?;
 
     let room_field = req_field("currentRoomId")?;
@@ -1888,22 +1902,57 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         &format!("async function {switch_fn}() {{"),
         &format!("async function {switch_fn}(targetName=null) {{"),
     )?;
-    monitor = rec.replace(
-        &monitor,
-        "if (d.length <= 1)",
-        "if (!targetName && d.length <= 1)",
-    )?;
-    monitor = rec.replace(
-        &monitor,
-        "const g = (N + 1) % d.length,",
-        "if(targetName){const __t=d.find(x=>x.name===targetName);if(!__t)return false;if(_&&p(_)===p(__t))return false;}\n    const g = targetName ? d.findIndex(x=>x.name===targetName) : (N + 1) % d.length,",
-    )?;
-    let mon_fn = Regex::new(
-        r"async function ([A-Za-z0-9_$]+)\(\) \{\n  const e = await me\(\),\n    t = await H\(\);\n  return qe\(e, t\)",
+    let list_re = Regex::new(
+        r"([A-Za-z0-9_$]+) = [A-Za-z0-9_$]+\([A-Za-z0-9_$]+, [A-Za-z0-9_$]+\);\s*if \(([A-Za-z0-9_$]+)\.length <= 1\)",
     )
-    .unwrap()
-    .captures(&monitor)
-    .ok_or("display list contract changed")?[1]
+    .unwrap();
+    let list_caps = list_re
+        .captures_iter(&monitor)
+        .find(|c| &c[1] == &c[2])
+        .ok_or("display list count guard changed")?;
+    let list_var = list_caps[1].to_owned();
+    let cur_re = Regex::new(
+        r"const ([A-Za-z0-9_$]+) = await [A-Za-z0-9_$]+\([A-Za-z0-9_$]+\);\s*let ([A-Za-z0-9_$]+) = 0;\s*if \(([A-Za-z0-9_$]+)\) \{\s*const [A-Za-z0-9_$]+ = ([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\)",
+    )
+    .unwrap();
+    let cur_caps = cur_re
+        .captures_iter(&monitor)
+        .find(|c| &c[1] == &c[3] && &c[1] == &c[5])
+        .ok_or("display current monitor anchor changed")?;
+    let cur_var = cur_caps[1].to_owned();
+    let idx_var = cur_caps[2].to_owned();
+    let fp_fn = cur_caps[4].to_owned();
+    let next_re = Regex::new(&format!(
+        r"const ([A-Za-z0-9_$]+) = \({} \+ 1\) % {}\.length,",
+        regex::escape(&idx_var),
+        regex::escape(&list_var)
+    ))
+    .unwrap();
+    let next_caps = next_re
+        .captures(&monitor)
+        .ok_or("display next index anchor changed")?;
+    let next_whole = next_caps[0].to_owned();
+    let next_var = next_caps[1].to_owned();
+    monitor = rec.replace(
+        &monitor,
+        &format!("if ({list_var}.length <= 1)"),
+        &format!("if (!targetName && {list_var}.length <= 1)"),
+    )?;
+    monitor = rec.replace(
+        &monitor,
+        &next_whole,
+        &format!(
+            "if(targetName){{const __t={list_var}.find(x=>x.name===targetName);if(!__t)return false;if({cur_var}&&{fp_fn}({cur_var})==={fp_fn}(__t))return false;}}\n    const {next_var} = targetName ? {list_var}.findIndex(x=>x.name===targetName) : ({idx_var} + 1) % {list_var}.length,"
+        ),
+    )?;
+    let mon_re = Regex::new(
+        r"async function ([A-Za-z0-9_$]+)\(\) \{\s*const ([A-Za-z0-9_$]+) = await [A-Za-z0-9_$]+\(\),\s*([A-Za-z0-9_$]+) = await [A-Za-z0-9_$]+\(\);\s*return [A-Za-z0-9_$]+\(([A-Za-z0-9_$]+), ([A-Za-z0-9_$]+)\)",
+    )
+    .unwrap();
+    let mon_fn = mon_re
+        .captures_iter(&monitor)
+        .find(|c| &c[2] == &c[4] && &c[3] == &c[5])
+        .ok_or("display list contract changed")?[1]
         .to_owned();
     monitor.push_str(&format!(
         "\nexport{{{mon_fn} as __zzMonitors,{switch_fn} as __zzSwitchMonitor}};\n"

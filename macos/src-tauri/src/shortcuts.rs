@@ -27,6 +27,13 @@ pub struct Binding {
 }
 
 impl Binding {
+    const fn unbound() -> Self {
+        Self {
+            modifiers: 0,
+            key: 0,
+        }
+    }
+
     fn shortcut(self) -> Result<Option<Shortcut>, String> {
         if self.key == 0 {
             return if self.modifiers == 0 {
@@ -96,6 +103,12 @@ pub struct Config {
     game_mode: Binding,
     switch_screen: Binding,
     toggle_pet: Binding,
+    #[serde(default = "Binding::unbound")]
+    always_on_top: Binding,
+    #[serde(default = "Binding::unbound")]
+    auto_game_mode_on_fullscreen: Binding,
+    #[serde(default = "Binding::unbound")]
+    disable_pointer_monitoring: Binding,
 }
 
 impl Default for Config {
@@ -113,6 +126,9 @@ impl Default for Config {
                 modifiers: 0,
                 key: 120,
             },
+            always_on_top: Binding::unbound(),
+            auto_game_mode_on_fullscreen: Binding::unbound(),
+            disable_pointer_monitoring: Binding::unbound(),
         }
     }
 }
@@ -124,6 +140,9 @@ impl Config {
             ("gameMode", self.game_mode),
             ("switchScreen", self.switch_screen),
             ("togglePet", self.toggle_pet),
+            ("alwaysOnTop", self.always_on_top),
+            ("autoGameModeOnFullscreen", self.auto_game_mode_on_fullscreen),
+            ("disablePointerMonitoring", self.disable_pointer_monitoring),
         ] {
             if let Some(shortcut) = binding.shortcut()? {
                 if shortcuts
@@ -581,9 +600,20 @@ mod tests {
             serde_json::json!({
                 "gameMode":{"modifiers":0,"key":118},
                 "switchScreen":{"modifiers":0,"key":119},
-                "togglePet":{"modifiers":0,"key":120}
+                "togglePet":{"modifiers":0,"key":120},
+                "alwaysOnTop":{"modifiers":0,"key":0},
+                "autoGameModeOnFullscreen":{"modifiers":0,"key":0},
+                "disablePointerMonitoring":{"modifiers":0,"key":0}
             })
         );
+        // 1.0.4 的三键配置文件必须可以无痛升级到 1.0.5 的六键结构。
+        let legacy: Config = serde_json::from_value(serde_json::json!({
+            "gameMode":{"modifiers":0,"key":118},
+            "switchScreen":{"modifiers":0,"key":119},
+            "togglePet":{"modifiers":0,"key":120}
+        }))
+        .unwrap();
+        assert_eq!(legacy, Config::default());
         for (bit, modifier) in [
             (1, Modifiers::ALT),
             (2, Modifiers::CONTROL),

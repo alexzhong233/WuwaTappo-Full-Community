@@ -406,27 +406,56 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
                 Ok(g) => g,
                 Err(e) => return response(request, e.status_code(), json!({"error": e.message})),
             };
-            match wuwatappo_assistant_core::release_updates::community_installer(
-                app.service.current_community_version(),
-                app.service.include_prerelease(),
-                app.service.region_id(),
-            ) {
-                Ok(candidate) => match wuwatappo_assistant_core::release_installer::prepare(
-                    app.service.root(),
+            wuwatappo_assistant_core::release_installer::write_current_status(
+                app.service.root(),
+                "download",
+                2.0,
+                "正在获取更新信息并后台下载安装包…",
+            );
+            let service = Arc::clone(&app.service);
+            std::thread::spawn(move || {
+                let _guard = guard;
+                let candidate =
+                    match wuwatappo_assistant_core::release_updates::community_installer(
+                        service.current_community_version(),
+                        service.include_prerelease(),
+                        service.region_id(),
+                    ) {
+                        Ok(candidate) => candidate,
+                        Err(error) => {
+                            wuwatappo_assistant_core::release_installer::write_current_status(
+                                service.root(),
+                                "failed",
+                                0.0,
+                                &format!("准备更新失败：{error}"),
+                            );
+                            return;
+                        }
+                    };
+                if let Err(error) = wuwatappo_assistant_core::release_installer::prepare(
+                    service.root(),
                     &candidate,
                 ) {
-                    Ok(value) => {
-                        guard.disarm();
-                        std::thread::spawn(|| {
-                            std::thread::sleep(Duration::from_millis(1200));
-                            std::process::exit(0);
-                        });
-                        response(request, 200, value)
-                    }
-                    Err(error) => response(request, 409, json!({"error":error})),
-                },
-                Err(error) => response(request, 409, json!({"error":error})),
-            }
+                    wuwatappo_assistant_core::release_installer::write_current_status(
+                        service.root(),
+                        "failed",
+                        0.0,
+                        &format!("准备更新失败：{error}"),
+                    );
+                    return;
+                }
+                _guard.disarm();
+                std::thread::sleep(Duration::from_millis(1200));
+                std::process::exit(0);
+            });
+            response(
+                request,
+                200,
+                json!({
+                    "started": true,
+                    "message": "已开始后台下载并校验安装包…",
+                }),
+            )
         }
         "/mode" => {
             let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {

@@ -51,7 +51,7 @@ test('selected regional network contract matches the locked official frontend', 
   assert.equal(contract.updater.indexPath, `/app/json-host/${profile.updaterHostFile}`);
   const result = await verifySourceContract();
   assert.equal(result.region, profile.region);
-  assert.equal(result.businessEndpoints, 22);
+  assert.equal(result.businessEndpoints, 24);
   assert.equal(result.browserOAuthRequired, profile.region === 'GLOBAL');
   assert.equal(result.tauriHttpPluginUsed, false);
 });

@@ -107,20 +107,20 @@ struct AssistantInner {
     last_save: Option<Instant>,
 }
 
-pub struct InstallGuard<'a> {
-    flag: &'a AtomicBool,
+pub struct InstallGuard {
+    service: Arc<FullAtlasService>,
     armed: bool,
 }
 
-impl Drop for InstallGuard<'_> {
+impl Drop for InstallGuard {
     fn drop(&mut self) {
         if self.armed {
-            self.flag.store(false, Ordering::Release);
+            self.service.installing.store(false, Ordering::Release);
         }
     }
 }
 
-impl InstallGuard<'_> {
+impl InstallGuard {
     pub fn disarm(mut self) {
         self.armed = false;
     }
@@ -687,7 +687,7 @@ impl FullAtlasService {
         json!({ "healthy": true })
     }
 
-    pub fn begin_install(&self) -> Result<InstallGuard<'_>, ServiceError> {
+    pub fn begin_install(self: &Arc<Self>) -> Result<InstallGuard, ServiceError> {
         if self
             .installing
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -696,7 +696,7 @@ impl FullAtlasService {
             return Err(ServiceError::conflict("更新正在进行中，请稍候…"));
         }
         Ok(InstallGuard {
-            flag: &self.installing,
+            service: Arc::clone(self),
             armed: true,
         })
     }

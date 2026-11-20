@@ -96,9 +96,9 @@ test('prepared appearance renderers preserve local Mod image URLs', async t => {
   const source = await readFile(new URL(structure.shared, assets), 'utf8');
   assert.match(
     source,
-    // 1.0.4 的产物会把注入片段一起压缩，空格不再固定，这里只校验语义。
-    /customAssetUrl:\s*\(reference,\s*file\)\s*=>\s*window\.__TAURI_INTERNALS__\.convertFileSrc\(file\)/,
-    '注入器必须把本地图片解析方式交给共享控制器，否则 Mod 图片无处可寻',
+    // macOS 通过本机回环 HTTP（modBase）提供 Mod 资源，不拼必 404 的 asset:// convertFileSrc。
+    /customAssetUrl:\s*\(\)\s*=>\s*["']{2}/,
+    '注入器必须禁用 macOS 上失效的 convertFileSrc 回退，只通过共享控制器走本机图片服务',
   );
   assert.match(source, /if\s*\(!paths\s*\|\|\s*!Object\.keys\(paths\)\.length\)\s*return data\.catalog;/, '没有覆盖项时不应该克隆整份 catalog');
   const ast = parse(source, { sourceType: 'module', ecmaVersion: 'latest' });

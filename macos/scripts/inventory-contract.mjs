@@ -14,11 +14,13 @@ const object = properties => ({ type: 'object', properties });
 const insets = object({ left: number, top: number, right: number, bottom: number });
 const region = object({ left: number, top: number, width: number, height: number, memberId: optional(number) });
 const clickCount = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
+const shortcutActions = ['gameMode', 'switchScreen', 'togglePet', 'alwaysOnTop', 'autoGameModeOnFullscreen', 'disablePointerMonitoring'];
+const shortcutMap = () => object(Object.fromEntries(shortcutActions.map(key => [key, object({ modifiers: number, key: number })])));
 function commandContractsFor(clickCacheEnvironment) {
   const environment = { type: 'string', value: clickCacheEnvironment };
   return {
-    get_app_shortcuts: { response: object(Object.fromEntries(['gameMode', 'switchScreen', 'togglePet'].map(key => [key, object({ modifiers: number, key: number })]))) },
-    set_app_shortcuts: { request: object({ config: object(Object.fromEntries(['gameMode', 'switchScreen', 'togglePet'].map(key => [key, object({ modifiers: number, key: number })]))) }) },
+    get_app_shortcuts: { response: shortcutMap() },
+    set_app_shortcuts: { request: object({ config: shortcutMap() }) },
     set_shortcut_capture: { request: object({ active: boolean }) },
     apply_main_window_position: { request: object({ payload: object({ alwaysOnTop: boolean, position: { type: 'string', enum: ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] }, applyPosition: boolean }) }) },
     check_app_update: {
@@ -37,6 +39,7 @@ function commandContractsFor(clickCacheEnvironment) {
     get_silent_nsis_uninstall_status: { response: object({ phase: string, message: string, percent: number }) },
     get_track_os_info: { response: object({ os: string, osVersion: string }) },
     has_maintenance_notice: { response: boolean },
+    hide_toast_overlay: { response: { type: 'null' } },
     inspect_install_directory: { request: object({ payload: object({ installPath: string }) }), response: object({ hasExistingInstallation: boolean }) },
     is_devtools_hotkeys_build: { response: boolean },
     is_elevated_autostart_enabled: { response: boolean },
@@ -46,13 +49,16 @@ function commandContractsFor(clickCacheEnvironment) {
     launch_installed_app: { request: object({ locale: string }) },
     load_cumulative_click_count: { request: object({ environment }), response: object({ count: clickCount, cuid: string, environment }), notes: 'Frontend discards records whose environment differs. It compares cuid before reconciling a different account.' },
     load_key_press_count: { request: object({ environment }), response: clickCount },
+    load_reset_click_archive: { request: object({ environment, cuid: string }), response: clickCount },
     open_login_window: { request: object({ intent: { type: 'string', default: 'login' }, compact: boolean }) },
     open_community_releases: { response: { type: 'null' } },
     open_maintenance_notice: { request: object({ payload: { anyOf: [{ type: 'null' }, { type: 'object' }] } }) },
     open_panel_window: { request: object({ payload: object({ tab: { anyOf: [{ type: 'null' }, string] } }) }) },
     open_update_window: { request: object({ detail: { type: 'object' } }) },
     popup_main_dock_context_menu: { request: object({ x: number, y: number }), notes: 'Coordinates supplied by mouse contextmenu handler are local webview CSS pixels.' },
+    reset_local_data: { request: object({ environment, localCount: clickCount, cumulativeCount: { anyOf: [{ type: 'null' }, clickCount] }, cuid: string, failureMessage: string }), response: { type: 'null' } },
     resize_login_window_to_content: { request: object({ payload: object({ width: number, height: number }) }) },
+    run_network_diagnostics: { request: object({ region: string, apiBase: string, assetsHost: { anyOf: [{ type: 'null' }, string] }, preRelease: boolean, runId: string }), response: object({ status: string, resource_url: optional(string), resource_source: optional(string) }) },
     save_cumulative_click_count: { request: object({ count: clickCount, cuid: string, environment }) },
     save_key_press_count: { request: object({ count: clickCount, environment }), notes: 'Zero is intentional: force persistence is used when clearing pending clicks after successful report or account reconciliation.' },
     set_elevated_autostart: { request: object({ enabled: boolean }) },
@@ -66,22 +72,25 @@ function commandContractsFor(clickCacheEnvironment) {
     set_panel_window_collapsed: { request: object({ payload: object({ collapsed: boolean }) }) },
     start_silent_nsis_install: { request: object({ payload: { type: 'object' } }) },
     start_silent_nsis_uninstall: { request: object({ payload: object({ deleteUserData: boolean }) }) },
-    sync_native_menu: { request: object({ labels: object(Object.fromEntries(['openBag', 'openAtlas', 'openExchange', 'openRoom', 'hidePet', 'showPet', 'trayOpenSettings', 'dockSettings', 'windowSize', 'windowPassthrough', 'windowOpacity', 'restart', 'quit', 'trayTooltip'].map(key => [key, string]))), petDockVisible: boolean, petScale: number, windowOpacity: number, windowPassthrough: boolean }) },
+    sync_native_menu: { request: object({ labels: object(Object.fromEntries(['openBag', 'openAtlas', 'openExchange', 'openRoom', 'hidePet', 'showPet', 'trayOpenSettings', 'dockSettings', 'windowSize', 'windowPassthrough', 'gameMode', 'windowOpacity', 'restart', 'quit', 'trayTooltip'].map(key => [key, string]))), petDockVisible: boolean, petScale: number, windowOpacity: number, windowPassthrough: boolean, gameMode: boolean }) },
     write_app_log: { request: object({ level: string, message: string }) },
   };
 }
 
 const nativeEventContracts = {
-  'app-shortcut': { payload: { type: 'string', enum: ['gameMode', 'switchScreen', 'togglePet'] } },
-  'app-shortcuts-changed': { payload: object(Object.fromEntries(['gameMode', 'switchScreen', 'togglePet'].map(key => [key, object({ modifiers: number, key: number })]))) },
+  'app-shortcut': { payload: { type: 'string', enum: shortcutActions } },
+  'app-shortcuts-changed': { payload: shortcutMap() },
   'key-press': { payload: string, notes: 'Keyboard only. Preserve the same key string for release; literal space is " ". Repeated press is deduplicated by a Set.' },
   'key-release': { payload: string, notes: 'One matched keyboard release increments local click count. Do not emit mouse buttons on this stream.' },
   'mouse-move': { payload: object({ x: number, y: number, memberId: optional(number) }), notes: 'Global physical screen pixels. Frontend subtracts Tauri innerPosition and divides by scaleFactor.' },
-  'mouse-button': { payload: object({ button: { type: 'string', enum: ['left', 'right', 'middle'] }, action: { type: 'string', enum: ['press', 'release'] }, memberId: optional(number) }), notes: 'Press increments local click count. Do not also emit key-press/release or global-clap-mouse for the same click.' },
+  'mouse-leave': { payload: { type: 'undefined' } },
+  'mouse-button': { payload: object({ button: { type: 'string', enum: ['left', 'right', 'middle'] }, action: { type: 'string', enum: ['press', 'release'] }, memberId: optional(number), countedGlobally: optional(boolean) }), notes: 'Press increments local click count. Do not also emit key-press/release or global-clap-mouse for the same click.' },
   'global-clap-mouse': { payload: { type: 'undefined' }, notes: 'Alternative clap-only mouse path. Emitting this alongside mouse-button duplicates click counts.' },
   'gamepad-button-press': { payload: { type: 'undefined' }, notes: 'One controller button rising edge increments local click count and triggers clap feedback. Do not also emit keyboard or mouse events for this input.' },
+  'native-input-sync-failed': { payload: { type: 'undefined' } },
   'deep-link://new-url': { payload: { type: 'array', items: string }, notes: 'Global OAuth expects wuwa-buddy:// callback URLs; preserve URL query parameters for frontend state validation.' },
   'cat-native-network-status-changed': { payload: object({ internetAccess: boolean }) },
+  'cat-network-diagnostic-request': { payload: object({ trigger: optional(string) }) },
   'cat-force-update-lock': { payload: boolean },
   'cat-login-overlay': { payload: object({ open: boolean }) },
   'dock-open-panel': { payload: string },
@@ -93,8 +102,9 @@ const nativeEventContracts = {
   'cat-main-monitor-switch-layout-done': { payload: object({ requestId: string }) },
   'cat-main-monitor-switch-prepare-request': { payload: object({ requestId: string, sourceFingerprint: { anyOf: [{ type: 'null' }, string] }, targetFingerprint: string }) },
   'cat-main-monitor-switch-prepare-done': { payload: object({ requestId: string }) },
+  'cat-main-monitor-switch-finished': { payload: object({ fromFingerprint: { anyOf: [{ type: 'null' }, string] }, toFingerprint: string }) },
 };
-for (const name of ['cat-settings-always-show-chest', 'cat-settings-game-mode', 'cat-settings-hover-auto-hide', 'cat-settings-passthrough']) nativeEventContracts[name] = { payload: object({ enabled: boolean }) };
+for (const name of ['cat-settings-always-on-top', 'cat-settings-always-show-chest', 'cat-settings-auto-game-mode', 'cat-settings-game-mode', 'cat-settings-hover-auto-hide', 'cat-settings-passthrough', 'cat-settings-pointer-monitoring']) nativeEventContracts[name] = { payload: object({ enabled: boolean }) };
 nativeEventContracts['cat-settings-pet-scale-drag'] = { payload: object({ active: boolean }) };
 nativeEventContracts['cat-settings-opacity'] = { payload: object({ opacityPercent: number }) };
 nativeEventContracts['cat-settings-pet-scale'] = { payload: object({ petScale: number }) };

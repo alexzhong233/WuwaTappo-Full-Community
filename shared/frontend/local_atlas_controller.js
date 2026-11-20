@@ -30,8 +30,9 @@ function createLocalAtlasController(d) {
   const customBase = () => String(modBase.value || offlineData.value?.customAssetBase || '');
   const resolveAssetsHost = () => String(customBase() || offlineData.value?.assets_host || origin).replace(/\/+$/, '');
   const customAssetUrl = (reference, file) => {
+    const clean = String(reference || '').split(/[?#]/)[0].replace(/^\/+/, '');
     const base = customBase();
-    if (base) return base + String(reference || '').split('/').map(encodeURIComponent).join('/');
+    if (base && clean) return base + clean.split('/').map(encodeURIComponent).join('/');
     return typeof d.customAssetUrl === 'function'
       ? d.customAssetUrl(reference, file)
       : (/^https?:/i.test(String(reference || '')) ? reference : '');
@@ -324,6 +325,7 @@ function createLocalAtlasController(d) {
       installOfflinePolicy();
       stopConnections();
       if(d.catalogConsumer===false){revision.value++;return;}
+      if(!modBase.value)await loadModBase();
       const data = await prepare();
       if (!originalCatalog) originalCatalog = d.snapshotCatalog();
       applyData(data);
