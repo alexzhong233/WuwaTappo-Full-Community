@@ -128,6 +128,7 @@ pub fn run(root: &Path, action: &str) -> Result<Value, String> {
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     let powershell = Path::new(&system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let mut child = Command::new(powershell)
+        .env_remove("PSModulePath")
         .args([
             "-NoProfile",
             "-NonInteractive",

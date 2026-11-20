@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assetsOrigin, compareUpstream, configUrl, discoverUpstream, fetchOfficial, officialAssetUrl, parseManifest, parseOptions, syncUpstream, validateLock, verifyInstaller, windowsOfficialCache } from '../../scripts/sync-upstream.mjs';
+import { assetsOrigin, compareUpstream, configUrl, discoverUpstream, fetchOfficial, officialAssetUrl, parseManifest, parseOptions, sanitizeWindowsPowerShellEnv, syncUpstream, validateLock, verifyInstaller, windowsOfficialCache } from '../../scripts/sync-upstream.mjs';
 import { parseOptions as parseWinFetchOptions } from '../../scripts/fetch-official-win.mjs';
 import { getRegionProfile } from '../scripts/regions.mjs';
 
@@ -259,4 +259,13 @@ test('Windows official cache metadata and CLI parser stay region-aware and confl
   });
   assert.throws(() => parseWinFetchOptions(['--installer', 'a.exe', '--official-exe', 'b.exe']));
   assert.throws(() => parseWinFetchOptions(['--latest', '--official-exe', 'b.exe']));
+
+  const sanitized = sanitizeWindowsPowerShellEnv(
+    { PSModulePath: 'C:\\Program Files\\PowerShell\\Modules', psmodulepath: 'dup', PATH: 'C:\\Windows' },
+    { WUWA_SIGN_TARGET: 'setup.exe' },
+  );
+  assert.equal(Object.hasOwn(sanitized, 'PSModulePath'), false);
+  assert.equal(Object.hasOwn(sanitized, 'psmodulepath'), false);
+  assert.equal(sanitized.PATH, 'C:\\Windows');
+  assert.equal(sanitized.WUWA_SIGN_TARGET, 'setup.exe');
 });

@@ -46,9 +46,8 @@ if ($Extract) {
   if (Test-Path -LiteralPath $FrontendDir) { Remove-Item -LiteralPath $FrontendDir -Recurse -Force }
   if (Test-Path -LiteralPath $ReadableRoot) { Remove-Item -LiteralPath $ReadableRoot -Recurse -Force }
   $ExtractManifest = Join-Path $Base 'extract_manifest.json'
-  $extractJson = & $nodeExe (Join-Path $RepoRoot 'scripts\extract-assets.mjs') --payload $Official --output $FrontendDir --readable $ReadableRoot
+  & $nodeExe (Join-Path $RepoRoot 'scripts\extract-assets.mjs') --payload $Official --output $FrontendDir --readable $ReadableRoot --manifest-output $ExtractManifest
   if ($LASTEXITCODE -ne 0) { throw '提取官方前端资源失败' }
-  [IO.File]::WriteAllText($ExtractManifest, ($extractJson -join "`n"), (New-Object Text.UTF8Encoding($false)))
 
   & $Cargo run --locked --release --manifest-path $CargoManifest --bin assistant-core -- extract-pe --exe $Official --extract-root $Base --manifest $ExtractManifest
   $extractPeCode = $LASTEXITCODE

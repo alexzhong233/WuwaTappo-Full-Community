@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -114,31 +114,53 @@ function runOsslsigncode(bytes) {
   }
 }
 
+// PowerShell 7（GitHub Actions `shell: pwsh`）下的 PSModulePath 会污染子进程 Windows PowerShell 5.1，
+// 导致 Microsoft.PowerShell.Security 模块（Get-AuthenticodeSignature）加载失败。
+export function sanitizeWindowsPowerShellEnv(baseEnv = process.env, extra = {}) {
+  const clean = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (!/^psmodulepath$/i.test(key)) clean[key] = value;
+  }
+  return { ...clean, ...extra };
+}
+
 function runWindowsAuthenticode(bytes) {
   const work = mkdtempSync(path.join(tmpdir(), 'wuwatappo-sign-'));
   try {
     const file = path.join(work, 'setup.exe');
+    const outFile = path.join(work, 'signer.txt');
     writeFileSync(file, bytes);
-    // 只读校验 Authenticode 签名链，绝不执行安装包。
+    const sysRoot = process.env.SystemRoot || 'C:\\Windows';
+    const ps51 = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const psExe = existsSync(ps51) ? ps51 : 'powershell.exe';
+    // 只读校验 Authenticode 签名链，绝不执行安装包；直写无 BOM UTF-8 文件避免英文系统 OEM 代码页把中文主体替换成 ?。
     const psCommand = [
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
       "$ErrorActionPreference = 'Stop'",
+      'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop',
       '$sig = Get-AuthenticodeSignature -LiteralPath $env:WUWA_SIGN_TARGET',
       "if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate) {",
       '  Write-Error ("Authenticode status: " + $sig.Status + " " + $sig.StatusMessage)',
       '  exit 1',
       '}',
-      'Write-Output ("Subject : " + $sig.SignerCertificate.Subject)',
-      'Write-Output ("Issuer  : " + $sig.SignerCertificate.Issuer)',
+      '$lines = @("Subject : " + $sig.SignerCertificate.Subject, "Issuer  : " + $sig.SignerCertificate.Issuer) -join "`n"',
+      '[System.IO.File]::WriteAllText($env:WUWA_SIGN_OUT, $lines, (New-Object System.Text.UTF8Encoding($false)))',
     ].join('; ');
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCommand], {
+    const result = spawnSync(psExe, ['-NoProfile', '-NonInteractive', '-Command', psCommand], {
       encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, WUWA_SIGN_TARGET: file },
+      env: sanitizeWindowsPowerShellEnv(process.env, {
+        WUWA_SIGN_TARGET: file,
+        WUWA_SIGN_OUT: outFile,
+      }),
     });
     if (result.error?.code === 'ENOENT') {
       throw new Error('缺少 powershell.exe，无法读取安装包 Authenticode 签名。');
     }
     if (result.error) throw result.error;
+    if (result.status === 0 && existsSync(outFile)) {
+      return { ...result, stdout: readFileSync(outFile, 'utf8') };
+    }
     return result;
   } finally {
     rmSync(work, { recursive: true, force: true });

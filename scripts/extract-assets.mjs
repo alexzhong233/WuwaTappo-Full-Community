@@ -200,8 +200,8 @@ async function main() {
   const options = {};
   const args = process.argv.slice(2);
   for (let index = 0; index < args.length; index += 2) {
-    if (!['--payload', '--installer', '--sevenzip', '--output', '--readable', '--executable-output'].includes(args[index]) || !args[index + 1]) {
-      throw new Error('Usage: node scripts/extract-assets.mjs (--payload app.exe | --installer setup.exe --sevenzip /path/to/7zz) [--output frontend] [--readable readable] [--executable-output app.exe]');
+    if (!['--payload', '--installer', '--sevenzip', '--output', '--readable', '--executable-output', '--manifest-output'].includes(args[index]) || !args[index + 1]) {
+      throw new Error('Usage: node scripts/extract-assets.mjs (--payload app.exe | --installer setup.exe --sevenzip /path/to/7zz) [--output frontend] [--readable readable] [--executable-output app.exe] [--manifest-output manifest.json]');
     }
     const key = args[index].slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     options[key] = args[index + 1];
@@ -240,8 +240,21 @@ async function main() {
       await writeFile(readable, beautify.js(entry.data.toString('utf8'), { indent_size: 2 }));
     }
   }
-  console.log(JSON.stringify({ output, readable: options.readable ? path.resolve(options.readable) : null, count: manifest.length,
-    staticReferences: references.references.length, assets: manifest }, null, 2));
+  const summary = JSON.stringify({
+    output,
+    readable: options.readable ? path.resolve(options.readable) : null,
+    count: manifest.length,
+    staticReferences: references.references.length,
+    assets: manifest,
+  }, null, 2);
+  if (options.manifestOutput) {
+    const manifestFile = path.resolve(options.manifestOutput);
+    await mkdir(path.dirname(manifestFile), { recursive: true });
+    await writeFile(manifestFile, `${summary}\n`);
+    console.log(`Extracted ${manifest.length} embedded assets -> ${manifestFile}`);
+  } else {
+    console.log(summary);
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
