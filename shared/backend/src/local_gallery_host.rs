@@ -4,11 +4,9 @@ use std::{
     env, fs,
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, TryLockError},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-#[cfg(windows)]
-use std::{os::windows::process::CommandExt, process::Command};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use wuwatappo_assistant_core::{custom_resources, AssistantCore};
 
@@ -21,8 +19,6 @@ mod windows_startup;
 
 const MAX_BODY: usize = 64 * 1024;
 const MAX_CUSTOM_BODY: usize = 16 * 1024;
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ALLOWED_ORIGINS: [&str; 3] = [
     "http://tauri.localhost",
     "https://tauri.localhost",
@@ -37,7 +33,6 @@ struct App {
     offline: Mutex<bool>,
     custom_error: Mutex<Option<String>>,
     sync: Mutex<Value>,
-    focus_probe: Mutex<Option<(Instant, Value)>>,
     updates: wuwatappo_assistant_core::release_updates::UpdateTracker,
 }
 
@@ -48,32 +43,11 @@ struct LastInputInfo {
     dw_time: u32,
 }
 
-/// `GUITHREADINFO`：桌面输入法、输入增强工具判「是否正在打字」用的就是它。
-/// `hwnd_caret` 非空意味着目标线程当前有插入符，等价于处于文本输入上下文。
-/// HWND 统一用 `isize`，与 `windows_menu.rs` 里同一批函数保持一致——
-/// 同名 FFI 声明两种签名会让调用约定对不上。
-#[cfg(windows)]
-#[repr(C)]
-struct GuiThreadInfo {
-    cb_size: u32,
-    flags: u32,
-    hwnd_active: isize,
-    hwnd_focus: isize,
-    hwnd_capture: isize,
-    hwnd_menu_owner: isize,
-    hwnd_move_size: isize,
-    hwnd_caret: isize,
-    rc_caret: [i32; 4],
-}
-
 #[cfg(windows)]
 #[link(name = "user32")]
 unsafe extern "system" {
     fn GetLastInputInfo(info: *mut LastInputInfo) -> i32;
     fn GetAsyncKeyState(key: i32) -> i16;
-    fn GetForegroundWindow() -> isize;
-    fn GetWindowThreadProcessId(window: isize, pid: *mut u32) -> u32;
-    fn GetGUIThreadInfo(thread: u32, info: *mut GuiThreadInfo) -> i32;
 }
 
 #[cfg(windows)]
@@ -96,118 +70,6 @@ fn physical_quiet() -> bool {
     }
     #[cfg(not(windows))]
     false
-}
-
-/// 快判：前台线程当前有没有插入符。
-///
-/// 输入法、输入增强工具判「是否正在打字」用的就是这个——`GetGUIThreadInfo` 是
-/// 微秒级的本机调用，不建进程，覆盖记事本、浏览器地址栏、大多数原生聊天框。
-#[cfg(windows)]
-fn caret_context() -> Option<Value> {
-    unsafe {
-        let foreground = GetForegroundWindow();
-        if foreground == 0 {
-            return Some(json!({"editable":false,"source":"no-foreground"}));
-        }
-        let mut pid = 0u32;
-        let thread = GetWindowThreadProcessId(foreground, &mut pid);
-        // 自己的窗口（桌宠、控制台里的输入框）不是打字场景，否则会自己触发自己。
-        if pid == std::process::id() {
-            return Some(json!({"editable":false,"source":"own-window"}));
-        }
-        let mut info: GuiThreadInfo = std::mem::zeroed();
-        info.cb_size = std::mem::size_of::<GuiThreadInfo>() as u32;
-        if GetGUIThreadInfo(thread, &mut info) != 0 && info.hwnd_caret != 0 {
-            return Some(json!({"editable":true,"source":"win32-caret"}));
-        }
-    }
-    None
-}
-
-/// 兜底：WebView2 / Electron 这类自绘控件拿不到 caret，只能问 UIA。
-///
-/// 每次探测都要起一个 PowerShell，冷启动就要 200ms 以上，所以超时必须给足。
-/// 之前写的是 300ms，判定永远超时，表情从不触发。
-#[cfg(windows)]
-fn uia_typing_context() -> Value {
-    // 用 Pattern 判定而不是一堆硬编码的属性 ID：ValuePattern/TextPattern 才是
-    // 「这个控件能不能输入文字」的权威答案，属性 ID 会随 UIA 版本变，取错就抛 MethodException。
-    const SCRIPT: &str = r#"$ErrorActionPreference='Stop';try{Add-Type -AssemblyName UIAutomationClient;[void][System.Reflection.Assembly]::LoadWithPartialName('UIAutomationTypes');$e=[System.Windows.Automation.AutomationElement]::FocusedElement;if($null -eq $e){@{editable=$false;source='uia';reason='no-focus'}|ConvertTo-Json -Compress;exit};$type=$e.Current.ControlType.ProgrammaticName;$p=$null;if($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$p)){$vp=[System.Windows.Automation.ValuePattern]$p;if(-not $vp.Current.IsReadOnly){@{editable=$true;source='uia-value';control=$type}|ConvertTo-Json -Compress;exit}};$p=$null;if($e.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern,[ref]$p)){@{editable=$true;source='uia-text';control=$type}|ConvertTo-Json -Compress;exit};@{editable=$false;source='uia';reason='no-editable-pattern';control=$type}|ConvertTo-Json -Compress}catch{@{editable=$false;source='uia-unavailable';error=($_.Exception.GetType().Name+': '+$_.Exception.Message)}|ConvertTo-Json -Compress}"#;
-    let spawned = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let Ok(mut child) = spawned else {
-        return json!({"editable":false,"source":"uia-unavailable","error":"PowerShellUnavailable"});
-    };
-    let deadline = Instant::now() + Duration::from_millis(2500);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return json!({"editable":false,"source":"uia-timeout"});
-            }
-        }
-    }
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(_) => {
-            return json!({"editable":false,"source":"uia-unavailable","error":"ProbeFailed"})
-        }
-    };
-    serde_json::from_slice(&output.stdout).unwrap_or_else(
-        |_| json!({"editable":false,"source":"uia-unavailable","error":"InvalidProbeResult"}),
-    )
-}
-
-fn native_typing_context() -> Value {
-    #[cfg(windows)]
-    {
-        if let Some(value) = caret_context() {
-            return value;
-        }
-        return uia_typing_context();
-    }
-    #[cfg(not(windows))]
-    json!({"editable":false,"source":"native-adapter"})
-}
-
-fn typing_context(app: &App) -> Value {
-    if app
-        .assistant
-        .lock()
-        .unwrap()
-        .saved()
-        .pointer("/settings/auto_emote")
-        .and_then(Value::as_bool)
-        != Some(true)
-    {
-        return json!({"editable":false,"source":"disabled"});
-    }
-    let mut cached = match app.focus_probe.try_lock() {
-        Ok(value) => value,
-        Err(TryLockError::WouldBlock) => return json!({"editable":false,"source":"uia-busy"}),
-        Err(TryLockError::Poisoned(_)) => {
-            return json!({"editable":false,"source":"uia-unavailable"})
-        }
-    };
-    if let Some((at, value)) = cached.as_ref() {
-        // UIA 兜底一次要几百毫秒到两秒多，缓存太短会变成连续打字时反复探测，
-        // 把宿主线程占住；三秒内复用同一结果。
-        if at.elapsed() < Duration::from_millis(3000) {
-            return value.clone();
-        }
-    }
-    let value = native_typing_context();
-    *cached = Some((Instant::now(), value.clone()));
-    value
 }
 
 fn community_current_version(app: &App) -> String {
@@ -787,9 +649,6 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         };
     }
     if path.starts_with("/assistant/") {
-        if path == "/assistant/typing-context" {
-            return response(request, 200, typing_context(app));
-        }
         let action = path.trim_start_matches("/assistant/");
         let offline = *app.offline.lock().unwrap();
         let mut core = app.assistant.lock().unwrap();
@@ -807,7 +666,6 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         };
     }
     match path {
-        "/accessibility/request" => response(request, 200, json!({"ok":true,"granted":true})),
         "/community/version" => response(
             request,
             200,
@@ -1117,7 +975,6 @@ fn main() {
         offline: Mutex::new(offline),
         custom_error: Mutex::new(None),
         sync: Mutex::new(json!({"status":"idle","done":0,"total":0,"checked_at":0})),
-        focus_probe: Mutex::new(None),
         updates: Default::default(),
     });
     println!(
@@ -1153,7 +1010,6 @@ mod tests {
             offline: Mutex::new(false),
             custom_error: Mutex::new(None),
             sync: Mutex::new(json!({"status":"idle","checked_at":0})),
-            focus_probe: Mutex::new(None),
             updates: Default::default(),
         };
         fs::write(root.join("cache/assets/a.png"), b"png").unwrap();

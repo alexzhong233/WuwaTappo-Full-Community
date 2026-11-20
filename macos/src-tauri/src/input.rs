@@ -88,9 +88,9 @@ fn ensure_input_monitoring_listed() {
 /// prompt, no error — and the event tap never comes up. `tccutil` needs no privileges and
 /// is the only way to rebuild the record from inside the app: without it the user has to
 /// delete the app row in System Settings by hand before the button does anything.
-fn reset_tcc_service(service: &str, bundle_identifier: &str) -> Result<(), String> {
+fn reset_listen_event(bundle_identifier: &str) -> Result<(), String> {
     std::process::Command::new("/usr/bin/tccutil")
-        .args(["reset", service, bundle_identifier])
+        .args(["reset", "ListenEvent", bundle_identifier])
         .output()
         .map_err(|error| format!("could not run tccutil: {error}"))
         .and_then(|output| {
@@ -105,14 +105,6 @@ fn reset_tcc_service(service: &str, bundle_identifier: &str) -> Result<(), Strin
                 })
             }
         })
-}
-
-fn reset_listen_event(bundle_identifier: &str) -> Result<(), String> {
-    reset_tcc_service("ListenEvent", bundle_identifier)
-}
-
-fn reset_accessibility(bundle_identifier: &str) -> Result<(), String> {
-    reset_tcc_service("Accessibility", bundle_identifier)
 }
 
 /// Granted on paper but unusable in practice: the tap could not be created or enabled.
@@ -489,55 +481,6 @@ pub fn request_input_access(app: AppHandle) -> Result<InputStatus, String> {
         }
     }
     result
-}
-
-pub fn accessibility_granted() -> bool {
-    unsafe { AXIsProcessTrusted() }
-}
-
-pub fn prompt_accessibility() -> bool {
-    unsafe {
-        let keys = [kAXTrustedCheckOptionPrompt];
-        let values = [kCFBooleanTrue];
-        let dict = CFDictionaryCreate(
-            std::ptr::null_mut(),
-            keys.as_ptr(),
-            values.as_ptr(),
-            1,
-            &raw const kCFTypeDictionaryKeyCallBacks as *const c_void,
-            &raw const kCFTypeDictionaryValueCallBacks as *const c_void,
-        );
-        if dict.is_null() {
-            return AXIsProcessTrusted();
-        }
-        let trusted = AXIsProcessTrustedWithOptions(dict);
-        CFRelease(dict);
-        trusted
-    }
-}
-
-pub fn request_accessibility_access(app: &AppHandle, reset_stale: bool) -> serde_json::Value {
-    if reset_stale && !accessibility_granted() {
-        let bundle = app.config().identifier.clone();
-        if let Err(error) = reset_accessibility(&bundle) {
-            eprintln!("Could not clear accessibility record for {bundle}: {error}");
-        }
-    }
-    let granted = prompt_accessibility();
-    if !granted {
-        if let Err(error) = app.opener().open_url(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            None::<&str>,
-        ) {
-            eprintln!("Could not open Accessibility settings: {error}");
-        }
-    }
-    serde_json::json!({"ok": true, "granted": granted})
-}
-
-#[tauri::command]
-pub fn request_accessibility_permission(app: AppHandle) -> serde_json::Value {
-    request_accessibility_access(&app, true)
 }
 
 #[derive(Debug)]
@@ -1117,26 +1060,7 @@ unsafe extern "C" {
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
-    static kAXTrustedCheckOptionPrompt: *const c_void;
     fn AXIsProcessTrusted() -> bool;
-    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
-    fn AXUIElementCreateSystemWide() -> *mut c_void;
-    fn AXUIElementGetPid(element: *mut c_void, pid: *mut i32) -> i32;
-    fn AXUIElementCopyAttributeValue(
-        element: *mut c_void,
-        attribute: *const c_void,
-        value: *mut *mut c_void,
-    ) -> i32;
-    fn AXUIElementIsAttributeSettable(
-        element: *mut c_void,
-        attribute: *const c_void,
-        settable: *mut bool,
-    ) -> i32;
-    fn AXUIElementSetAttributeValue(
-        element: *mut c_void,
-        attribute: *const c_void,
-        value: *const c_void,
-    ) -> i32;
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -1172,24 +1096,10 @@ unsafe extern "C" {
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
-    static kCFBooleanTrue: *const c_void;
-    static kCFTypeDictionaryKeyCallBacks: u8;
-    static kCFTypeDictionaryValueCallBacks: u8;
     static kCFRunLoopCommonModes: *mut c_void;
     static kCFRunLoopDefaultMode: *mut c_void;
     fn CFRetain(object: *mut c_void) -> *mut c_void;
     fn CFRelease(object: *mut c_void);
-    fn CFDictionaryCreate(
-        allocator: *mut c_void,
-        keys: *const *const c_void,
-        values: *const *const c_void,
-        num_values: isize,
-        key_callbacks: *const c_void,
-        value_callbacks: *const c_void,
-    ) -> *mut c_void;
-    fn CFGetTypeID(object: *mut c_void) -> usize;
-    fn CFBooleanGetTypeID() -> usize;
-    fn CFBooleanGetValue(value: *mut c_void) -> bool;
     fn CFMachPortCreateRunLoopSource(
         allocator: *mut c_void,
         tap: *mut c_void,
@@ -1202,204 +1112,6 @@ unsafe extern "C" {
     fn CFRunLoopRunInMode(mode: *mut c_void, seconds: f64, return_after_source_handled: u8) -> i32;
     fn CFRunLoopStop(run_loop: *mut c_void);
     fn CFRunLoopWakeUp(run_loop: *mut c_void);
-    fn CFStringCreateWithBytes(
-        allocator: *mut c_void,
-        bytes: *const u8,
-        length: isize,
-        encoding: u32,
-        is_external: bool,
-    ) -> *mut c_void;
-    fn CFStringGetLength(text: *mut c_void) -> isize;
-    fn CFStringGetMaximumSizeForEncoding(length: isize, encoding: u32) -> isize;
-    fn CFStringGetCString(text: *mut c_void, buffer: *mut i8, size: isize, encoding: u32) -> bool;
-}
-
-const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
-/// kAXErrorAPIDisabled：没有「辅助功能」授权时 AX 调用一律返回它。
-const AX_ERROR_API_DISABLED: i32 = -25211;
-
-fn cf_string(value: &str) -> *mut c_void {
-    unsafe {
-        CFStringCreateWithBytes(
-            std::ptr::null_mut(),
-            value.as_ptr(),
-            value.len() as isize,
-            CF_STRING_ENCODING_UTF8,
-            false,
-        )
-    }
-}
-
-fn cf_to_string(value: *mut c_void) -> String {
-    if value.is_null() {
-        return String::new();
-    }
-    unsafe {
-        let length = CFStringGetLength(value);
-        if length <= 0 {
-            return String::new();
-        }
-        let size = CFStringGetMaximumSizeForEncoding(length, CF_STRING_ENCODING_UTF8) + 1;
-        if size <= 1 {
-            return String::new();
-        }
-        let mut buffer = vec![0i8; size as usize];
-        if !CFStringGetCString(value, buffer.as_mut_ptr(), size, CF_STRING_ENCODING_UTF8) {
-            return String::new();
-        }
-        std::ffi::CStr::from_ptr(buffer.as_ptr())
-            .to_string_lossy()
-            .into_owned()
-    }
-}
-
-struct CfRef(*mut c_void);
-
-impl CfRef {
-    fn is_null(&self) -> bool {
-        self.0.is_null()
-    }
-}
-
-impl Drop for CfRef {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                CFRelease(self.0);
-            }
-        }
-    }
-}
-
-fn ax_copy_attr(element: *mut c_void, name: &str) -> Result<CfRef, i32> {
-    let key = CfRef(cf_string(name));
-    if key.is_null() {
-        return Err(-1);
-    }
-    let mut out: *mut c_void = std::ptr::null_mut();
-    let status = unsafe { AXUIElementCopyAttributeValue(element, key.0, &mut out) };
-    if status == 0 && !out.is_null() {
-        Ok(CfRef(out))
-    } else {
-        if !out.is_null() {
-            unsafe { CFRelease(out) };
-        }
-        Err(status)
-    }
-}
-
-fn ax_string_attr(element: *mut c_void, name: &str) -> String {
-    ax_copy_attr(element, name)
-        .map(|value| cf_to_string(value.0))
-        .unwrap_or_default()
-}
-
-fn ax_bool_attr(element: *mut c_void, name: &str) -> bool {
-    ax_copy_attr(element, name).is_ok_and(|value| unsafe {
-        CFGetTypeID(value.0) == CFBooleanGetTypeID() && CFBooleanGetValue(value.0)
-    })
-}
-
-fn ax_is_settable(element: *mut c_void, name: &str) -> bool {
-    let key = CfRef(cf_string(name));
-    if key.is_null() {
-        return false;
-    }
-    let mut settable = false;
-    unsafe { AXUIElementIsAttributeSettable(element, key.0, &mut settable) == 0 && settable }
-}
-
-fn ax_element_pid(element: *mut c_void) -> Option<u32> {
-    let mut pid: i32 = 0;
-    if unsafe { AXUIElementGetPid(element, &mut pid) == 0 } && pid > 0 {
-        Some(pid as u32)
-    } else {
-        None
-    }
-}
-
-/// 系统当前焦点是不是落在「能输入文字」的控件上。
-///
-/// 打字自动表情的全部判据就在这里：只在真的往输入框里打字时才弹，
-/// 用 WASD 走路、按快捷键、点按钮都不算。AX 查询失败（没授权 / 没有焦点）
-/// 一律返回不可编辑——宁可少弹一次，也不要在用户操作角色时乱弹。
-pub fn focused_text_context() -> serde_json::Value {
-    use serde_json::json;
-    if !accessibility_granted() {
-        return json!({"editable": false, "reason": "accessibility-denied"});
-    }
-    let system = CfRef(unsafe { AXUIElementCreateSystemWide() });
-    if system.is_null() {
-        return json!({"editable": false, "reason": "no-system-element"});
-    }
-    let own_pid = std::process::id();
-    let focused_app = ax_copy_attr(system.0, "AXFocusedApplication").ok();
-    if let Some(app_el) = focused_app.as_ref() {
-        if ax_element_pid(app_el.0) == Some(own_pid) {
-            return json!({"editable": false, "reason": "own-window"});
-        }
-        // Electron/Chromium 应用默认延迟构建辅助功能树，显式开启 AXManualAccessibility。
-        let manual = CfRef(cf_string("AXManualAccessibility"));
-        if !manual.is_null() {
-            unsafe {
-                AXUIElementSetAttributeValue(app_el.0, manual.0, kCFBooleanTrue);
-            }
-        }
-    }
-    let focused = match ax_copy_attr(system.0, "AXFocusedUIElement") {
-        Ok(el) => el,
-        Err(status) => {
-            if let Some(el) = focused_app
-                .as_ref()
-                .and_then(|app_el| ax_copy_attr(app_el.0, "AXFocusedUIElement").ok())
-            {
-                el
-            } else {
-                return json!({
-                    "editable": false,
-                    "reason": if status == AX_ERROR_API_DISABLED { "accessibility-denied" } else { "no-focus" }
-                });
-            }
-        }
-    };
-    if ax_element_pid(focused.0) == Some(own_pid) {
-        return json!({"editable": false, "reason": "own-window"});
-    }
-    let role = ax_string_attr(focused.0, "AXRole");
-    let subrole = ax_string_attr(focused.0, "AXSubrole");
-    if role == "AXSecureTextField" || subrole == "AXSecureTextField" {
-        return json!({"editable": false, "role": role, "reason": "secure-field"});
-    }
-    let text_role = matches!(
-        role.as_str(),
-        "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField" | "AXEditableText"
-    );
-    let non_text_control = matches!(
-        role.as_str(),
-        "AXButton"
-            | "AXCheckBox"
-            | "AXRadioButton"
-            | "AXPopUpButton"
-            | "AXMenuButton"
-            | "AXMenuItem"
-            | "AXSlider"
-            | "AXTabGroup"
-            | "AXTable"
-            | "AXOutline"
-            | "AXList"
-            | "AXRow"
-            | "AXWindow"
-            | "AXApplication"
-    );
-    let has_editable_ancestor = ax_copy_attr(focused.0, "AXEditableAncestor").is_ok()
-        || ax_copy_attr(focused.0, "AXHighestEditableAncestor").is_ok();
-    let editable = ax_bool_attr(focused.0, "AXIsEditable")
-        || text_role
-        || has_editable_ancestor
-        || (!non_text_control
-            && (ax_is_settable(focused.0, "AXValue")
-                || ax_is_settable(focused.0, "AXSelectedTextRange")));
-    json!({"editable": editable, "role": role, "reason": if editable { "editable" } else { "not-editable" }})
 }
 
 #[cfg(test)]

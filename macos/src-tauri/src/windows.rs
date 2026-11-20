@@ -739,16 +739,6 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
             eprintln!("Could not schedule input access request: {error}");
         }
     });
-    let app_for_accessibility = app.clone();
-    app.listen("mac-request-accessibility-access", move |_| {
-        let app = app_for_accessibility.clone();
-        let handle = app.clone();
-        if let Err(error) = app.run_on_main_thread(move || {
-            let _ = crate::input::request_accessibility_access(&handle, true);
-        }) {
-            eprintln!("Could not schedule accessibility access request: {error}");
-        }
-    });
     std::thread::spawn({
         let app = app.clone();
         move || {

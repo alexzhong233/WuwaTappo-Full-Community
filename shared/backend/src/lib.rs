@@ -30,6 +30,8 @@ pub struct AssistantSettings {
     pub remember_monitor: bool,
     pub prerelease_updates: bool,
     pub auto_emote: bool,
+    pub auto_emote_interval: u32,
+    pub auto_emote_slots: u32,
 }
 
 impl Default for AssistantSettings {
@@ -46,6 +48,8 @@ impl Default for AssistantSettings {
             remember_monitor: values["remember_monitor"].as_bool().unwrap(),
             prerelease_updates: values["prerelease_updates"].as_bool().unwrap(),
             auto_emote: values["auto_emote"].as_bool().unwrap(),
+            auto_emote_interval: values["auto_emote_interval"].as_u64().unwrap() as u32,
+            auto_emote_slots: values["auto_emote_slots"].as_u64().unwrap() as u32,
         }
     }
 }
@@ -300,9 +304,6 @@ impl AssistantCore {
                 self.runtime = json!({"seen_at": now, "connected": true});
             }
             return Ok(self.snapshot(now, update_required));
-        }
-        if action == "typing-context" {
-            return Ok(json!({"editable": false, "reason": "native-adapter"}));
         }
         let settings = self.settings();
         match action {
@@ -870,5 +871,70 @@ mod tests {
         )
         .unwrap();
         assert_eq!(core.snapshot(4.0, false)["runtime"]["emote"]["sent"], 3);
+    }
+
+    #[test]
+    fn auto_emote_interval_and_slots_validate_bounds_and_fallback_defaults() {
+        let mut core = AssistantCore::new(Some(json!({
+            "settings": { "auto_emote": true }
+        })));
+        let initial = core.snapshot(1.0, false);
+        assert_eq!(initial["settings"]["auto_emote"], true);
+        assert_eq!(initial["settings"]["auto_emote_interval"], 25);
+        assert_eq!(initial["settings"]["auto_emote_slots"], 31);
+
+        assert!(core
+            .handle(
+                "configure",
+                &json!({"settings": {"auto_emote_interval": 0}}),
+                1.0,
+                true,
+                false,
+                false,
+            )
+            .is_err());
+        assert!(core
+            .handle(
+                "configure",
+                &json!({"settings": {"auto_emote_interval": 1001}}),
+                1.0,
+                true,
+                false,
+                false,
+            )
+            .is_err());
+        assert!(core
+            .handle(
+                "configure",
+                &json!({"settings": {"auto_emote_slots": 0}}),
+                1.0,
+                true,
+                false,
+                false,
+            )
+            .is_err());
+        assert!(core
+            .handle(
+                "configure",
+                &json!({"settings": {"auto_emote_slots": 32}}),
+                1.0,
+                true,
+                false,
+                false,
+            )
+            .is_err());
+
+        let updated = core
+            .handle(
+                "configure",
+                &json!({"settings": {"auto_emote_interval": 40, "auto_emote_slots": 6}}),
+                2.0,
+                true,
+                false,
+                false,
+            )
+            .unwrap();
+        assert_eq!(updated["settings"]["auto_emote_interval"], 40);
+        assert_eq!(updated["settings"]["auto_emote_slots"], 6);
     }
 }

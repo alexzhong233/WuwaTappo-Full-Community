@@ -271,18 +271,8 @@ impl FullAtlasState {
     }
     fn assistant(&self, action: &str, body: &Value, physical_quiet: bool) -> Result<Value, String> {
         let mut inner = self.inner.lock().map_err(|_| "全图鉴数据锁失败")?;
-        if action == "typing-context" {
-            if !inner.assistant.saved()["settings"]["auto_emote"]
-                .as_bool()
-                .unwrap_or(false)
-            {
-                return Ok(json!({"editable": false, "reason": "disabled"}));
-            }
-            drop(inner);
-            return Ok(crate::input::focused_text_context());
-        }
         let offline = inner.assistant.app_enabled();
-        let mut result = inner.assistant.handle(
+        let result = inner.assistant.handle(
             action,
             body,
             unix_time() as f64,
@@ -294,12 +284,6 @@ impl FullAtlasState {
             &mut inner,
             action != "observe" || body.get("flush") == Some(&Value::Bool(true)),
         )?;
-        if let Some(runtime) = result.get_mut("runtime").and_then(Value::as_object_mut) {
-            runtime.insert(
-                "accessibility_granted".into(),
-                json!(crate::input::accessibility_granted()),
-            );
-        }
         Ok(result)
     }
     fn request(
@@ -330,22 +314,6 @@ impl FullAtlasState {
                 let region = crate::profile::Region::from_app(app);
                 crate::system::open_pet_site(app, region)
                     .map(|()| json!({"ok": true, "url": region.pet_site()}))
-            }
-            "accessibility/request" => {
-                let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                let handle = app.clone();
-                if app
-                    .run_on_main_thread(move || {
-                        let _ = tx.send(crate::input::request_accessibility_access(&handle, true));
-                    })
-                    .is_ok()
-                {
-                    Ok(rx.recv().unwrap_or_else(|_| {
-                        json!({"ok": true, "granted": crate::input::accessibility_granted()})
-                    }))
-                } else {
-                    Ok(crate::input::request_accessibility_access(app, true))
-                }
             }
             "community/version" => Ok(json!({"current": community_current_version()})),
             "community/update-check" => {
@@ -477,17 +445,7 @@ impl FullAtlasState {
             name if name.starts_with("assistant/") => {
                 let quiet = app.state::<crate::input::InputMonitor>().status().running
                     && crate::input::physical_input_quiet();
-                let result = self.assistant(name.trim_start_matches("assistant/"), body, quiet)?;
-                if name == "assistant/configure"
-                    && body.pointer("/settings/auto_emote").and_then(Value::as_bool) == Some(true)
-                    && !crate::input::accessibility_granted()
-                {
-                    let handle = app.clone();
-                    let _ = app.run_on_main_thread(move || {
-                        let _ = crate::input::request_accessibility_access(&handle, false);
-                    });
-                }
-                Ok(result)
+                self.assistant(name.trim_start_matches("assistant/"), body, quiet)
             }
             _ => Err(format!("未知全图鉴操作：{action}")),
         }

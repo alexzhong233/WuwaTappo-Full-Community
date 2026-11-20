@@ -23,7 +23,9 @@ function assistantUi(window) {
     .wt-progress-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:12px}.wt-track{height:6px;border-radius:10px;background:#eee9df;overflow:hidden;margin-top:7px}.wt-track span{display:block;height:100%;background:linear-gradient(90deg,#d9b574,#edcc87);border-radius:10px}
     .wt-speeds{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}.wt-console .wt-speed{text-align:left;background:#f8f7f4;padding:10px 14px}.wt-console .wt-speed.active{border-color:#d9af6f;background:#fff4df}.wt-speed strong{font-size:13px;display:block}.wt-speed span{font-size:11px;color:var(--muted)}
     .wt-log{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid #f1eee8;align-items:center}.wt-log:last-child{border:0}.wt-log-icon{background:#fff2d8;border-radius:12px;width:40px;height:40px;flex-shrink:0;display:grid;place-items:center;font-size:20px}.wt-log-main{flex:1;min-width:0}.wt-log strong{font-size:13px;font-weight:600}.wt-rarity{font-size:10px;background:#f1e9f6;color:#8b60a0;border-radius:6px;padding:2px 7px}
-    .wt-setting{padding:13px 0;display:flex;gap:20px;justify-content:space-between;align-items:center;border-bottom:1px solid #f2efe9}.wt-setting:last-child{border:0}.wt-console input[type=checkbox]{appearance:none;flex-shrink:0;width:38px;height:22px;background:#d7d3ca;border:0;border-radius:15px;position:relative;cursor:pointer}.wt-console input[type=checkbox]:after{content:'';display:block;background:white;box-shadow:0 1px 3px #0002;width:16px;height:16px;border-radius:50%;position:absolute;top:3px;left:3px;transition:transform .15s}.wt-console input[type=checkbox]:checked{background:#b8965a}.wt-console input[type=checkbox]:checked:after{transform:translateX(16px)}
+    .wt-setting{padding:13px 0;display:flex;gap:20px;justify-content:space-between;align-items:center;border-bottom:1px solid #f2efe9}.wt-setting:last-child{border:0}
+    .wt-slots{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;max-width:340px}.wt-console .wt-slot{font-size:12px;padding:5px 11px;min-height:30px;border-radius:9px;background:#f8f7f4}.wt-console .wt-slot.active{background:#efd8ac;border-color:#d9af6f;color:#654921;font-weight:650}
+    .wt-console input[type=checkbox]{appearance:none;flex-shrink:0;width:38px;height:22px;background:#d7d3ca;border:0;border-radius:15px;position:relative;cursor:pointer}.wt-console input[type=checkbox]:after{content:'';display:block;background:white;box-shadow:0 1px 3px #0002;width:16px;height:16px;border-radius:50%;position:absolute;top:3px;left:3px;transition:transform .15s}.wt-console input[type=checkbox]:checked{background:#b8965a}.wt-console input[type=checkbox]:checked:after{transform:translateX(16px)}
     .wt-console input[type=number]{font:inherit;color:var(--ink);width:112px;border:1px solid var(--line);padding:6px 10px;border-radius:8px;background:#faf9f7}.wt-chart{display:flex;gap:14px;align-items:flex-end;height:180px;margin:20px 0 8px}.wt-column{flex:1;min-width:0;text-align:center;font-size:11px;color:var(--muted)}.wt-bar{margin:5px auto;background:#ddc292;border-radius:5px 5px 2px 2px;width:70%}.wt-empty{padding:28px 10px;text-align:center;color:var(--muted);font-size:12px}
     .wt-console footer{padding:10px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:11px;color:var(--muted);background:#faf9f6;flex-shrink:0}.wt-console footer button{font-size:11px;padding:4px 10px;min-height:28px}.wt-notice{font-size:12px;color:#9c6c32;padding:6px 0;min-height:20px}
     .wt-versions{margin-top:10px;border-top:1px solid var(--line)}
@@ -342,11 +344,35 @@ function createAssistantDashboard(d){
       };
     }else{
       const c=card();el('h3','自动化设置',c);const fields={};
-      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；真实文字输入时随机弹出，联机沿用手动发送，后台连点不触发'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
+      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；跟随真实打字与点击次数随机弹出，自动避让后台连点，无需辅助功能权限'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
         const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>{
           if(key==='enabled'&&!input.checked)change({enabled:false,auto_click_balance:false});
           else change({[key]:input.checked});
         };fields[key]=input;
+      }
+      const freqRow=el('label',undefined,c,'wt-setting'),freqText=el('div',undefined,freqRow);
+      el('h3','自动表情平均间隔',freqText);el('p','约每 X 次真实按键或点击随机触发一次（±40% 随机波动，后台自动点击不计入）',freqText,'wt-muted');
+      const freqInput=el('input',undefined,freqRow);freqInput.type='number';freqInput.min=1;freqInput.max=1000;freqInput.step=1;freqInput.setAttribute('aria-label','自动表情平均间隔');
+      freqInput.onchange=()=>change({auto_emote_interval:Math.max(1,Math.min(1000,Math.round(Number(freqInput.value)||25)))});
+      fields.auto_emote_interval=freqInput;
+      const slotRow=el('div',undefined,c,'wt-setting'),slotText=el('div',undefined,slotRow);
+      el('h3','自动表情槽位（1～5）',slotText);el('p','对应背包已装备的 1～5 号表情；点单个号码直接只发该表情，再点其他号码可多选随机',slotText,'wt-muted');
+      const slotGroup=el('div',undefined,slotRow,'wt-slots');
+      const allSlotBtn=button('全部',slotGroup,()=>{
+        const cur=(Number(value?.settings?.auto_emote_slots)||31)&31||31;
+        if(cur!==31)return change({auto_emote_slots:31});
+      },'wt-slot');
+      allSlotBtn.setAttribute('data-emote-slot','all');
+      const slotButtons=[];
+      for(let i=0;i<5;i++){
+        const bit=1<<i;
+        const btn=button((i+1)+'号',slotGroup,()=>{
+          const cur=(Number(value?.settings?.auto_emote_slots)||31)&31||31;
+          const next=cur===31?bit:(cur&bit?((cur&~bit)||31):(cur|bit));
+          return change({auto_emote_slots:next});
+        },'wt-slot');
+        btn.setAttribute('data-emote-slot',String(i+1));
+        slotButtons.push(btn);
       }
       for(const[key,title]of [['auto_click_below','低于此可用点数时开启'],['auto_click_above','高于此可用点数时关闭']]){
         const row=el('label',undefined,c,'wt-setting'),t=el('div',undefined,row);el('h3',title,t);el('p',key==='auto_click_below'?'严格低于下限后自动开始点击':'严格高于上限后自动停止点击',t,'wt-muted');
@@ -365,27 +391,24 @@ function createAssistantDashboard(d){
         finally{localBox.disabled=false;}
       };
       const emoteHint=el('p','',c,'wt-muted');emoteHint.setAttribute('data-emote-hint','true');
-      const accessBtn=button('授权辅助功能（打字表情）',c,async()=>{
-        accessBtn.disabled=true;
-        try{
-          const r=await d.atlas.request('/accessibility/request',{});
-          notice.textContent=r?.granted?'辅助功能已授权':'已打开系统辅助功能授权引导，请在系统设置中勾选本应用';
-          await refresh();
-        }catch(e){notice.textContent='请求辅助功能权限失败：'+e.message;}
-        finally{accessBtn.disabled=false;}
-      });accessBtn.hidden=true;accessBtn.setAttribute('data-accessibility-btn','true');
-      renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox'){input.checked=!!value.settings[k];input.disabled=k==='auto_click_balance'&&!value.settings.enabled&&!value.settings.auto_click_balance;}else input.value=value.settings[k];}
+      renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox'){input.checked=!!value.settings[k];input.disabled=k==='auto_click_balance'&&!value.settings.enabled&&!value.settings.auto_click_balance;}else input.value=value.settings[k]??(k==='auto_emote_interval'?25:'');}
         if(doc.activeElement!==localBox)localBox.checked=!!d.atlas.enabled.value;
         localBox.disabled=!!d.atlas.busy.value;
         const stats=value?.runtime?.emote||d.atlas?.assistant?.emoteStats||{};
-        const noAccess=value?.runtime?.accessibility_granted===false||stats.reason==='no-access';
-        accessBtn.hidden=!value.settings.auto_emote||!noAccess;
+        const mask=(Number(value?.settings?.auto_emote_slots)||31)&31||31;
+        const hasSlots=Array.isArray(stats.slots)&&stats.slots.length>0;
+        allSlotBtn.className='wt-slot'+(mask===31?' active':'');
+        for(let i=0;i<5;i++){
+          const slotName=hasSlots?String(stats.slots[i]||'').trim():'';
+          slotButtons[i].textContent=hasSlots?(slotName?(i+1)+' · '+slotName:(i+1)+'（空）'):(i+1)+'号';
+          slotButtons[i].className='wt-slot'+((mask&(1<<i))?' active':'');
+        }
+        const selectedEquipped=hasSlots?stats.slots.some((name,i)=>String(name||'').trim()&&(mask&(1<<i))):true;
         emoteHint.textContent=!value.settings.auto_emote?'打字自动表情已关闭'
-          :noAccess?'需要「系统设置 → 隐私与安全性 → 辅助功能」里允许本应用'
-          :stats.reason==='no-selection'?'请先在背包装备至少一个表情'
-          :stats.reason==='not-editable'?'尚未识别到文字输入框（当前焦点不在输入框）'
-          :stats.sent?'本次已触发 '+stats.sent+' 次 · 持续打字间隔约 1.2～2.4 秒'
-          :'待命中：真实文字输入时会随机弹出，走路/组合键不触发';};
+          :(hasSlots&&!stats.slots.some(s=>String(s||'').trim()))||(!hasSlots&&stats.reason==='no-selection')?'请先在背包装备至少一个表情'
+          :(hasSlots?!selectedEquipped:stats.reason==='slot-empty')?'所选槽位暂未装备表情，请换选已装备的槽位或点「全部」'
+          :stats.sent?'本次已触发 '+stats.sent+' 次'+(stats.remaining?' · 距下次约 '+stats.remaining+' 次点击/按键':'')
+          :'待命中'+(stats.remaining?' · 距下次约 '+stats.remaining+' 次点击/按键':'：跟随真实打字与点击次数随机弹出');};
     }
     if(value)paint();
   }

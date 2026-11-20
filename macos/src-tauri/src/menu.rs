@@ -207,7 +207,6 @@ fn context_items(
         )?,
         MenuItemKind::Predefined(PredefinedMenuItem::separator(app)?),
         normal(app, "input-access", "启用键鼠监听…")?,
-        normal(app, "accessibility-access", "启用辅助功能（打字表情）…")?,
         normal(app, "open-logs", "查看日志")?,
         MenuItemKind::Predefined(PredefinedMenuItem::separator(app)?),
         normal(app, "restart", &labels.restart)?,
@@ -263,13 +262,6 @@ fn application_menu(app: &AppHandle, options: &MenuOptions) -> tauri::Result<Men
         true,
         None::<&str>,
     )?)?;
-    application.append(&MenuItem::with_id(
-        app,
-        "accessibility-access",
-        "启用辅助功能（打字表情）…",
-        true,
-        None::<&str>,
-    )?)?;
     application.append(&PredefinedMenuItem::separator(app)?)?;
     application.append(&PredefinedMenuItem::hide(app, None)?)?;
     application.append(&PredefinedMenuItem::hide_others(app, None)?)?;
@@ -318,7 +310,6 @@ fn event_for_id(id: &str) -> Option<(&'static str, Value)> {
         "restart" => ("tray-restart", Value::Null),
         "quit" => ("tray-quit", Value::Null),
         "input-access" => ("mac-request-input-access", Value::Null),
-        "accessibility-access" => ("mac-request-accessibility-access", Value::Null),
         "open-about" => ("mac-open-about", Value::Null),
         _ => {
             if let Some(value) = id.strip_prefix("pet-scale-") {

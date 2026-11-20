@@ -127,11 +127,6 @@ def integrate(project, base, frontend, structure, shared, main, panel, main_name
     # 本地图鉴里的表情不属于账号素材，别当成账号道具回传给联机房间。
     main = once(main, sync_call.group(0),
                 store + '.isLoggedIn && !__lg.enabled.value && ' + sync_call.group(1) + '(e.id);')
-    # 只监听「真实的」物理按键：自动点击用的虚拟 F24 走的是 handler 直调，不会到这里。
-    main = once(main, handlers[0] + '(e.payload)',
-                handlers[0] + '(e.payload); __lg.assistant.physicalKey(e.payload)')
-    main = once(main, handlers[1] + '(e.payload)',
-                handlers[1] + '(e.payload); __lg.assistant.physicalRelease(e.payload)')
     factory = '\n'.join((project / hooks.facade_dir / name).read_text(encoding='utf-8')
                         for name in hooks.facade_files)
     shared = once(shared, 'window.__WUWA_LOCAL_ATLAS__ = localAtlasController;', factory + '''
@@ -187,6 +182,7 @@ window.__WUWA_LOCAL_ATLAS__ = localAtlasController;''' + hooks.facade_locals())
  }},
  quit:{quit_fn},
  persistOriginal:async()=>{{{persist_original}}},
+ listenClicks:callback=>{mi['watch']}(()=>{store}.localClickCount,(next,prev)=>{{if(Number(next)===Number(prev)+1)callback(1);}},{{flush:'sync'}}),
  listenRoom:callback=>{mi['watch']}([()=>{room},()=>{members}.map(x=>[x.id,x.nickname,x.isOwner]).join('|')],()=>{{
    const owner={members}.find(x=>x.isOwner);if({room})callback(String({room}),owner?.nickname||'').catch(()=>{{}});
  }},{{immediate:true}}),

@@ -4,8 +4,6 @@
 <dict>
   <key>NSInputMonitoringUsageDescription</key>
   <string>Wuwa Tappo animates your desktop companion when you type or click. Typed text is not recorded.</string>
-  <key>NSAccessibilityUsageDescription</key>
-  <string>Wuwa Tappo checks whether a text input field is focused before triggering typing emotes. Typed text is never read or recorded.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsLocalNetworking</key>

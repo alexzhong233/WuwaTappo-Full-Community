@@ -1,5 +1,5 @@
-// Regression: dashboard update tab, cross-window emote stats, macOS accessibility prompt,
-// and slow Windows UIA focus probe (>500ms) in desktop_assistant.js.
+// Regression: dashboard update tab, frequency + 1-5 slot selection without accessibility prompt,
+// click-count driven auto-emote, and virtual auto-click avoidance/yield in desktop_assistant.js.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -130,6 +130,8 @@ async function testDashboard(targetPath) {
       auto_click_above: 2000,
       auto_chest: false,
       auto_emote: true,
+      auto_emote_interval: 25,
+      auto_emote_slots: 31,
       threshold: 1000,
       remember_monitor: false,
       prerelease_updates: false,
@@ -139,14 +141,12 @@ async function testDashboard(targetPath) {
       logged_in: true,
       balance: 3000,
       total: 5000,
-      accessibility_granted: false,
-      emote: { sent: 0, reason: '' },
+      emote: { sent: 0, remaining: 22, reason: 'ready', slots: ['挥手', '点赞', '', '', ''] },
     },
   };
 
   let communityMode = 'error';
   let statusCalls = 0;
-  let accessRequests = 0;
   const atlas = {
     enabled: { value: false },
     busy: { value: false },
@@ -156,34 +156,29 @@ async function testDashboard(targetPath) {
     setEnabled: async v => { atlas.enabled.value = v; },
     async request(route, body) {
       requests.push({ route, body });
-      if (route === '/community/version') return { current: '1.3.2-beta.2' };
+      if (route === '/community/version') return { current: '1.3.2-beta.3' };
       if (route === '/official/update-check') return { latestVersion: '1.0.4', currentVersion: '1.0.4', updateAvailable: false };
       if (route === '/custom/status') return { packs: [], atlas_count: 10, asset_count: 20 };
       if (route === '/update/status') {
         statusCalls++;
-        if (statusCalls <= 2) return { required: false, current: '1.3.2-beta.2', github_version: '', checked_at: 0, error: null, release_notes: '' };
-        return { required: false, current: '1.3.2-beta.2', github_version: '1.3.2', checked_at: 100, release_notes: 'notes' };
+        if (statusCalls <= 2) return { required: false, current: '1.3.2-beta.3', github_version: '', checked_at: 0, error: null, release_notes: '' };
+        return { required: false, current: '1.3.2-beta.3', github_version: '1.3.2', checked_at: 100, release_notes: 'notes' };
       }
       if (route === '/update/check') throw new Error('offline');
       if (route === '/community/update-check') {
-        if (communityMode === 'error') return { current: '1.3.2-beta.2', latest: '', updateAvailable: false, error: 'rate limit', message: 'GitHub 接口限流' };
-        return { current: '1.3.2-beta.2', latest: '1.3.2', updateAvailable: false, releaseNotes: 'Fixed' };
-      }
-      if (route === '/accessibility/request') {
-        accessRequests++;
-        state.runtime.accessibility_granted = true;
-        return { ok: true, granted: true };
+        if (communityMode === 'error') return { current: '1.3.2-beta.3', latest: '', updateAvailable: false, error: 'rate limit', message: 'GitHub 接口限流' };
+        return { current: '1.3.2-beta.3', latest: '1.3.2', updateAvailable: false, releaseNotes: 'Fixed' };
       }
       return {};
     },
   };
 
-  const ctx = vm.createContext({ window: win, Date, Number, Promise, console, Object, Math });
+  const ctx = vm.createContext({ window: win, Date, Number, Promise, console, Object, Math, Array, String });
   vm.runInContext(source + ';globalThis.createDashboard = createAssistantDashboard;', ctx);
 
   const dash = ctx.createDashboard({
     window: win,
-    version: '1.3.2-beta.2',
+    version: '1.3.2-beta.3',
     initialTab: 'overview',
     atlas,
     getState: async () => structuredClone(state),
@@ -227,36 +222,70 @@ async function testDashboard(targetPath) {
   assert.ok(communityReqs.length >= 2);
   assert.equal(communityReqs.at(-1).body?.force, true);
 
-  // Test `settings` tab: cross-window runtime.emote + accessibility_granted + button action
+  // Test `settings` tab: no Accessibility button, frequency input, 1-5 slot picker, live emote hint
   dash.showTab('settings');
   await flush();
-  const hint = doc.body.querySelector('[data-emote-hint="true"]');
-  const accessBtn = doc.body.querySelector('[data-accessibility-btn="true"]');
-  assert.ok(hint.textContent.includes('辅助功能'), hint.textContent);
-  assert.equal(accessBtn.hidden, false);
+  assert.equal(doc.body.querySelector('[data-accessibility-btn]'), null, 'Accessibility permission button must be removed');
+  assert.equal(requests.some(r => r.route === '/accessibility/request'), false);
 
-  await accessBtn.onclick();
-  assert.equal(accessRequests, 1);
+  const freqInput = doc.body.querySelector('[aria-label="自动表情平均间隔"]');
+  assert.ok(freqInput, 'auto_emote_interval input exists');
+  assert.equal(freqInput.value, 25);
+  freqInput.value = '12';
+  await freqInput.onchange();
+  assert.equal(state.settings.auto_emote_interval, 12);
 
-  state.runtime.emote = { sent: 4, reason: 'sent' };
+  const slotAll = doc.body.querySelector('[data-emote-slot="all"]');
+  const slot1 = doc.body.querySelector('[data-emote-slot="1"]');
+  const slot2 = doc.body.querySelector('[data-emote-slot="2"]');
+  const slot3 = doc.body.querySelector('[data-emote-slot="3"]');
+  assert.equal(slot1.textContent, '1 · 挥手');
+  assert.equal(slot2.textContent, '2 · 点赞');
+  assert.equal(slot3.textContent, '3（空）');
+  assert.ok(slotAll.className.includes('active'));
+
+  // Clicking slot 2 while 全部 (31) is active selects ONLY slot 2 (bit 2)
+  await slot2.onclick();
+  assert.equal(state.settings.auto_emote_slots, 2);
+  assert.ok(slot2.className.includes('active'));
+  assert.ok(!slot1.className.includes('active'));
+  assert.ok(!slotAll.className.includes('active'));
+
+  // Clicking slot 3 toggles bit 4 on -> 6 (multi-select slots 2 and 3)
+  await slot3.onclick();
+  assert.equal(state.settings.auto_emote_slots, 6);
+
+  // Removing slot 2 leaves only empty slot 3 -> hint warns immediately
+  await slot2.onclick();
+  assert.equal(state.settings.auto_emote_slots, 4);
+  const emptyHint = doc.body.querySelector('[data-emote-hint="true"]');
+  assert.ok(emptyHint.textContent.includes('暂未装备表情'), emptyHint.textContent);
+
+  // Clicking last remaining active slot (slot 3) resets back to 全部 (31)
+  await slot3.onclick();
+  assert.equal(state.settings.auto_emote_slots, 31);
+  assert.ok(slotAll.className.includes('active'));
+
+  state.runtime.emote = { sent: 4, remaining: 8, reason: 'sent', slots: ['挥手', '点赞', '', '', ''] };
   const refreshLoop = intervals.find(item => item.ms === 2000);
   assert.ok(refreshLoop);
   await refreshLoop.fn();
   const nextHint = doc.body.querySelector('[data-emote-hint="true"]');
-  const nextAccessBtn = doc.body.querySelector('[data-accessibility-btn="true"]');
-  assert.equal(nextAccessBtn.hidden, true);
   assert.ok(nextHint.textContent.includes('已触发 4 次'), nextHint.textContent);
+  assert.ok(nextHint.textContent.includes('8 次'), nextHint.textContent);
 
   dash.close();
 }
 
-async function testDelayedTypingContextAndTickEmote(targetPath) {
+async function testClickDrivenAutoEmoteAndAutoClickAvoidance(targetPath) {
   const source = fs.readFileSync(path.join(__dirname, targetPath), 'utf8');
   let now = 200000;
   const tasks = [];
   const listeners = new Map();
   const sentEmotes = [];
   const requests = [];
+  let clickListener = null;
+  let f24Presses = 0;
 
   const win = {
     document: { querySelector: () => null },
@@ -274,12 +303,14 @@ async function testDelayedTypingContextAndTickEmote(targetPath) {
     clearInterval() {},
   };
 
-  let resolveTypingProbe;
+  let allowed = false;
   const settings = {
-    enabled: false,
-    speed: 5,
+    enabled: true,
+    speed: 10,
     auto_chest: false,
     auto_emote: true,
+    auto_emote_interval: 5,
+    auto_emote_slots: 31,
     threshold: 1000,
     remember_monitor: false,
   };
@@ -288,58 +319,115 @@ async function testDelayedTypingContextAndTickEmote(targetPath) {
     ready: Promise.resolve(),
     async request(route, body) {
       requests.push({ route, body });
-      if (route === '/assistant/typing-context') {
-        return new Promise(resolve => { resolveTypingProbe = resolve; });
-      }
-      if (route === '/assistant/tick') return { allowed: false, quiet: true, settings };
+      if (route === '/assistant/configure') Object.assign(settings, body.settings);
+      if (route === '/assistant/tick') return { allowed, quiet: true, settings: { ...settings } };
       if (route === '/update/status') return { required: false };
-      return { settings, session: 0, confirmed: 0, rooms: [], rewards: [] };
+      return { settings: { ...settings }, session: 0, confirmed: 0, rooms: [], rewards: [] };
     },
   };
 
   const FakeDate = class extends Date { static now() { return now; } };
-  const ctx = vm.createContext({ window: win, Date: FakeDate, Math, Map, Number, Promise, console });
+  const ctx = vm.createContext({ window: win, Date: FakeDate, Math, Map, Number, Promise, Array, String, console });
   vm.runInContext(source + ';globalThis.make = createDesktopAssistant;', ctx);
   const assistant = ctx.make({ window: win, ref: v => ({ value: v }), atlas });
+  const equipped = [
+    { id: 101, name: 'slot1.png', src: 'asset://emote/slot1.png' },
+    { id: 102, name: 'slot2.png', src: 'asset://emote/slot2.png' },
+    { id: 103, name: 'slot3.png', src: 'asset://emote/slot3.png' },
+  ];
+
   await assistant.startMain({
-    total: () => 0,
+    total: () => f24Presses,
     balance: () => 0,
     account: () => 'acc',
     loggedIn: () => false,
     blocked: () => false,
-    press() {},
+    press(key) {
+      assert.equal(key, 'F24');
+      f24Presses++;
+      // Virtual F24 synchronously increments store.localClickCount in the real app!
+      clickListener?.(1);
+    },
     release() {},
     chestCost: 1000,
-    emotes: () => [{ id: 7, name: 'wave.png', src: 'asset://emote/wave.png' }],
+    emotes: () => equipped,
     sendEmote: item => sentEmotes.push(item),
     currentMonitor: async () => null,
+    listenClicks: cb => { clickListener = cb; return () => { clickListener = null; }; },
     listenRoom() {},
     listenJoin: async () => {},
   });
 
-  // Type two eligible physical keys 50ms apart
-  assistant.physicalKey('KeyA');
-  now += 50;
-  assistant.physicalKey('KeyB');
-  await flush();
-  assert.ok(resolveTypingProbe, 'typing-context probe started after 2 keys');
+  async function stepDue() {
+    tasks.sort((a, b) => a.at - b.at);
+    const task = tasks.shift();
+    assert.ok(task, 'expected scheduled task');
+    now = Math.max(now, task.at);
+    await task.fn();
+  }
 
-  // Simulate 900ms UIA delay (> 500ms, < 3000ms)
-  now += 900;
-  resolveTypingProbe({ editable: true, reason: 'editable', source: 'uia-fallback' });
-  await flush();
-  await flush();
-  assert.equal(sentEmotes.length, 1, 'Slow >500ms focus probe must still trigger emote');
+  // 1. Virtual F24 auto-clicks must NEVER count toward or trigger auto-emote
+  allowed = true;
+  for (let i = 0; i < 40; i++) {
+    await stepDue();
+  }
+  assert.equal(f24Presses, 40, 'virtual auto-click runs normally');
+  assert.equal(assistant.emoteStats.clicks, 0, 'virtual F24 must be excluded from emote click count');
+  assert.equal(sentEmotes.length, 0, 'virtual F24 must never trigger emotes');
 
-  // Advance timer so `tick` fires and carries `emote` stats for panel synchronization
-  now += 1100;
-  const tickTask = tasks.find(t => t.at <= now);
-  assert.ok(tickTask);
-  await tickTask.fn();
+  // 2. Select only slot 2 via bitmask (2), sync via tick, then fire real clicks (interval=5 -> 3..7 clicks)
+  settings.auto_emote_slots = 2;
+  allowed = false;
+  await stepDue();
+  let realClicks = 0;
+  for (let i = 0; i < 7 && sentEmotes.length === 0; i++) {
+    clickListener(1);
+    realClicks++;
+  }
+  assert.equal(assistant.emoteStats.clicks, realClicks);
+  assert.equal(sentEmotes.length, 1, 'real clicks trigger emote around auto_emote_interval=5');
+  assert.equal(sentEmotes[0].id, 102, 'only slot 2 (mask=2) is chosen');
+
+  // 3. Yield window: virtual F24 auto-click pauses for 350ms right after an emote fires
+  allowed = true;
+  const pressesBeforeYield = f24Presses;
+  await stepDue(); // fires +50ms after emote, still inside 350ms yield window
+  assert.equal(f24Presses, pressesBeforeYield, 'virtual F24 yields immediately after emote fires');
+
+  // Once 350ms yield window elapses, virtual F24 resumes cleanly
+  for (let i = 0; i < 8 && f24Presses === pressesBeforeYield; i++) {
+    await stepDue();
+  }
+  assert.equal(f24Presses, pressesBeforeYield + 1, 'virtual F24 resumes after yield window');
+
+  // 4. Multiple triggers with mask=5 (slots 1 and 3) never choose slot 2
+  settings.auto_emote_slots = 5;
+  allowed = false;
+  await stepDue();
+  for (let round = 0; round < 30; round++) {
+    now += 200;
+    clickListener(1);
+  }
+  const postMask13 = sentEmotes.slice(1);
+  assert.ok(postMask13.length >= 2);
+  assert.ok(postMask13.every(item => item.id === 101 || item.id === 103), 'mask=5 picks only slots 1 and 3');
+
+  // 5. Empty selected slot (slot 4 -> mask=8) never fires and sets slot-empty reason
+  settings.auto_emote_slots = 8;
+  await stepDue();
+  const beforeEmpty = sentEmotes.length;
+  for (let round = 0; round < 10; round++) {
+    now += 200;
+    clickListener(1);
+  }
+  assert.equal(sentEmotes.length, beforeEmpty);
+  assert.equal(assistant.emoteStats.reason, 'slot-empty');
+
+  await stepDue();
   const lastTick = requests.filter(r => r.route === '/assistant/tick').at(-1);
-  assert.equal(lastTick.body.emote.sent, 1);
-  assert.equal(lastTick.body.emote.reason, 'sent');
+  assert.deepEqual([...lastTick.body.emote.slots], ['slot1', 'slot2', 'slot3', '', '']);
   listeners.get('pagehide')?.();
+  assert.equal(clickListener, null, 'click watcher cleaned up on pagehide');
 }
 
 (async () => {
@@ -347,9 +435,9 @@ async function testDelayedTypingContextAndTickEmote(targetPath) {
     await testDashboard(rel);
   }
   for (const rel of ['../../macos/fullatlas-source/desktop_assistant.js', '../../windows/src/src/desktop_assistant.js']) {
-    await testDelayedTypingContextAndTickEmote(rel);
+    await testClickDrivenAutoEmoteAndAutoClickAvoidance(rel);
   }
-  console.log('dashboard and emote regression passed (macOS + Windows): all 7 tabs, update tab prerelease/error recovery, cross-window emoteStats + accessibility prompt, >500ms UIA probe');
+  console.log('dashboard and emote regression passed (macOS + Windows): 7 tabs, interval + 1-5 slot picker, no accessibility prompt, click-driven emote & F24 yield');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;
