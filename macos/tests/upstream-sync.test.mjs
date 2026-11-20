@@ -4,7 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assetsOrigin, compareUpstream, configUrl, discoverUpstream, fetchOfficial, officialAssetUrl, parseManifest, parseOptions, syncUpstream, validateLock, verifyInstaller } from '../../scripts/sync-upstream.mjs';
+import { assetsOrigin, compareUpstream, configUrl, discoverUpstream, fetchOfficial, officialAssetUrl, parseManifest, parseOptions, syncUpstream, validateLock, verifyInstaller, windowsOfficialCache } from '../../scripts/sync-upstream.mjs';
+import { parseOptions as parseWinFetchOptions } from '../../scripts/fetch-official-win.mjs';
 import { getRegionProfile } from '../scripts/regions.mjs';
 
 const url = `${assetsOrigin}/app/release/WuwaTappo-cn_1.0.0_x64-setup.exe`;
@@ -241,4 +242,21 @@ test('WUWA_REGION selects a separate lock while check remains read-only', async 
 test('checked-in Global resource lock remains separate from CN', async () => {
   const current = JSON.parse(await readFile(new URL('../../shared/upstream/global.json', import.meta.url), 'utf8'));
   assert.equal(validateLock(current, globalProfile).region, 'GLOBAL');
+});
+
+test('Windows official cache metadata and CLI parser stay region-aware and conflict-safe', () => {
+  const cnCache = windowsOfficialCache(lock(), undefined, getRegionProfile('cn'));
+  const globalCache = windowsOfficialCache(globalLock(), undefined, globalProfile);
+  assert.match(cnCache.key, /^windows-official-cn-1\.0\.0-[0-9a-f]{16}$/);
+  assert.ok(cnCache.path.includes('windows/build/official/*/'));
+  assert.match(globalCache.key, /^windows-official-global-1\.0\.1-[0-9a-f]{16}$/);
+  assert.ok(globalCache.path.includes('windows/build-global/official/*/'));
+
+  assert.deepEqual(parseWinFetchOptions(['--region=global', '--latest', '--force']), {
+    latest: true,
+    force: true,
+    region: 'global',
+  });
+  assert.throws(() => parseWinFetchOptions(['--installer', 'a.exe', '--official-exe', 'b.exe']));
+  assert.throws(() => parseWinFetchOptions(['--latest', '--official-exe', 'b.exe']));
 });

@@ -1,9 +1,9 @@
 ﻿<#
-  全量重建：解包官方 EXE -> 注入全图鉴 -> 冻结本地服务 -> 编译启动器 -> 装配到 app\
+  全量重建：解包官方 EXE -> 注入全图鉴 -> 编译共享 Rust 服务 -> 编译启动器 -> 装配到 app\
 
   前置：
-    1. tools\setup-env.ps1 已执行（.venv 就绪）
-    2. tools\fetch-official.ps1 已取好官方基底（按 shared/upstream/*.json 锁定的最新版本）
+    1. Rust stable toolchain + Node 24 已就绪
+    2. node scripts/fetch-official-win.mjs 已取好官方基底（按 shared/upstream/*.json 锁定的最新版本）
     3. 可选：assets\cache 由 LocalGalleryHost.exe --prepare-cache <windows> [cn|global] 拉好
 
   用法： powershell -ExecutionPolicy Bypass -File tools\build.ps1 [-Extract] [-NoDeploy] [-NoRuntime] [-Base <目录>]
@@ -16,14 +16,12 @@ param([switch]$Extract, [switch]$NoDeploy, [switch]$NoRuntime, [string]$Base,
   [ValidateSet('cn', 'global')][string]$Region)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
+$RepoRoot = Split-Path $Root -Parent
 . (Join-Path $PSScriptRoot 'region.ps1')
 $R = Get-RegionProfile -Root $Root -Region $Region
 $env:WUWA_REGION = $R.Id
-$env:PYTHONUTF8 = '1'
-$env:PYTHONIOENCODING = 'utf-8'
-$Py = Join-Path $Root '.venv\Scripts\python.exe'
 if (-not $Base) {
-  # 默认用 fetch-official.ps1 最近一次取到的基底——跟着锁定的官方版本走，
+  # 默认用 fetch-official-win.mjs 最近一次取到的基底——跟着锁定的官方版本走，
   # 不再写死 base-103（否则换了基线还得靠人记得传 -Base，实际就会一直用旧客户端）。
   $current = Join-Path $R.WorkDir 'official\current.json'
   if (Test-Path -LiteralPath $current) {
@@ -33,31 +31,41 @@ if (-not $Base) {
   }
 }
 $Official = Join-Path $Base 'WuwaTappo.official.exe'
-$Patched = Join-Path $Root 'src'
-
-if (-not (Test-Path -LiteralPath $Py)) { throw "缺少 .venv，先跑 tools\setup-env.ps1" }
+$CargoManifest = Join-Path $RepoRoot 'shared\backend\Cargo.toml'
+$Cargo = (Get-Command cargo -ErrorAction SilentlyContinue).Source
+if (-not $Cargo) { throw '找不到 cargo：请安装 Rust stable 工具链并将 cargo 加入 PATH' }
 if (-not (Test-Path -LiteralPath $Official)) { throw "缺少官方主程序：$Official" }
 
 
 if ($Extract) {
   "== 1/5 解包官方 EXE =="
-  $env:WUWA_EXTRACT_ROOT = $Base
-  & $Py (Join-Path $Patched 'tools\extract_static.py') $Official
-  if ($LASTEXITCODE -ne 0) { throw "解包失败" }
+  $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $nodeExe) { throw '需要 Node 解包官方前端并生成 js_structure.json，请确认 node 在 PATH 上' }
+  $FrontendDir = Join-Path $Base 'frontend'
+  $ReadableRoot = Join-Path $Base 'readable_js'
+  if (Test-Path -LiteralPath $FrontendDir) { Remove-Item -LiteralPath $FrontendDir -Recurse -Force }
+  if (Test-Path -LiteralPath $ReadableRoot) { Remove-Item -LiteralPath $ReadableRoot -Recurse -Force }
+  $ExtractManifest = Join-Path $Base 'extract_manifest.json'
+  $extractJson = & $nodeExe (Join-Path $RepoRoot 'scripts\extract-assets.mjs') --payload $Official --output $FrontendDir --readable $ReadableRoot
+  if ($LASTEXITCODE -ne 0) { throw '提取官方前端资源失败' }
+  [IO.File]::WriteAllText($ExtractManifest, ($extractJson -join "`n"), (New-Object Text.UTF8Encoding($false)))
 
-  # 注入脚本依赖 js_structure.json（共享 JS 里各模块的位置与压缩变量名），
-  # 这个文件由 inspect_js.cjs 从解包产物里分析得出，extract_static.py 不产出。
+  & $Cargo run --locked --release --manifest-path $CargoManifest --bin assistant-core -- extract-pe --exe $Official --extract-root $Base --manifest $ExtractManifest
+  $extractPeCode = $LASTEXITCODE
+  Remove-Item -LiteralPath $ExtractManifest -Force -ErrorAction SilentlyContinue
+  if ($extractPeCode -ne 0) { throw '提取官方 PE 元数据失败' }
+
+  # 注入逻辑依赖 js_structure.json（共享 JS 里各模块的位置与压缩变量名），
+  # 这个文件由 inspect_js.cjs 从解包产物里分析得出。
   "== 1.5/4 定位 JS 结构 =="
-  $readable = Join-Path $Base 'readable_js\assets'
+  $readable = Join-Path $ReadableRoot 'assets'
   if (-not (Test-Path -LiteralPath $readable)) { throw "解包后缺少 readable_js\assets：$readable" }
   $shared = Get-ChildItem -LiteralPath $readable -Filter *.js |
     Where-Object { Select-String -LiteralPath $_.FullName -Pattern 'function applyCatalog(' -SimpleMatch -Quiet } |
     Select-Object -First 1
   if (-not $shared) { throw '未找到含 applyCatalog 的共享 JS，无法定位注入锚点' }
   "共享 JS: $($shared.Name)"
-  $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
-  if (-not $nodeExe) { throw '需要 Node 生成 js_structure.json，请确认 node 在 PATH 上' }
-  & $nodeExe (Join-Path $Root '..\shared\tools\inspect_js.cjs') $Base $shared.Name
+  & $nodeExe (Join-Path $RepoRoot 'shared\tools\inspect_js.cjs') $Base $shared.Name
   if ($LASTEXITCODE -ne 0) { throw '生成 js_structure.json 失败' }
 }
 
@@ -138,24 +146,21 @@ $config = [ordered]@{
   ($config | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
 "基底版本 $clientVersion / 整合 $modVersion / 素材 $assetCount 张 / 图鉴 $atlasCount 条"
 
-# build_integration.py 从 build\current_base.txt 读基底路径，必须随 -Base 同步，
-# 否则换了基底仍会指向旧目录（无 BOM，避免 read_text 读出 \ufeff）
+# Rust 注入与 PE 重打包会读 build\current_base.txt 与 local_config.json，
+# 必须随 -Base 同步，否则换了基底仍会指向旧目录（无 BOM UTF-8）。
 [IO.File]::WriteAllText((Join-Path $R.WorkDir 'current_base.txt'), $Base,
   (New-Object Text.UTF8Encoding($false)))
 if (Test-Path -LiteralPath (Join-Path $R.WorkDir 'frontend_v2')) {
   Remove-Item -LiteralPath (Join-Path $R.WorkDir 'frontend_v2') -Recurse -Force
 }
-& $Py (Join-Path $Patched 'tools\build_integration.py')
-if ($LASTEXITCODE -ne 0) { throw "注入失败" }
+& $Cargo run --locked --release --manifest-path $CargoManifest --bin assistant-core -- inject --platform win --build-root $R.WorkDir --repo-root $RepoRoot --pack-pe
+if ($LASTEXITCODE -ne 0) { throw '注入与 PE 重打包失败' }
 
 "== 3/5 编译共享 Rust 本地服务 =="
-# 运行期宿主与 macOS 助手使用同一个 shared/backend crate；Python 只保留构建期的
-# 官方客户端解包/注入工具，不再随 Windows 程序发布或常驻。
-$Cargo = (Get-Command cargo -ErrorAction SilentlyContinue).Source
-if (-not $Cargo) { throw '找不到 cargo：请安装 Rust stable 工具链并将 cargo 加入 PATH' }
-$SharedBackend = Join-Path $Root '..\shared\backend'
+# 注入工具、本地宿主与启动器全部使用 shared/backend Rust crate，构建期与运行期均不再依赖 Python。
+$SharedBackend = Join-Path $RepoRoot 'shared\backend'
 $HostBuild = Join-Path $SharedBackend 'target\release'
-& $Cargo build --locked --release --manifest-path (Join-Path $SharedBackend 'Cargo.toml') --bin local-gallery-host
+& $Cargo build --locked --release --manifest-path $CargoManifest --bin local-gallery-host
 if ($LASTEXITCODE -ne 0) { throw "Rust 本地服务编译失败" }
 $HostExe = Join-Path $HostBuild 'local-gallery-host.exe'
 if (-not (Test-Path -LiteralPath $HostExe)) { throw "缺少 Rust 本地服务产物：$HostExe" }

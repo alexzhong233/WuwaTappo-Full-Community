@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const injectCore = await readFile(new URL('../../shared/tools/inject_core.py', import.meta.url), 'utf8');
+const injectCore = await readFile(new URL('../../shared/backend/src/injector.rs', import.meta.url), 'utf8');
 const guardLine = injectCore.match(/if \(t && typeof t\.url === "string" && t\.url\.indexOf\("api\/common\/activity-config"\) !== -1\) t\.loading = !1;/)?.[0];
-assert.ok(guardLine, 'shared/tools/inject_core.py 必须包含共用的 activity-config 遮罩抑制规则');
+assert.ok(guardLine, 'shared/backend/src/injector.rs 必须包含共用的 activity-config 遮罩抑制规则');
 
 function showsOverlay(config) {
   const calls = [];

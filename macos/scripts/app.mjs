@@ -16,11 +16,6 @@ async function ensureRustTestInputs() {
       await writeFile(path.join(target, 'index.html'), '<!doctype html><html><body></body></html>');
     }
   }
-  const catalog = path.join(root, 'build/fullatlas-catalog.json');
-  if (!existsSync(catalog)) {
-    await mkdir(path.dirname(catalog), { recursive: true });
-    await writeFile(catalog, '{}');
-  }
   for (const iconDir of ['src-tauri/icons', 'src-tauri/icons-global']) {
     const dir = path.join(root, iconDir);
     await mkdir(dir, { recursive: true });

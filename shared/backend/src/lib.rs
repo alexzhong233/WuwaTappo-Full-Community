@@ -11,10 +11,15 @@ use std::{
 };
 
 pub mod custom_resources;
+pub mod demo_packs;
+pub mod injector;
+pub mod lnk;
+pub mod pe_repack;
 pub mod regions;
 pub mod release_installer;
 pub mod release_updates;
 pub mod resource_cache;
+pub mod service;
 
 pub const DEFAULTS: &str = include_str!("../../contracts/assistant-settings.json");
 
@@ -31,6 +36,7 @@ pub struct AssistantSettings {
     pub prerelease_updates: bool,
     pub auto_emote: bool,
     pub auto_emote_interval: u32,
+    pub auto_emote_random: bool,
     pub auto_emote_slots: u32,
 }
 
@@ -49,6 +55,7 @@ impl Default for AssistantSettings {
             prerelease_updates: values["prerelease_updates"].as_bool().unwrap(),
             auto_emote: values["auto_emote"].as_bool().unwrap(),
             auto_emote_interval: values["auto_emote_interval"].as_u64().unwrap() as u32,
+            auto_emote_random: values["auto_emote_random"].as_bool().unwrap(),
             auto_emote_slots: values["auto_emote_slots"].as_u64().unwrap() as u32,
         }
     }
@@ -881,6 +888,7 @@ mod tests {
         let initial = core.snapshot(1.0, false);
         assert_eq!(initial["settings"]["auto_emote"], true);
         assert_eq!(initial["settings"]["auto_emote_interval"], 25);
+        assert_eq!(initial["settings"]["auto_emote_random"], true);
         assert_eq!(initial["settings"]["auto_emote_slots"], 31);
 
         assert!(core
@@ -927,7 +935,7 @@ mod tests {
         let updated = core
             .handle(
                 "configure",
-                &json!({"settings": {"auto_emote_interval": 40, "auto_emote_slots": 6}}),
+                &json!({"settings": {"auto_emote_interval": 40, "auto_emote_random": false, "auto_emote_slots": 6}}),
                 2.0,
                 true,
                 false,
@@ -935,6 +943,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(updated["settings"]["auto_emote_interval"], 40);
+        assert_eq!(updated["settings"]["auto_emote_random"], false);
         assert_eq!(updated["settings"]["auto_emote_slots"], 6);
+        assert!(core
+            .handle(
+                "configure",
+                &json!({"settings": {"auto_emote_random": "no"}}),
+                2.0,
+                true,
+                false,
+                false,
+            )
+            .is_err());
     }
 }

@@ -28,7 +28,6 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $RepoRoot = Split-Path $Root -Parent
 . (Join-Path $PSScriptRoot 'region.ps1')
-. (Join-Path $PSScriptRoot 'upstream-common.ps1')
 . (Join-Path $PSScriptRoot 'payload.ps1')
 $R = Get-RegionProfile -Root $Root -Region $Region
 
@@ -300,13 +299,13 @@ if (-not (Test-Path -LiteralPath $hostExe)) { throw "缺少本地服务产物：
 if ($LASTEXITCODE -ne 0) { throw "生成程序内升级包失败，退出码 $LASTEXITCODE" }
 $zip = Join-Path $OutDir (Get-ReleaseAssetName -Profile $R -Kind windowsUpdate -Version $version)
 if (-not (Test-Path -LiteralPath $zip)) { throw "没有生成程序内升级包：$zip" }
-$zipSha = Get-Sha256Hex $zip
+$zipSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 Write-Host ("  升级包: {0}（{1:N1} MB）" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1MB))
 
 if (-not $KeepStaging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 
 $exeSize = (Get-Item -LiteralPath $exe).Length
-$sha = Get-Sha256Hex $exe
+$sha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
 
 ''
 '打包完成'

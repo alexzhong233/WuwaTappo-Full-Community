@@ -1,5 +1,6 @@
-const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const source=fs.readFileSync(require('node:path').join(__dirname,'../src/desktop_assistant.js'),'utf8');
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const {renderFrontend}=require('../../../shared/tests/render-frontend.cjs');
+const source=renderFrontend('desktop_assistant.js','win');
 let now=100000, count=0,pressed=0,released=0,clicks=0,allowed=true,quiet=true,historyFails=false;
 const queue=[], requests=[];
 const settings={enabled:true,speed:10,auto_chest:true,threshold:1000,remember_monitor:true};

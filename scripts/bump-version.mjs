@@ -165,8 +165,8 @@ export async function bumpVersion({ projectRoot = root, dryRun = false, target }
   assertConsistent(readVersions(updated));
   if (!dryRun) {
     for (const file of versionFiles) await writeFile(path.join(projectRoot, file), updated[file]);
-    // 版本常量在共用源里，两侧副本不带这个数——刷一次，免得发出去的包版本号对不上。
-    await syncFrontend({ projectRoot });
+    // 确认共享前端唯一源渲染无误（不再生成平台目录副本）。
+    await syncFrontend({ projectRoot, check: true });
   }
   return { previous, next, files: versionFiles };
 }

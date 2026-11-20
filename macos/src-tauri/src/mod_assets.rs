@@ -1,21 +1,23 @@
-//! 本机 Mod 图片路由。
+//! 本机离线图片与 Mod 图片路由。
 //!
 //! 官方渲染器虽然放行 `asset://`，但 WKWebView 从 `tauri://localhost` 页面里
 //! 取 `asset://` 子资源会受到协议作用域和来源限制，实测拿不到图（表现为 404）。
-//! 这里起一个只监听回环地址的极小 HTTP 服务，把 Mod 目录里的图片按
-//! `custom-assets/<包>/<文件>` 暴露出去 —— 与 Windows 侧 local_host 的同名路径
-//! 完全一致的语义，前端一份代码两端通用。
+//! 这里起一个只监听回环地址的极小 HTTP 服务，将应用数据目录下的：
+//! - `custom-assets/<包>/<文件>` 映射到 `<app_data_dir>/custom-atlas/`
+//! - `assets/<sha256>.png` 与分类预览路径（`character/`、`accessory/`、`emote/` 等）
+//!   映射到 `<app_data_dir>/cache/`
+//! 与 Windows 侧 `LocalGalleryHost` 保持完全一致的路径契约。
 //!
 //! 安全边界：
 //! - 只 bind 127.0.0.1，端口由系统分配；
 //! - 路径前缀是每次启动随机生成的 token，别的进程/网页猜不到；
-//! - 只服务 `custom-assets/` 下校验过的相对键，拒绝 `..`、反斜杠、盘符；
-//! - 规范化后的真实路径必须仍在 Mod 根目录内（挡住符号链接逃逸）。
+//! - 只服务校验过的相对键，拒绝 `..`、反斜杠、盘符、编码穿越；
+//! - 规范化后的真实路径必须仍在对应根目录内（挡住符号链接逃逸）。
 
 use std::{
     fs,
     net::TcpListener as StdListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -25,7 +27,7 @@ use tokio::{
 };
 
 const MAX_REQUEST: usize = 2048;
-const MAX_FILE: u64 = 16 * 1024 * 1024;
+const MAX_FILE: u64 = 32 * 1024 * 1024;
 
 /// 已启动的取图服务。`base` 形如 `http://127.0.0.1:53421/3f9c.../`。
 pub struct ModAssetHost {
@@ -74,7 +76,7 @@ impl Inner {
         respond(
             &mut stream,
             "200 OK",
-            wuwatappo_assistant_core::custom_resources::asset_mime_type(&file),
+            mime_type(&file),
             &body,
             method == "HEAD",
         )
@@ -88,8 +90,22 @@ impl Inner {
             .unwrap_or_default();
         let decoded = percent_decode(path);
         let key = decoded.strip_prefix(&format!("/{}/", self.token))?;
-        wuwatappo_assistant_core::custom_resources::resolve_asset_file(&self.root, key)
+        if key.starts_with("custom-assets/") {
+            wuwatappo_assistant_core::custom_resources::resolve_asset_file(
+                &self.root.join("custom-atlas"),
+                key,
+            )
+        } else {
+            wuwatappo_assistant_core::resource_cache::resolve_cached_asset(
+                &self.root.join("cache"),
+                key,
+            )
+        }
     }
+}
+
+fn mime_type(path: &Path) -> &'static str {
+    wuwatappo_assistant_core::custom_resources::asset_mime_type(path)
 }
 
 async fn respond(
@@ -99,7 +115,7 @@ async fn respond(
     body: &[u8],
     head_only: bool,
 ) {
-    // no-store：同一个包重装后同名文件内容会变，让 WebView 每次都回源。
+    // no-store：同一个包或缓存更新后同名文件内容会变，让 WebView 每次都回源。
     // ACAO 只是兜底：图片走 <img>，但官方有些预览会 fetch 成 blob，跨源要它。
     let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
@@ -187,7 +203,6 @@ fn bind(root: PathBuf) -> Result<ModAssetHost, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use wuwatappo_assistant_core::custom_resources::{asset_mime_type, resolve_asset_file};
 
     fn root() -> PathBuf {
@@ -226,20 +241,44 @@ mod tests {
     }
 
     #[test]
-    fn request_target_is_decoded_and_the_token_is_required() {
+    fn lookup_serves_both_custom_assets_and_cached_official_assets() {
+        let base = root();
+        let custom_pack = base.join("custom-atlas/mod-1/assets");
+        let official_assets = base.join("cache/assets");
+        fs::create_dir_all(&custom_pack).unwrap();
+        fs::create_dir_all(&official_assets).unwrap();
+        fs::write(custom_pack.join("图.png"), b"mod").unwrap();
+        fs::write(official_assets.join("deadbeef.png"), b"official").unwrap();
+        fs::write(
+            base.join("cache/asset_manifest.json"),
+            serde_json::json!({
+                "records": [{"file": "deadbeef.png", "source": "https://cdn.example/emote/wave.png", "size": 8}],
+                "errors": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
         let inner = Inner {
-            root: root(),
+            root: base.clone(),
             token: "abc123".into(),
         };
         assert_eq!(
-            percent_decode("/abc123/custom-assets/mod-1/%E5%9B%BE.png"),
-            "/abc123/custom-assets/mod-1/图.png"
+            inner.lookup("/abc123/custom-assets/mod-1/%E5%9B%BE.png").unwrap(),
+            custom_pack.join("图.png").canonicalize().unwrap()
         );
-        // token 不对、路径越界都拿不到文件。
-        assert!(inner.lookup("/wrong/custom-assets/mod-1/icon.png").is_none());
+        assert_eq!(
+            inner.lookup("/abc123/assets/deadbeef.png?t=1").unwrap(),
+            official_assets.join("deadbeef.png").canonicalize().unwrap()
+        );
+        assert_eq!(
+            inner.lookup("/abc123/emote/wave.png").unwrap(),
+            official_assets.join("deadbeef.png").canonicalize().unwrap()
+        );
+        assert!(inner.lookup("/wrong/assets/deadbeef.png").is_none());
+        assert!(inner.lookup("/abc123/assets/../secret.png").is_none());
         assert!(inner.lookup("/abc123/custom-assets/../icon.png").is_none());
-        // 查询串（官方渲染器会拼 ?t=）不影响解析。
-        assert_eq!(inner.lookup("/abc123/custom-assets/mod-1/icon.png?t=1"), None);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

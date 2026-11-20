@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     io::{ErrorKind, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -569,6 +569,120 @@ where
 /// Download and verify the complete selected-region catalog before replacing cache/.
 pub fn sync(root: &Path, region: &str) -> Result<SyncSummary, String> {
     sync_with_progress(root, region, false, |_, _| {})
+}
+
+fn read_json_value(path: &Path) -> Option<Value> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+pub fn safe_relative_key(raw: &str) -> bool {
+    !raw.is_empty()
+        && !raw.contains(['\\', ':', '?', '#', '%'])
+        && !raw.chars().any(char::is_control)
+        && raw
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+pub fn contained_file(root: &Path, relative: &str) -> Option<PathBuf> {
+    if !safe_relative_key(relative) {
+        return None;
+    }
+    let base = root.canonicalize().ok()?;
+    let file = root.join(relative).canonicalize().ok()?;
+    (file.starts_with(base) && file.is_file()).then_some(file)
+}
+
+/// 返回本地图鉴图片缓存摘要（实际已下载张数与预期张数）。
+pub fn cache_summary(root: &Path, expected_override: Option<u64>) -> Value {
+    let manifest = read_json_value(&root.join("cache/asset_manifest.json"));
+    let assets = manifest
+        .as_ref()
+        .and_then(|value| value["records"].as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+    json!({
+        "assets": assets,
+        "expected": expected_override.unwrap_or(assets as u64),
+    })
+}
+
+/// 检查本地离线图鉴目录（JSON 与全部 PNG 缓存）是否完整就绪。
+pub fn is_cache_ready(root: &Path, expected_override: Option<usize>) -> bool {
+    let cache_dir = root.join("cache");
+    if !cache_dir.join("offline_catalog.json").is_file() || !cache_dir.join("atlas.json").is_file()
+    {
+        return false;
+    }
+    let Some(manifest) = read_json_value(&cache_dir.join("asset_manifest.json")) else {
+        return false;
+    };
+    let Some(records) = manifest["records"].as_array() else {
+        return false;
+    };
+    if records.is_empty()
+        || manifest["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty())
+    {
+        return false;
+    }
+    if expected_override.is_some_and(|expected| expected > 0 && records.len() != expected) {
+        return false;
+    }
+    let assets_dir = cache_dir.join("assets");
+    records.iter().all(|record| {
+        let Some(name) = record["file"].as_str() else {
+            return false;
+        };
+        if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
+            return false;
+        }
+        let Some(expected_size) = record["size"].as_u64() else {
+            return false;
+        };
+        fs::metadata(assets_dir.join(name))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected_size)
+    })
+}
+
+/// 解析离线缓存里的官方资源文件路径（支持 `assets/<sha>.png` 与官方按名称分类路径）。
+pub fn resolve_cached_asset(cache_dir: &Path, relative_key: &str) -> Option<PathBuf> {
+    let trimmed = relative_key.trim_start_matches('/');
+    if !safe_relative_key(trimmed) {
+        return None;
+    }
+    let assets_dir = cache_dir.join("assets");
+    if let Some(name) = trimmed.strip_prefix("assets/") {
+        if name.contains('/') {
+            return None;
+        }
+        return contained_file(&assets_dir, name);
+    }
+    let is_category = [
+        "character/",
+        "accessory/",
+        "emote/",
+        "emote_atlas/",
+        "character_atlas/",
+        "character_skin_atlas/",
+        "accessory_atlas/",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix));
+    if !is_category {
+        return None;
+    }
+    let requested = trimmed.rsplit('/').next().filter(|s| !s.is_empty())?;
+    let manifest = read_json_value(&cache_dir.join("asset_manifest.json"))?;
+    let record = manifest["records"].as_array()?.iter().find(|record| {
+        record["source"]
+            .as_str()
+            .and_then(|source| source.rsplit('/').next())
+            == Some(requested)
+    })?;
+    let file = record["file"].as_str()?;
+    contained_file(&assets_dir, file)
 }
 
 #[cfg(test)]

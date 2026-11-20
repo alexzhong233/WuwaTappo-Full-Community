@@ -1,12 +1,10 @@
 // 全新安装（发行包不带素材缓存）时，控制器必须能正常启动并等宿主补齐素材。
 // 老逻辑在 /status 返回 ready:false 时直接 throw，主渲染进程会把整个界面替换成
 // 一行「请通过本地版启动器运行」，用户装完就完全用不了。
-const fs = require('fs');
-const path = require('path');
 const vm = require('vm');
 const assert = require('assert/strict');
-const root = path.join(__dirname, '..');
-const source = fs.readFileSync(path.join(root, 'src/local_atlas_controller.js'), 'utf8');
+const { renderFrontend } = require('../../../shared/tests/render-frontend.cjs');
+const source = renderFrontend('local_atlas_controller.js', 'win');
 
 const checks = [];
 const record = (name, fn) => { fn(); checks.push(name); };

@@ -1,9 +1,8 @@
 // Regression: dashboard update tab, frequency + 1-5 slot selection without accessibility prompt,
 // click-count driven auto-emote, and virtual auto-click avoidance/yield in desktop_assistant.js.
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { renderFrontend } = require('./render-frontend.cjs');
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -113,8 +112,8 @@ function createMockWindow() {
   return { win, doc, intervals };
 }
 
-async function testDashboard(targetPath) {
-  const source = fs.readFileSync(path.join(__dirname, targetPath), 'utf8');
+async function testDashboard(platform) {
+  const source = renderFrontend('assistant_dashboard.js', platform);
   const { win, doc, intervals } = createMockWindow();
   const requests = [];
   const state = {
@@ -131,6 +130,7 @@ async function testDashboard(targetPath) {
       auto_chest: false,
       auto_emote: true,
       auto_emote_interval: 25,
+      auto_emote_random: true,
       auto_emote_slots: 31,
       threshold: 1000,
       remember_monitor: false,
@@ -258,13 +258,29 @@ async function testDashboard(targetPath) {
   await freqInput.onchange();
   assert.equal(state.settings.auto_emote_interval, 12);
 
+  const randBtn = doc.body.querySelector('[data-emote-random="true"]');
+  assert.ok(randBtn, 'auto_emote_random toggle button exists');
+  assert.equal(randBtn.textContent, '随机');
+  assert.ok(randBtn.className.includes('active'), 'auto_emote_random starts active');
+  await randBtn.onclick();
+  assert.equal(state.settings.auto_emote_random, false);
+  assert.ok(!randBtn.className.includes('active'), 'clicking 随机 turns fluctuation off');
+  await randBtn.onclick();
+  assert.equal(state.settings.auto_emote_random, true);
+  assert.ok(randBtn.className.includes('active'), 'clicking 随机 restores fluctuation on');
+
   const slotAll = doc.body.querySelector('[data-emote-slot="all"]');
   const slot1 = doc.body.querySelector('[data-emote-slot="1"]');
   const slot2 = doc.body.querySelector('[data-emote-slot="2"]');
   const slot3 = doc.body.querySelector('[data-emote-slot="3"]');
-  assert.equal(slot1.textContent, '1 · 挥手');
-  assert.equal(slot2.textContent, '2 · 点赞');
-  assert.equal(slot3.textContent, '3（空）');
+  const slot4 = doc.body.querySelector('[data-emote-slot="4"]');
+  const slot5 = doc.body.querySelector('[data-emote-slot="5"]');
+  assert.equal(slotAll.textContent, '全部');
+  assert.deepEqual(
+    [slot1.textContent, slot2.textContent, slot3.textContent, slot4.textContent, slot5.textContent],
+    ['1', '2', '3', '4', '5'],
+    'slot buttons display only 1..5 without emote names',
+  );
   assert.ok(slotAll.className.includes('active'));
 
   // Clicking slot 2 while 全部 (31) is active selects ONLY slot 2 (bit 2)
@@ -300,8 +316,8 @@ async function testDashboard(targetPath) {
   dash.close();
 }
 
-async function testClickDrivenAutoEmoteAndAutoClickAvoidance(targetPath) {
-  const source = fs.readFileSync(path.join(__dirname, targetPath), 'utf8');
+async function testClickDrivenAutoEmoteAndAutoClickAvoidance(platform) {
+  const source = renderFrontend('desktop_assistant.js', platform);
   let now = 200000;
   const tasks = [];
   const listeners = new Map();
@@ -333,6 +349,7 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(targetPath) {
     auto_chest: false,
     auto_emote: true,
     auto_emote_interval: 5,
+    auto_emote_random: true,
     auto_emote_slots: 31,
     threshold: 1000,
     remember_monitor: false,
@@ -446,6 +463,24 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(targetPath) {
   assert.equal(sentEmotes.length, beforeEmpty);
   assert.equal(assistant.emoteStats.reason, 'slot-empty');
 
+  // 6. Fixed interval (auto_emote_random = false): triggers strictly every 5 clicks (5th and 10th)
+  settings.auto_emote_slots = 31;
+  settings.auto_emote_random = false;
+  settings.auto_emote_interval = 5;
+  allowed = false;
+  await stepDue();
+  const baseCount = sentEmotes.length;
+  for (let c = 1; c <= 10; c++) {
+    now += 200;
+    clickListener(1);
+    const expectedTriggered = c < 5 ? 0 : c < 10 ? 1 : 2;
+    assert.equal(
+      sentEmotes.length - baseCount,
+      expectedTriggered,
+      `fixed interval=5 should fire at clicks 5 and 10 (click ${c})`,
+    );
+  }
+
   await stepDue();
   const lastTick = requests.filter(r => r.route === '/assistant/tick').at(-1);
   assert.deepEqual([...lastTick.body.emote.slots], ['slot1', 'slot2', 'slot3', '', '']);
@@ -454,11 +489,9 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(targetPath) {
 }
 
 (async () => {
-  for (const rel of ['../../macos/fullatlas-source/assistant_dashboard.js', '../../windows/src/src/assistant_dashboard.js']) {
-    await testDashboard(rel);
-  }
-  for (const rel of ['../../macos/fullatlas-source/desktop_assistant.js', '../../windows/src/src/desktop_assistant.js']) {
-    await testClickDrivenAutoEmoteAndAutoClickAvoidance(rel);
+  for (const platform of ['mac', 'win']) {
+    await testDashboard(platform);
+    await testClickDrivenAutoEmoteAndAutoClickAvoidance(platform);
   }
   console.log('dashboard and emote regression passed (macOS + Windows): 7 tabs, interval + 1-5 slot picker, no accessibility prompt, click-driven emote & F24 yield');
 })().catch(error => {

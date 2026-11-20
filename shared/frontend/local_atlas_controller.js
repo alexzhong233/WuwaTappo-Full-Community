@@ -28,6 +28,7 @@ function createLocalAtlasController(d) {
   // 也不拼出一个必然 404 的地址。
   const modBase = d.ref('');
   const customBase = () => String(modBase.value || offlineData.value?.customAssetBase || '');
+  const resolveAssetsHost = () => String(customBase() || offlineData.value?.assets_host || origin).replace(/\/+$/, '');
   const customAssetUrl = (reference, file) => {
     const base = customBase();
     if (base) return base + String(reference || '').split('/').map(encodeURIComponent).join('/');
@@ -316,7 +317,7 @@ function createLocalAtlasController(d) {
       return /_atlas$/.test(raw.slice(0, slash).toLowerCase()) ? row.atlas : row.preview;
     };
   }
-  function applyData(data) { registerModNames(data); d.applyOfflineCatalog(runtimeCatalog(data), origin); }
+  function applyData(data) { registerModNames(data); d.applyOfflineCatalog(runtimeCatalog(data), resolveAssetsHost()); }
   async function applyMode(on) {
     if (on) {
       enabled.value = true;
@@ -627,7 +628,7 @@ function createLocalAtlasController(d) {
   }
   function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);}
   return {enabled, busy, selection, favorites, revision, ready, cacheReady, setEnabled, inventory, viewUser, select,
-    favorite, reorder, prepare, offlineData, assetsHost: origin, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, assetUrl, request: localRequest, dispose,
+    favorite, reorder, prepare, offlineData, get assetsHost() { return resolveAssetsHost(); }, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, assetUrl, request: localRequest, dispose,
     presetList, createLocalPreset, deleteLocalPreset, applyLocalPreset, collectionProgress,
     mergePresets, applyPreset,
     ownedBag, accessoryTransform, setAccessoryTransform, resetAccessoryTransform,

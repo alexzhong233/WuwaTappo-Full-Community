@@ -14,6 +14,8 @@ const root = join(__dirname, '..', '..');
 const hostSource =
   readFileSync(join(root, 'shared', 'backend', 'src', 'local_gallery_host.rs'), 'utf8') +
   '\n' +
+  readFileSync(join(root, 'shared', 'backend', 'src', 'service.rs'), 'utf8') +
+  '\n' +
   readFileSync(join(root, 'shared', 'backend', 'src', 'lib.rs'), 'utf8');
 
 const macSource =
@@ -21,26 +23,25 @@ const macSource =
   '\n' +
   readFileSync(join(root, 'macos', 'src-tauri', 'src', 'mod_assets.rs'), 'utf8') +
   '\n' +
+  readFileSync(join(root, 'shared', 'backend', 'src', 'service.rs'), 'utf8') +
+  '\n' +
   readFileSync(join(root, 'shared', 'backend', 'src', 'custom_resources.rs'), 'utf8') +
   '\n' +
   readFileSync(join(root, 'shared', 'backend', 'src', 'lib.rs'), 'utf8');
 
-// 调用方：跨端共享前端、共享注入器以及桌面壳层桥接代码。
+// 调用方：跨端共享前端与统一 Rust 注入器。
 const callers = [
   'shared/frontend/local_atlas_controller.js',
   'shared/frontend/desktop_assistant.js',
   'shared/frontend/assistant_dashboard.js',
-  'shared/tools/fullatlas_core.py',
-  'shared/tools/assistant_core.py',
-  'windows/src/src/desktop_context_menu.js',
-  'windows/src/tools/integrate_assistant.py',
+  'shared/frontend/desktop_context_menu.js',
+  'shared/backend/src/injector.rs',
 ];
 
 const WINDOWS_ONLY_ROUTES = new Set([
   '/bootstrap',
   '/startup',
   '/assistant/context-menu',
-  '/assets/',
 ]);
 
 // 只认本机服务的路径前缀；官方游戏接口（/api/frontend/...）不属于这里。
@@ -61,21 +62,25 @@ assert.ok(requested.size > 0, '没有从调用方解析出任何接口路径，�
 const missingWin = [];
 const missingMac = [];
 for (const [route, files] of requested) {
-  // Windows 宿主里既可能是精确匹配（"/startup"），也可能是前缀分支（"/assets/"）。
-  const winDeclared = hostSource.includes(`"${route}"`) || hostSource.includes(`'${route}'`);
+  const prefix = route.replace(/^\/+/, '');
+  const action = prefix.replace(/\/+$/, '');
+  const assistantAction = action.startsWith('assistant/')
+    ? action.slice('assistant/'.length)
+    : action;
+  // Windows 宿主在 local_gallery_host.rs 里匹配 "/..."，并去掉前导 '/' 转给 service.rs::handle_shared_action。
+  const winDeclared =
+    hostSource.includes(`"${route}"`) ||
+    hostSource.includes(`'${route}'`) ||
+    hostSource.includes(`"${prefix}"`) ||
+    hostSource.includes(`"${action}"`);
   if (!winDeclared) missingWin.push(`${route}  ← ${[...files].join(', ')}`);
 
   if (!WINDOWS_ONLY_ROUTES.has(route)) {
-    const macPrefix = route.replace(/^\/+/, '');
-    const macAction = macPrefix.replace(/\/+$/, '');
-    const assistantAction = macAction.startsWith('assistant/')
-      ? macAction.slice('assistant/'.length)
-      : macAction;
     const macDeclared =
-      macSource.includes(`"${macPrefix}"`) ||
-      macSource.includes(`"${macAction}"`) ||
-      (macAction.startsWith('assistant/') && macSource.includes(`"${assistantAction}"`));
-    if (!macDeclared) missingMac.push(`${route} (${macAction})  ← ${[...files].join(', ')}`);
+      macSource.includes(`"${prefix}"`) ||
+      macSource.includes(`"${action}"`) ||
+      (action.startsWith('assistant/') && macSource.includes(`"${assistantAction}"`));
+    if (!macDeclared) missingMac.push(`${route} (${action})  ← ${[...files].join(', ')}`);
   }
 }
 

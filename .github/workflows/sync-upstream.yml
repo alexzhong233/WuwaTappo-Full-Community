@@ -33,7 +33,7 @@ concurrency:
 env:
   BASELINE_BRANCH: codex/official-baseline-${{ github.run_id }}
   LOCK_FILES: shared/upstream/cn.json shared/upstream/global.json
-  VERSION_FILES: package.json package-lock.json macos/src-tauri/tauri.conf.json macos/src-tauri/tauri.global.conf.json macos/src-tauri/Cargo.toml macos/src-tauri/Cargo.lock shared/backend/Cargo.toml shared/backend/Cargo.lock shared/frontend/desktop_assistant.js macos/fullatlas-source/desktop_assistant.js windows/src/src/desktop_assistant.js
+  VERSION_FILES: package.json package-lock.json macos/src-tauri/tauri.conf.json macos/src-tauri/tauri.global.conf.json macos/src-tauri/Cargo.toml macos/src-tauri/Cargo.lock shared/backend/Cargo.toml shared/backend/Cargo.lock shared/frontend/desktop_assistant.js
 
 jobs:
   detect:

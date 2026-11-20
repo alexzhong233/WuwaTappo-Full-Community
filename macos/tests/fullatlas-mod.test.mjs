@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { test } from 'node:test';
+import { renderPlatformModule } from '../../scripts/sync-frontend.mjs';
 
 const reference = 'custom-assets/mod-example/我的 贴图.png';
 const localPath = '/Users/example/Library/Application Support/app/custom-atlas/mod-example/assets/我的 贴图.png';
@@ -13,8 +13,7 @@ const account = {
 const officialAtlas = [{ asset_id: 2, asset_type: 'character_skin_atlas', asset_name: 'Official' }];
 
 for (const platform of ['macos', 'windows']) {
-  const file = platform === 'macos' ? '../fullatlas-source/local_atlas_controller.js' : '../../windows/src/src/local_atlas_controller.js';
-  const source = await readFile(new URL(file, import.meta.url), 'utf8');
+  const source = await renderPlatformModule('local_atlas_controller.js', platform === 'macos' ? 'mac' : 'win');
   const factory = vm.runInNewContext(source + '\ncreateLocalAtlasController', { URL, AbortController });
 
   const assetBase = platform === 'macos' ? 'http://127.0.0.1:53421/tok/' : 'http://127.0.0.1:43229/';

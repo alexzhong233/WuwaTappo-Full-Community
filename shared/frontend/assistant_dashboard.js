@@ -351,15 +351,18 @@ function createAssistantDashboard(d){
       };
     }else{
       const c=card();el('h3','自动化设置',c);const fields={};
-      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；跟随真实打字与点击次数随机弹出，自动避让后台连点，无需辅助功能权限'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
+      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；跟随真实打字与点击次数弹出（支持随机或固定间隔），自动避让后台连点，无需辅助功能权限'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
         const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>{
           if(key==='enabled'&&!input.checked)change({enabled:false,auto_click_balance:false});
           else change({[key]:input.checked});
         };fields[key]=input;
       }
-      const freqRow=el('label',undefined,c,'wt-setting'),freqText=el('div',undefined,freqRow);
-      el('h3','自动表情平均间隔',freqText);el('p','约每 X 次真实按键或点击随机触发一次（±40% 随机波动，后台自动点击不计入）',freqText,'wt-muted');
-      const freqInput=el('input',undefined,freqRow);freqInput.type='number';freqInput.min=1;freqInput.max=1000;freqInput.step=1;freqInput.setAttribute('aria-label','自动表情平均间隔');
+      const freqRow=el('div',undefined,c,'wt-setting'),freqText=el('div',undefined,freqRow);
+      el('h3','自动表情间隔',freqText);const freqSub=el('p','约每 X 次真实按键或点击随机触发一次（±40% 随机波动；后台自动点击不计入）',freqText,'wt-muted');
+      const freqControls=el('div',undefined,freqRow,'wt-row');
+      const randBtn=button('随机',freqControls,()=>change({auto_emote_random:value?.settings?.auto_emote_random===false}),'wt-slot');
+      randBtn.setAttribute('data-emote-random','true');
+      const freqInput=el('input',undefined,freqControls);freqInput.type='number';freqInput.min=1;freqInput.max=1000;freqInput.step=1;freqInput.setAttribute('aria-label','自动表情平均间隔');
       freqInput.onchange=()=>change({auto_emote_interval:Math.max(1,Math.min(1000,Math.round(Number(freqInput.value)||25)))});
       fields.auto_emote_interval=freqInput;
       const slotRow=el('div',undefined,c,'wt-setting'),slotText=el('div',undefined,slotRow);
@@ -373,7 +376,7 @@ function createAssistantDashboard(d){
       const slotButtons=[];
       for(let i=0;i<5;i++){
         const bit=1<<i;
-        const btn=button((i+1)+'号',slotGroup,()=>{
+        const btn=button(String(i+1),slotGroup,()=>{
           const cur=(Number(value?.settings?.auto_emote_slots)||31)&31||31;
           const next=cur===31?bit:(cur&bit?((cur&~bit)||31):(cur|bit));
           return change({auto_emote_slots:next});
@@ -402,20 +405,23 @@ function createAssistantDashboard(d){
         if(doc.activeElement!==localBox)localBox.checked=!!d.atlas.enabled.value;
         localBox.disabled=!!d.atlas.busy.value;
         const stats=value?.runtime?.emote||d.atlas?.assistant?.emoteStats||{};
+        const isRandom=value?.settings?.auto_emote_random!==false;
+        randBtn.className='wt-slot'+(isRandom?' active':'');
+        randBtn.setAttribute('aria-pressed',String(isRandom));
+        freqSub.textContent=isRandom?'约每 X 次真实按键或点击随机触发一次（±40% 随机波动；后台自动点击不计入）':'每 X 次真实按键或点击固定触发一次（随机波动已关闭；后台自动点击不计入）';
         const mask=(Number(value?.settings?.auto_emote_slots)||31)&31||31;
         const hasSlots=Array.isArray(stats.slots)&&stats.slots.length>0;
         allSlotBtn.className='wt-slot'+(mask===31?' active':'');
         for(let i=0;i<5;i++){
-          const slotName=hasSlots?String(stats.slots[i]||'').trim():'';
-          slotButtons[i].textContent=hasSlots?(slotName?(i+1)+' · '+slotName:(i+1)+'（空）'):(i+1)+'号';
           slotButtons[i].className='wt-slot'+((mask&(1<<i))?' active':'');
         }
         const selectedEquipped=hasSlots?stats.slots.some((name,i)=>String(name||'').trim()&&(mask&(1<<i))):true;
+        const remainPrefix=isRandom?' · 距下次约 ':' · 距下次 ';
         emoteHint.textContent=!value.settings.auto_emote?'打字自动表情已关闭'
           :(hasSlots&&!stats.slots.some(s=>String(s||'').trim()))||(!hasSlots&&stats.reason==='no-selection')?'请先在背包装备至少一个表情'
           :(hasSlots?!selectedEquipped:stats.reason==='slot-empty')?'所选槽位暂未装备表情，请换选已装备的槽位或点「全部」'
-          :stats.sent?'本次已触发 '+stats.sent+' 次'+(stats.remaining?' · 距下次约 '+stats.remaining+' 次点击/按键':'')
-          :'待命中'+(stats.remaining?' · 距下次约 '+stats.remaining+' 次点击/按键':'：跟随真实打字与点击次数随机弹出');};
+          :stats.sent?'本次已触发 '+stats.sent+' 次'+(stats.remaining?remainPrefix+stats.remaining+' 次点击/按键':'')
+          :'待命中'+(stats.remaining?remainPrefix+stats.remaining+' 次点击/按键':'：跟随真实打字与点击次数触发');};
     }
     if(value)paint();
   }

@@ -3,7 +3,6 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { getRegionProfile } from './regions.mjs';
 import { integrateFullAtlas } from './fullatlas-frontend.mjs';
-import { prepareCatalog } from './fullatlas-catalog.mjs';
 import { patchSessionBarriers, patchLoginReady, patchDomesticSdkUrls, patchMacUpdateFeedback, patchMacUpdater, patchMacAbout, patchDomesticLoginReload, patchGlobalAuthListener, patchMacLayoutBarriers, patchMacShortcutLabels } from './patch-frontend.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -46,5 +45,4 @@ await writeFile(path.join(output, 'bootstrap.html'), bootstrap
   .replace('<h1>Wuwa Tappo · 国服</h1>', `<h1>Wuwa Tappo · ${profile.label}</h1>`));
 for (const [name, content] of files) await writeFile(path.join(output, name), content);
 await integrateFullAtlas(root, profile);
-await prepareCatalog(root, profile);
 console.log(`Prepared official ${profile.region} frontend at ${output}`);

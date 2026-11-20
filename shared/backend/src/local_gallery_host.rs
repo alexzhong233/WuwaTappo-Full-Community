@@ -1,17 +1,24 @@
-//! Local HTTP bridge shared by the desktop clients.
-use serde_json::{json, Value};
+//! Local HTTP bridge shared by the Windows desktop client.
+//!
+//! All business state, catalog/PNG caching, Mod overlays, version checks, and
+//! assistant handlers delegate to `wuwatappo_assistant_core::service::FullAtlasService`.
+
+use serde_json::{json, Map, Value};
 use std::{
     env, fs,
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tiny_http::{Header, Method, Response, Server, StatusCode};
-use wuwatappo_assistant_core::{custom_resources, AssistantCore};
+use wuwatappo_assistant_core::{
+    custom_resources, resource_cache,
+    service::{
+        FullAtlasService, PersistenceMode, ServiceConfig, COMMUNITY_RELEASES_URL,
+    },
+};
 
-// 原生菜单与开机自启只有 Windows 有实现；其他平台保留同名入口，应答明确的错误而不是 404，
-// 免得前端把「平台不支持」和「接口不存在」混成一种失败。
 #[cfg(windows)]
 mod windows_menu;
 #[cfg(windows)]
@@ -26,14 +33,9 @@ const ALLOWED_ORIGINS: [&str; 3] = [
 ];
 
 struct App {
-    root: PathBuf,
-    config: Mutex<Value>,
+    service: Arc<FullAtlasService>,
+    config: Arc<Mutex<Value>>,
     token: String,
-    assistant: Mutex<AssistantCore>,
-    offline: Mutex<bool>,
-    custom_error: Mutex<Option<String>>,
-    sync: Mutex<Value>,
-    updates: wuwatappo_assistant_core::release_updates::UpdateTracker,
 }
 
 #[cfg(windows)]
@@ -72,70 +74,13 @@ fn physical_quiet() -> bool {
     false
 }
 
-fn community_current_version(app: &App) -> String {
-    let configured = config_value(app, "community_version");
-    configured
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .or_else(|| {
-            config_value(app, "mod_version")
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
-}
-
-fn include_prerelease(app: &App) -> bool {
-    app.assistant
+fn config_value(config: &Mutex<Value>, key: &str) -> Value {
+    config
         .lock()
         .unwrap()
-        .saved()
-        .pointer("/settings/prerelease_updates")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn community_update(app: &App, force: bool) -> Value {
-    let current = community_current_version(app);
-    let prerelease = include_prerelease(app);
-    let mut value = app
-        .updates
-        .check_community_cached(&current, prerelease, force);
-    value["installable"] = json!(
-        value
-            .get("updateAvailable")
-            .and_then(Value::as_bool)
-            == Some(true)
-    );
-    value
-}
-
-fn official_update(app: &App) -> Value {
-    let region = config_value(app, "region")
-        .as_str()
-        .unwrap_or("cn")
-        .to_owned();
-    let current = config_value(app, "client_version")
-        .as_str()
-        .unwrap_or("")
-        .to_owned();
-    match wuwatappo_assistant_core::release_updates::check_official(&region, &current) {
-        Ok(value) => value,
-        Err(error) => json!({
-            "currentVersion":current,"latestVersion":"","updateAvailable":false,
-            "checked_at":now(),"error":error,"message":format!("检查失败：{error}"),
-            "communityReleasesUrl":"https://github.com/alexzhong233/WuwaTappo-Full-Community/releases"
-        }),
-    }
-}
-
-fn now() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64()
+        .get(key)
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn request_origin(request: &tiny_http::Request) -> Option<String> {
@@ -184,6 +129,16 @@ fn response(request: tiny_http::Request, status: u16, value: Value) {
     );
 }
 
+fn send_service_result(
+    request: tiny_http::Request,
+    result: Result<Value, wuwatappo_assistant_core::service::ServiceError>,
+) {
+    match result {
+        Ok(value) => response(request, 200, value),
+        Err(err) => response(request, err.status_code(), json!({ "error": err.message })),
+    }
+}
+
 fn read_json(request: &mut tiny_http::Request, max: usize) -> Result<Value, String> {
     let mut bytes = Vec::new();
     request
@@ -214,233 +169,14 @@ fn token_ok(app: &App, request: &tiny_http::Request) -> bool {
         .is_some_and(|header| header.value.as_str() == app.token)
 }
 
-fn save_assistant(app: &App) {
-    let state = app.assistant.lock().unwrap().saved();
-    let path = app.root.join("assistant_state.json");
-    let temp = path.with_extension("tmp");
-    if let Ok(bytes) = serde_json::to_vec(&state) {
-        if fs::write(&temp, bytes).is_ok() {
-            let _ = fs::rename(temp, path);
-        }
-    }
-}
-
 fn path_of(request: &tiny_http::Request) -> String {
     request.url().split('?').next().unwrap_or("/").to_string()
 }
 
-fn read_value(path: &Path) -> Result<Value, String> {
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
-    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
-}
-
-fn cache_dir(app: &App) -> PathBuf {
-    app.root.join("cache")
-}
-
-fn config_value(app: &App, key: &str) -> Value {
-    app.config
-        .lock()
-        .unwrap()
-        .get(key)
-        .cloned()
-        .unwrap_or(Value::Null)
-}
-
-fn cache_summary(app: &App) -> Value {
-    let manifest = read_value(&cache_dir(app).join("asset_manifest.json")).ok();
-    json!({
-        "assets": manifest.as_ref().and_then(|value| value["records"].as_array()).map(Vec::len).unwrap_or(0),
-        "expected": config_value(app, "asset_count").as_u64().unwrap_or(0),
-    })
-}
-
-fn cache_ready(app: &App) -> bool {
-    let Ok(manifest) = read_value(&cache_dir(app).join("asset_manifest.json")) else {
-        return false;
-    };
-    let Some(records) = manifest["records"].as_array() else {
-        return false;
-    };
-    let expected = config_value(app, "asset_count").as_u64().unwrap_or(0) as usize;
-    if manifest["errors"]
-        .as_array()
-        .is_some_and(|errors| !errors.is_empty())
-        || records.len() != expected
-    {
-        return false;
-    }
-    records.iter().all(|record| {
-        let Some(name) = record["file"].as_str() else {
-            return false;
-        };
-        if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
-            return false;
-        }
-        let Some(expected_size) = record["size"].as_u64() else {
-            return false;
-        };
-        let path = cache_dir(app).join("assets").join(name);
-        fs::metadata(&path)
-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected_size)
-    })
-}
-
-fn region(app: &App) -> &'static str {
-    let configured = config_value(app, "region");
-    wuwatappo_assistant_core::regions::profile(configured.as_str().unwrap_or("cn"))
-        .map(|profile| profile.region.as_str())
-        .unwrap_or("CN")
-}
-
-fn custom_root(app: &App) -> PathBuf {
-    app.root.join("custom-atlas")
-}
-
-fn custom_status(app: &App) -> Value {
-    let enabled = *app.offline.lock().unwrap();
-    let error = app.custom_error.lock().unwrap().clone();
-    custom_resources::status(&custom_root(app), region(app), enabled, error).unwrap_or_else(|error| {
-        json!({
-            "installed": false,
-            "enabled": enabled,
-            "name": "",
-            "atlas_count": 0,
-            "asset_count": 0,
-            "packs": [],
-            "region": region(app),
-            "error": error,
-        })
-    })
-}
-fn offline_bundle(app: &App) -> Result<Value, String> {
-    let cache = cache_dir(app);
-    let catalog = read_value(&cache.join("offline_catalog.json"))?;
-    let atlas_doc = read_value(&cache.join("atlas.json"))?;
-    let atlas = atlas_doc
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or("图鉴缓存结构无效")?;
-    let official = json!({
-        "catalog": catalog,
-        "atlas": atlas,
-        "atlas_count": atlas.len(),
-        "asset_count": config_value(app, "asset_count").as_u64().unwrap_or(0),
-    });
-    let (merged, error) = custom_resources::merge_or_official(&official, &custom_root(app), region(app));
-    *app.custom_error.lock().unwrap() = error;
-    Ok(merged)
-}
-
-fn safe_relative(raw: &str) -> bool {
-    !raw.is_empty()
-        && !raw.contains(['\\', ':', '?', '#', '%'])
-        && !raw.chars().any(char::is_control)
-        && raw
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
-}
-
 fn mime_type(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "json" => "application/json; charset=utf-8",
-        _ => "application/octet-stream",
-    }
+    custom_resources::asset_mime_type(path)
 }
 
-fn contained_file(root: &Path, relative: &str) -> Option<PathBuf> {
-    if !safe_relative(relative) {
-        return None;
-    }
-    let base = root.canonicalize().ok()?;
-    let file = root.join(relative).canonicalize().ok()?;
-    (file.starts_with(base) && file.is_file()).then_some(file)
-}
-
-fn manifest_asset(app: &App, requested: &str) -> Option<PathBuf> {
-    let manifest = read_value(&cache_dir(app).join("asset_manifest.json")).ok()?;
-    let record = manifest["records"].as_array()?.iter().find(|record| {
-        let source_name = record["source"]
-            .as_str()
-            .and_then(|source| source.rsplit('/').next());
-        source_name == Some(requested)
-    })?;
-    let name = record["file"].as_str()?;
-    contained_file(&cache_dir(app).join("assets"), name)
-}
-
-fn start_sync(app: &Arc<App>, force: bool) -> Value {
-    let mut state = app.sync.lock().unwrap();
-    if state["status"] == "running" {
-        return state.clone();
-    }
-    if !force && now() - state["checked_at"].as_f64().unwrap_or(0.0) < 900.0 {
-        return state.clone();
-    }
-    *state = json!({"status":"running","done":0,"total":0,"checked_at":state["checked_at"]});
-    let snapshot = state.clone();
-    drop(state);
-    let app = Arc::clone(app);
-    std::thread::spawn(move || {
-        let selected_region = config_value(&app, "region")
-            .as_str()
-            .unwrap_or("cn")
-            .to_owned();
-        let progress_app = Arc::clone(&app);
-        let result = wuwatappo_assistant_core::resource_cache::sync_with_progress(
-            &app.root,
-            &selected_region,
-            force,
-            move |done, total| {
-                let mut guard = progress_app.sync.lock().unwrap();
-                *guard = json!({"status":"running","done":done,"total":total,"checked_at":now()});
-            },
-        );
-        let mut state = app.sync.lock().unwrap();
-        *state = match result {
-            Ok(summary) => {
-                let mut config = app.config.lock().unwrap();
-                config["asset_count"] = json!(summary.asset_count);
-                config["atlas_count"] = json!(summary.atlas_count);
-                let cfg_path = app.root.join("local_config.json");
-                let temp = cfg_path.with_extension("tmp");
-                if fs::write(&temp, serde_json::to_vec_pretty(&*config).unwrap_or_default()).is_ok()
-                {
-                    let _ = fs::rename(temp, cfg_path);
-                }
-                json!({"status":"complete","done":summary.asset_count,"total":summary.asset_count,"checked_at":now(),"result":{"changed":summary.changed,"atlas_count":summary.atlas_count,"asset_count":summary.asset_count}})
-            }
-            Err(error) => {
-                json!({"status":"failed","done":0,"total":0,"checked_at":now(),"error":error})
-            }
-        };
-    });
-    snapshot
-}
-
-const COMMUNITY_RELEASES_URL: &str =
-    "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
-
-/// 官方桌宠下载页：国服 / 国际服各一个入口，跟着构建时锁定的区域走。
-fn pet_site_url(app: &App) -> String {
-    let configured = config_value(app, "region");
-    wuwatappo_assistant_core::regions::profile(configured.as_str().unwrap_or("cn"))
-        .map(|profile| profile.pet_site.clone())
-        .unwrap_or_else(|| "https://download-mc-wuwatappo.kurogames-global.com/download/".into())
-}
-
-/// 地址一律由服务端决定，不接受前端传参：能传地址就等于让页面能拉起任意程序。
 #[cfg(windows)]
 fn open_url(url: &str) -> Value {
     use std::os::windows::ffi::OsStrExt;
@@ -474,7 +210,6 @@ fn open_url(url: &str) -> Value {
             1,
         )
     };
-    // ShellExecuteW 大于 32 才算成功，小于等于 32 是 SE_ERR_* 错误码
     if code > 32 {
         json!({"ok":true,"url":url})
     } else {
@@ -504,7 +239,7 @@ fn context_menu(_body: &Value) -> Result<Value, String> {
 
 #[cfg(windows)]
 fn startup_action(app: &App, action: &str) -> Result<Value, String> {
-    windows_startup::run(&app.root, action)
+    windows_startup::run(app.service.root(), action)
 }
 
 #[cfg(not(windows))]
@@ -512,18 +247,14 @@ fn startup_action(_app: &App, _action: &str) -> Result<Value, String> {
     Err("开机自启托管只能在 Windows 上使用".into())
 }
 
-fn send_file_as(request: tiny_http::Request, file: Option<PathBuf>, kind: fn(&Path) -> &'static str) {
+fn send_file(request: tiny_http::Request, file: Option<PathBuf>) {
     let Some(file) = file else {
         return response(request, 404, json!({"error":"Not found"}));
     };
     match fs::read(&file) {
-        Ok(bytes) => response_with_type(request, 200, bytes, kind(&file)),
+        Ok(bytes) => response_with_type(request, 200, bytes, mime_type(&file)),
         Err(_) => response(request, 404, json!({"error":"Not found"})),
     }
-}
-
-fn send_file(request: tiny_http::Request, file: Option<PathBuf>) {
-    send_file_as(request, file, mime_type);
 }
 
 fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
@@ -537,36 +268,17 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
             response(request, 200, json!({"token":app.token}));
         }
         "/status" => {
-            let offline = *app.offline.lock().unwrap();
-            let ready = cache_ready(app);
-            response(
-                request,
-                200,
-                json!({
-                    "ready":ready,"enabled":offline,"mode_verified":true,"network_policy":"rooms-only",
-                    "sync":{"status":"idle"},"cache":cache_summary(app),
-                    "mod_version":config_value(app, "mod_version"),"client_version":config_value(app, "client_version"),
-                    "asset_count":config_value(app, "asset_count"),"atlas_count":config_value(app, "atlas_count"),
-                }),
-            );
-        }
-        "/sync/status" => response(request, 200, app.sync.lock().unwrap().clone()),
-        "/custom/status" => response(request, 200, custom_status(app)),
-        "/offline-data" => {
-            if !cache_ready(app) {
-                return response(
-                    request,
-                    409,
-                    json!({"error":"本地素材缓存不完整，请重新同步后再开启本地图鉴"}),
-                );
+            let mut extra = Map::new();
+            for key in ["mod_version", "client_version", "asset_count", "atlas_count"] {
+                extra.insert(key.into(), config_value(&app.config, key));
             }
-            match offline_bundle(app) {
-                Ok(value) => response(request, 200, value),
-                Err(error) => response(request, 409, json!({"error":error})),
-            }
+            response(request, 200, app.service.status_snapshot(Some(extra)));
         }
+        "/sync/status" => response(request, 200, app.service.sync_status()),
+        "/custom/status" => response(request, 200, app.service.custom_status()),
+        "/offline-data" => send_service_result(request, app.service.offline_bundle(None)),
         "/asset-base" => {
-            let port = config_value(app, "port").as_u64().unwrap_or(0);
+            let port = config_value(&app.config, "port").as_u64().unwrap_or(0);
             response(
                 request,
                 200,
@@ -578,27 +290,30 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
             let mut parts = relative.splitn(2, '/');
             let pack = parts.next().unwrap_or_default();
             let asset = parts.next().unwrap_or_default();
-            if !safe_relative(pack) || pack.contains('/') || !safe_relative(asset) {
+            if !resource_cache::safe_relative_key(pack)
+                || pack.contains('/')
+                || !resource_cache::safe_relative_key(asset)
+            {
                 return response(request, 400, json!({"error":"Invalid path"}));
             }
             let file = custom_resources::resolve_asset_file(
-                &custom_root(app),
+                &app.service.custom_root(),
                 path.trim_start_matches('/'),
             );
-            send_file_as(request, file, custom_resources::asset_mime_type);
+            send_file(request, file);
         }
         _ if path.starts_with("/assets/") => {
             let name = &path["/assets/".len()..];
-            if !safe_relative(name) || name.contains('/') {
+            if !resource_cache::safe_relative_key(name) || name.contains('/') {
                 return response(request, 400, json!({"error":"Invalid path"}));
             }
-            let file = contained_file(&cache_dir(app).join("assets"), name);
+            let file = resource_cache::resolve_cached_asset(
+                &app.service.cache_dir(),
+                path.trim_start_matches('/'),
+            );
             if file.is_none() {
-                // 缺图是「缓存没同步全」的主要症状，逐行记下来才能定位是哪一张。
-                wuwatappo_assistant_core::append_diagnostic(
-                    &app.root,
-                    &json!({"kind":"asset_not_found","path":name}),
-                );
+                app.service
+                    .diagnostic(&json!({"kind":"asset_not_found","path":name}));
             }
             send_file(request, file);
         }
@@ -607,14 +322,18 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
             "/accessory/",
             "/emote/",
             "/emote_atlas/",
+            "/character_atlas/",
             "/character_skin_atlas/",
             "/accessory_atlas/",
         ]
         .iter()
         .any(|prefix| path.starts_with(prefix)) =>
         {
-            let name = path.rsplit('/').next().unwrap_or_default();
-            send_file(request, manifest_asset(app, name));
+            let file = resource_cache::resolve_cached_asset(
+                &app.service.cache_dir(),
+                path.trim_start_matches('/'),
+            );
+            send_file(request, file);
         }
         _ => response(request, 404, json!({"error":"Not found"})),
     }
@@ -637,8 +356,6 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         return response(request, 400, json!({"error":"Object required"}));
     }
     if path == "/assistant/context-menu" {
-        // 原生菜单是阻塞调用（要等用户点完或收起），必须单开一条路由：
-        // 它不该占着 Assistant 的锁，否则菜单开着时看板读不到状态。
         return match context_menu(&body) {
             Ok(value) => response(request, 200, value),
             Err(error) => response(
@@ -648,115 +365,58 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
             ),
         };
     }
-    if path.starts_with("/assistant/") {
-        let action = path.trim_start_matches("/assistant/");
-        let offline = *app.offline.lock().unwrap();
-        let mut core = app.assistant.lock().unwrap();
-        let quiet = if action == "tick" {
-            physical_quiet()
-        } else {
-            false
-        };
-        let result = core.handle(action, &body, now(), quiet, offline, false);
-        drop(core);
-        save_assistant(app);
-        return match result {
-            Ok(value) => response(request, 200, value),
-            Err(error) => response(request, 400, json!({"error":error})),
-        };
+
+    let action = path.trim_start_matches('/');
+    let quiet = if action == "assistant/tick" {
+        physical_quiet()
+    } else {
+        false
+    };
+    if let Some(res) = app.service.handle_shared_action(action, &body, quiet, None) {
+        return send_service_result(request, res);
     }
+
     match path {
-        "/community/version" => response(
-            request,
-            200,
-            json!({"current":community_current_version(app)}),
-        ),
         "/community/update-check" => {
             let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
-            response(request, 200, community_update(app, force))
+            response(request, 200, app.service.community_update_check(force, Ok(())))
         }
         "/official/update-check" | "/official/check" => {
-            response(request, 200, official_update(app))
+            send_service_result(request, app.service.official_update_check(false))
         }
         "/official/download" => {
-            let selected_region = config_value(app, "region")
-                .as_str()
-                .unwrap_or("cn")
-                .to_owned();
-            let current = config_value(app, "client_version")
-                .as_str()
-                .unwrap_or("")
-                .to_owned();
             let download_dir = env::var_os("USERPROFILE")
                 .or_else(|| env::var_os("HOME"))
                 .map(|home| PathBuf::from(home).join("Downloads"))
-                .unwrap_or_else(|| app.root.join("downloads"));
-            match wuwatappo_assistant_core::release_updates::download_official_installer(
-                &selected_region,
-                &current,
-                &download_dir,
-                false,
-            ) {
-                Ok(value) => response(request, 200, value),
-                Err(error) => response(request, 400, json!({"error":error})),
-            }
+                .unwrap_or_else(|| app.service.root().join("downloads"));
+            send_service_result(request, app.service.official_download(&download_dir, false))
         }
-        // 面板上的两个「打开官方页面」按钮：地址写死在服务端，页面拿不到入口就无法诱导跳转。
         "/official/releases" => response(request, 200, open_url(COMMUNITY_RELEASES_URL)),
         "/official/pet-site" => {
-            let url = pet_site_url(app);
+            let url = app.service.pet_site_url();
             response(request, 200, open_url(&url))
         }
-        "/update/status" => {
-            let mut status = app.updates.policy_status(
-                &community_current_version(app),
-                include_prerelease(app),
-                true,
-            );
-            if let Some(installation) =
-                wuwatappo_assistant_core::release_installer::read_progress(&app.root)
-            {
-                status["installation"] = installation;
-            }
-            response(request, 200, status)
-        }
+        "/update/status" => response(request, 200, app.service.update_status(Ok(()))),
         "/update/check" => {
             let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
-            let mut status = app.updates.policy_check(
-                &community_current_version(app),
-                include_prerelease(app),
-                true,
-                force,
-            );
-            if let Some(installation) =
-                wuwatappo_assistant_core::release_installer::read_progress(&app.root)
-            {
-                status["installation"] = installation;
-            }
-            response(request, 200, status)
-        }
-        "/update/healthy" => {
-            let version = community_current_version(app);
-            wuwatappo_assistant_core::release_installer::ack_healthy(&app.root, &version);
-            response(request, 200, json!({"healthy":true}))
+            response(request, 200, app.service.update_check(force, Ok(())))
         }
         "/update/install" => {
-            let current = community_current_version(app);
-            let prerelease = include_prerelease(app);
-            let region_id = config_value(app, "region")
-                .as_str()
-                .unwrap_or("cn")
-                .to_owned();
+            let guard = match app.service.begin_install() {
+                Ok(g) => g,
+                Err(e) => return response(request, e.status_code(), json!({"error": e.message})),
+            };
             match wuwatappo_assistant_core::release_updates::community_installer(
-                &current,
-                prerelease,
-                &region_id,
+                app.service.current_community_version(),
+                app.service.include_prerelease(),
+                app.service.region_id(),
             ) {
                 Ok(candidate) => match wuwatappo_assistant_core::release_installer::prepare(
-                    &app.root,
+                    app.service.root(),
                     &candidate,
                 ) {
                     Ok(value) => {
+                        guard.disarm();
                         std::thread::spawn(|| {
                             std::thread::sleep(Duration::from_millis(1200));
                             std::process::exit(0);
@@ -768,80 +428,18 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
                 Err(error) => response(request, 409, json!({"error":error})),
             }
         }
-        "/custom/import" => {
-            let Some(archive) = body.get("path").and_then(Value::as_str) else {
-                return response(request, 400, json!({"error":"请选择有效的 ZIP 资源包"}));
-            };
-            let result = custom_resources::install_archive(
-                Path::new(archive),
-                &custom_root(app),
-                region(app),
-            );
-            match result {
-                Ok(pack) => response(
-                    request,
-                    200,
-                    json!({"id":pack.id,"name":pack.name,"item_count":pack.item_count,"asset_count":pack.asset_count,"installed":true,"enabled":*app.offline.lock().unwrap()}),
-                ),
-                Err(error) => response(request, 409, json!({"error":error})),
-            }
-        }
-        "/custom/remove" => {
-            let Some(id) = body.get("id").and_then(Value::as_str) else {
-                return response(request, 400, json!({"error":"Mod ID 无效"}));
-            };
-            match custom_resources::remove_pack(&custom_root(app), id) {
-                Ok(()) => response(
-                    request,
-                    200,
-                    json!({"removed":id,"any_installed":!custom_resources::list_summaries(&custom_root(app), region(app)).unwrap_or_default().is_empty(),"enabled":*app.offline.lock().unwrap()}),
-                ),
-                Err(error) => response(request, 409, json!({"error":error})),
-            }
-        }
         "/mode" => {
             let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
                 return response(request, 400, json!({"error":"enabled must be boolean"}));
             };
-            if enabled && !cache_ready(app) {
-                return response(
-                    request,
-                    409,
-                    json!({"error":"离线素材缓存不完整，未开启。"}),
-                );
-            }
-            let state_path = app.root.join("offline_state.json");
-            let temp = state_path.with_extension("tmp");
-            if fs::write(&temp, json!({"enabled":enabled}).to_string()).is_err()
-                || fs::rename(&temp, state_path).is_err()
-            {
-                return response(request, 500, json!({"error":"无法保存图鉴模式"}));
-            }
-            *app.offline.lock().unwrap() = enabled;
-            response(
-                request,
-                200,
-                json!({"enabled":enabled,"firewall_verified":false,"mode_verified":true,"network_policy":"rooms-only","ready":cache_ready(app)}),
-            );
-        }
-        "/diagnostic" => {
-            // 页面通过 d.report() 上报的就是排障用的现场；丢掉了就只能靠猜。
-            wuwatappo_assistant_core::append_diagnostic(&app.root, &body);
-            response(request, 200, json!({"ok":true}))
+            send_service_result(request, app.service.set_mode(enabled, true))
         }
         "/startup" => {
-            // 开机自启改由本机服务托管：计划任务优先运行 WuwaTappoLauncher.exe（旧安装退回 launch.ps1），先起本地服务再起桌宠。
-            // 官方原来的自启项直接拉桌宠 exe，开机后图鉴和控制台连不上服务。
             let action = body.get("action").and_then(Value::as_str).unwrap_or("status");
             match startup_action(app, action) {
                 Ok(value) => response(request, 200, value),
                 Err(error) => response(request, 409, json!({"error":error,"enabled":false})),
             }
-        }
-        "/sync" => {
-            let force = body.get("force") == Some(&Value::Bool(true));
-            let state = start_sync(app, force);
-            response(request, 200, state);
         }
         _ => response(request, 404, json!({"error":"Not found"})),
     }
@@ -882,14 +480,9 @@ fn main() {
             .cloned()
             .or_else(|| env::var("WUWA_REGION").ok())
             .unwrap_or_else(|| "cn".into());
-        match wuwatappo_assistant_core::resource_cache::sync_with_progress(
-            &out_dir,
-            &region,
-            true,
-            |done, total| {
-                println!("{done}/{total}");
-            },
-        ) {
+        match resource_cache::sync_with_progress(&out_dir, &region, true, |done, total| {
+            println!("{done}/{total}");
+        }) {
             Ok(summary) => {
                 println!(
                     "{}",
@@ -933,33 +526,81 @@ fn main() {
             }
         }
     }
+
     let root = env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
-    let config = match wuwatappo_assistant_core::ensure_local_config(&root) {
+    let initial_config = match wuwatappo_assistant_core::ensure_local_config(&root) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("初始化本机配置失败：{error}");
             std::process::exit(1);
         }
     };
-    let port = config.get("port").and_then(Value::as_u64).unwrap_or(0);
-    let token = config
+    let port = initial_config.get("port").and_then(Value::as_u64).unwrap_or(0);
+    let token = initial_config
         .get("token")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let saved = fs::read(root.join("assistant_state.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let offline = fs::read_to_string(root.join("offline_state.json"))
-        .ok()
-        .and_then(|value| serde_json::from_str::<Value>(&value).ok())
-        .and_then(|value| value.get("enabled").and_then(Value::as_bool))
-        .unwrap_or(false);
-    // 端口被别的进程占住时不要 panic：panic 只会在 stderr 留一行英文，
-    // 而用户看到的是启动器的「本地服务启动超时」，根本对不上号。
+    let region_raw = initial_config
+        .get("region")
+        .and_then(Value::as_str)
+        .unwrap_or("cn");
+    let region_profile = wuwatappo_assistant_core::regions::profile(region_raw)
+        .or_else(|| wuwatappo_assistant_core::regions::profile("cn"))
+        .expect("cn region exists");
+    let community_version = initial_config
+        .get("community_version")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            initial_config
+                .get("mod_version")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+        .to_owned();
+    let client_version = initial_config
+        .get("client_version")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let expected_asset_count = initial_config.get("asset_count").and_then(Value::as_u64);
+
+    let config_arc = Arc::new(Mutex::new(initial_config));
+    let sync_cfg = Arc::clone(&config_arc);
+    let sync_root = root.clone();
+    let on_sync_complete = Arc::new(move |summary: &resource_cache::SyncSummary| {
+        let mut guard = sync_cfg.lock().unwrap();
+        guard["asset_count"] = json!(summary.asset_count);
+        guard["atlas_count"] = json!(summary.atlas_count);
+        let cfg_path = sync_root.join("local_config.json");
+        let temp = cfg_path.with_extension("tmp");
+        if fs::write(&temp, serde_json::to_vec_pretty(&*guard).unwrap_or_default()).is_ok() {
+            let _ = fs::rename(temp, cfg_path);
+        }
+    });
+
+    let service = Arc::new(
+        FullAtlasService::new(ServiceConfig {
+            root,
+            persistence: PersistenceMode::SplitFiles,
+            region_id: region_profile.id.clone(),
+            region_code: region_profile.region.clone(),
+            community_version,
+            client_version,
+            expected_asset_count,
+            on_sync_complete: Some(on_sync_complete),
+        })
+        .unwrap_or_else(|error| {
+            eprintln!("初始化全图鉴服务失败：{error}");
+            std::process::exit(1);
+        }),
+    );
+
     let server = match Server::http(format!("127.0.0.1:{port}")) {
         Ok(server) => server,
         Err(error) => {
@@ -967,19 +608,17 @@ fn main() {
             std::process::exit(2);
         }
     };
+
     let app = Arc::new(App {
-        root,
-        config: Mutex::new(config),
+        service,
+        config: Arc::clone(&config_arc),
         token,
-        assistant: Mutex::new(AssistantCore::new(saved)),
-        offline: Mutex::new(offline),
-        custom_error: Mutex::new(None),
-        sync: Mutex::new(json!({"status":"idle","done":0,"total":0,"checked_at":0})),
-        updates: Default::default(),
     });
+    // Share live config updates with status queries
+    let enabled = app.service.enabled();
     println!(
         "{}",
-        json!({"ready":true,"enabled":offline,"port":server.server_addr().to_ip().map(|address|address.port()).unwrap_or(port.try_into().unwrap_or(0))})
+        json!({"ready":true,"enabled":enabled,"port":server.server_addr().to_ip().map(|address|address.port()).unwrap_or(port.try_into().unwrap_or(0))})
     );
     for request in server.incoming_requests() {
         let app = Arc::clone(&app);
@@ -990,9 +629,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root(label: &str) -> PathBuf {
-        let root = env::temp_dir().join(format!("wuwatappo-host-{label}-{}", now() as u64));
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let root = env::temp_dir().join(format!("wuwatappo-host-{label}-{now}"));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("cache/assets")).unwrap();
         root
@@ -1001,18 +645,9 @@ mod tests {
     #[test]
     fn cache_readiness_checks_count_errors_names_and_sizes() {
         let root = test_root("cache");
-        let config = json!({"asset_count":1});
-        let app = App {
-            root: root.clone(),
-            config: Mutex::new(config),
-            token: String::new(),
-            assistant: Mutex::new(AssistantCore::new(None)),
-            offline: Mutex::new(false),
-            custom_error: Mutex::new(None),
-            sync: Mutex::new(json!({"status":"idle","checked_at":0})),
-            updates: Default::default(),
-        };
         fs::write(root.join("cache/assets/a.png"), b"png").unwrap();
+        fs::write(root.join("cache/offline_catalog.json"), "{}").unwrap();
+        fs::write(root.join("cache/atlas.json"), "{\"data\":[]}").unwrap();
         fs::write(
             root.join("cache/asset_manifest.json"),
             json!({
@@ -1021,7 +656,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        assert!(cache_ready(&app));
+        assert!(resource_cache::is_cache_ready(&root, Some(1)));
         fs::write(
             root.join("cache/asset_manifest.json"),
             json!({
@@ -1030,13 +665,13 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        assert!(!cache_ready(&app));
+        assert!(!resource_cache::is_cache_ready(&root, Some(1)));
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn asset_paths_reject_encoded_traversal_and_windows_separators() {
-        assert!(safe_relative("pack/assets/image.png"));
+        assert!(resource_cache::safe_relative_key("pack/assets/image.png"));
         for path in [
             "../secret",
             "pack\\secret",
@@ -1044,7 +679,10 @@ mod tests {
             "C:/secret",
             "pack//image.png",
         ] {
-            assert!(!safe_relative(path), "accepted unsafe path: {path}");
+            assert!(
+                !resource_cache::safe_relative_key(path),
+                "accepted unsafe path: {path}"
+            );
         }
     }
 }

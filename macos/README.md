@@ -6,21 +6,19 @@
 | --- | --- | --- |
 | 做法 | Rust / Tauri 原生壳重写 | 给官方客户端打补丁并重打包 PE |
 | 为什么 | 官方没有 Mac 包 | 官方包本来能跑，重写没有收益 |
-| 运行时 | 原生 IPC 绑定 | Rust 本地服务 + 本机 HTTP（端口 43229） |
-| 工具链 | Node + Rust + Xcode CLT + 7-Zip | PowerShell + Python + Rust（本地服务与启动器都是 Rust 产物） |
+| 运行时 | 原生 IPC 绑定 + 本机回环 PNG 服务 | Rust 本地服务 + 本机 HTTP（端口 43229） |
+| 工具链 | Node + Rust + Xcode CLT + 7-Zip | PowerShell + Node + Rust（解包元数据、注入、PE 重打包与本地服务均为 Rust/Node 产物） |
 | 产物 | `.dmg`（约 130 MiB，拖入「应用程序」） | `.exe` 安装包（NSIS，装完双击快捷方式即用） |
 
-两侧共用同一份 canonical upstream lock：`shared/upstream/cn.json` 与 `shared/upstream/global.json`，同时记录安装包直链、SHA-256 和 Windows 主程序指纹。服务区域由 `shared/config/regions.json` 单点定义，构建脚本一律通过 `WUWA_REGION` 取。
+两侧共用同一份 canonical upstream lock：`shared/upstream/cn.json` 与 `shared/upstream/global.json`，同时记录安装包直链、SHA-256 与版本清单。服务区域由 `shared/config/regions.json` 单点定义，构建脚本一律通过 `WUWA_REGION` 取。
 
 ## 目录
 
 ```text
 macos/
 ├─ src-tauri/            Rust 后端与 Tauri 配置（tauri.conf.json、tauri.global.conf.json）
-├─ scripts/              Mac 专属构建脚本：前端准备、注入、图标、签名与 DMG 打包（通用上游/NSIS 提取在 ../scripts/）
+├─ scripts/              Mac 专属构建脚本：前端准备、注入调用、图标、签名与 DMG 打包（通用上游/NSIS 提取在 ../scripts/）
 ├─ tests/                Mac 适配、注入、打包与平台集成测试
-├─ tools/                FullAtlas 集成器适配器（调用 ../shared/tools/）
-├─ fullatlas-source/     ../shared/frontend/ 生成的 Mac 构建输入
 └─ rust-toolchain.toml   Rust 版本固定（1.97.1，CI 与本地共用）
 ```
 
@@ -71,7 +69,7 @@ WUWA_REGION=global node macos/scripts/inventory-contract.mjs   # 覆盖 tests/co
 
 ## 与 Windows 侧怎么分工
 
-- **共用**：三个助手前端模块唯一源位于仓库根 `shared/frontend/`；助手主流程、FullAtlas 注入核心与「控制台」页签、状态/图鉴/Mod/更新/日志/配置等 Rust 领域逻辑均在 `shared/`；NSIS 解包与上游同步脚本位于根目录 `scripts/`。平台目录内前端副本由 `npm run sync:frontend` 生成并由测试严格校验。
+- **共用**：四个助手/右键菜单前端模块唯一源位于仓库根 `shared/frontend/`；助手主流程、FullAtlas 服务核心（`service.rs`）、注入器与「控制台」页签（`injector.rs`）、状态/图鉴/Mod/更新/日志/配置等 Rust 领域逻辑均在 `shared/`；NSIS 解包与上游同步脚本位于根目录 `scripts/`。注入时直接从 `shared/frontend/` 渲染平台配置，不再维护生成副本；官方静态图鉴与 PNG 素材在运行时通过共享 `FullAtlasService` 异步校验并缓存到本地目录，随 `mod_assets.rs` 一起提供离线读取。
 - **平台专属**：Tauri IPC、辅助功能/输入监控/窗口、DMG 打包，以及 Windows 的 PE 重打包、Win32 菜单/自启和本机 HTTP 传输。共享层不写平台分支。
 
 ## 应用内官方版本检测
@@ -84,14 +82,13 @@ Mac 应用不在本地做“Windows EXE → Mac + FullAtlas DMG”重编。这�
 
 键鼠监听走 HID 层只监听的 event tap，需要用户在「系统设置 > 隐私与安全性 > 输入监控」授权。授权绑定代码签名身份，重装后可能出现「功能可用但设置列表里没有本应用」：旧 TCC 记录仍在生效，而旧版授权请求在 preflight 为真时会跳过，列表那一行就再也没被重建。现在启动时会在已授权前提下静默重新登记，主菜单「启用键鼠监听…」也会无条件补登记；诊断与手动重置见 [输入监控授权说明](../docs/macos/INPUT_PERMISSION.md)。发布时设置 `APPLE_SIGNING_IDENTITY` 用固定证书签名，可让授权跨版本保留。
 
-## 三条刻意不动的约定
+## 两条刻意不动的约定
 
 1. **Bundle identifier 保持 `dev.w33d.wuwatappo.fullatlas.mac`**。改了等于换一个应用：已有用户的 `~/Library/Application Support/` 与钥匙串全部作废。改名只动显示名与产物名。
-2. **`fullatlas-source/` 与 `tools/`、`fullatlas-*` 模块名保持上游命名**，那是上游项目和它自己的模块结构，动了就断链。
-3. **`src-tauri/src/*.rs` 里发往官方 CDN 的 User-Agent 常量保留旧名**：纯网络标识，与数据目录无关，改它没有收益。
+2. **`src-tauri/src/*.rs` 里发往官方 CDN 的 User-Agent 常量保留旧名**：纯网络标识，与数据目录无关，改它没有收益。
 
 ## 搬目录时最容易踩的坑
 
-`src-tauri/tauri.conf.json` 的 `bundle.resources` 会往父目录取文件（`../../LICENSE`、`../../THIRD_PARTY_NOTICES.md`、`../../licenses/FULLATLAS_LICENSE`、`../build/fullatlas-catalog.json`）。这类路径写错，本地构建不报错，只有 macOS 打包或运行期取资源时才炸——所以 `tests/package-macos.test.mjs` 会逐个核对已入库资源是否真实存在。
+`src-tauri/tauri.conf.json` 的 `bundle.resources` 会往父目录取文件（`../../LICENSE`、`../../THIRD_PARTY_NOTICES.md`、`../../licenses/FULLATLAS_LICENSE`）。这类路径写错，本地构建不报错，只有 macOS 打包或运行期取资源时才炸——所以 `tests/package-macos.test.mjs` 会逐个核对已入库资源是否真实存在。
 
 同理，`regions.mjs` 里的 `frontendDir`、`preparedDir`、`iconsDir`、`tauriConfig` 都是相对本目录的路径；`package-macos.sh` 还会强校验 `tauri.conf.json` 的 `productName` 与 `regions.mjs` 完全一致（国际服配置漏改会直接断构建）。

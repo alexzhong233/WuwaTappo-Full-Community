@@ -47,8 +47,16 @@ export async function integrateFullAtlas(root, profile) {
   const communityVersion = JSON.parse(await readFile(path.join(root, '../package.json'), 'utf8')).version;
   await writeFile(path.join(stage, 'current_base.txt'), base);
   await writeFile(path.join(stage, 'local_config.json'), JSON.stringify({ client_version: version, community_version: communityVersion }));
-  const python = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
-  run(python, ['tools/fullatlas-integration.py'], { ...process.env, WUWA_BUILD_ROOT: stage });
+  const repoRoot = path.resolve(root, '..');
+  run('cargo', [
+    'run', '--locked',
+    '--manifest-path', path.join(repoRoot, 'shared/backend/Cargo.toml'),
+    '--bin', 'assistant-core',
+    '--', 'inject',
+    '--platform', 'mac',
+    '--build-root', stage,
+    '--repo-root', repoRoot,
+  ]);
   const manifest = JSON.parse(await readFile(path.join(stage, 'build_manifest_v2.json'), 'utf8'));
   const changed = [manifest.shared, manifest.main, manifest.panel, ...files.filter(name => name.startsWith('switchDisplayMonitor-'))];
   for (const name of changed) {

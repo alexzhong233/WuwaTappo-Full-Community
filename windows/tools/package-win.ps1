@@ -22,7 +22,6 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $RepoRoot = Split-Path $Root -Parent
 . (Join-Path $PSScriptRoot 'region.ps1')
-. (Join-Path $PSScriptRoot 'upstream-common.ps1')
 $R = Get-RegionProfile -Root $Root -Region $Region
 
 if (-not $Source) { $Source = $R.AppDir }
@@ -92,7 +91,7 @@ if ($sevenZip) {
 if (-not $KeepStaging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 
 $zipSize = (Get-Item -LiteralPath $zip).Length
-$sha = Get-Sha256Hex $zip
+$sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 
 ''
 '打包完成'

@@ -1,70 +1,18 @@
-//! Native transport and state for the MIT FullAtlas controllers. No OS input
-//! injection, Windows updater, or simulated rewards. The only local HTTP
-//! listener is the read-only Mod image route in `mod_assets`.
+//! Thin macOS Tauri IPC adapter delegating business state, offline catalog/PNG cache,
+//! Mod overlays, and update checks to the shared `wuwatappo_assistant_core::service::FullAtlasService`.
+
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{
-    fs,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Mutex,
-    },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
-use wuwatappo_assistant_core::AssistantCore;
+use wuwatappo_assistant_core::service::{
+    FullAtlasService, PersistenceMode, ServiceConfig, COMMUNITY_RELEASES_URL,
+};
 
-const COMMUNITY_RELEASES_URL: &str =
-    "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
-
-#[derive(Default, Serialize, Deserialize)]
-#[serde(default)]
-struct Saved {
-    enabled: bool,
-}
-
-#[derive(Default)]
-struct Runtime {
-    last_save: Option<Instant>,
-}
-struct Inner {
-    saved: Saved,
-    assistant: AssistantCore,
-    runtime: Runtime,
-}
 pub struct FullAtlasState {
-    dir: PathBuf,
-    inner: Mutex<Inner>,
-    catalog: Mutex<Option<Value>>,
-    official_catalog: Mutex<Option<Value>>,
-    custom_error: Mutex<Option<String>>,
-    updates: wuwatappo_assistant_core::release_updates::UpdateTracker,
-    installing: AtomicBool,
+    service: Arc<FullAtlasService>,
 }
 
-fn unix_time() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
-    static NEXT_TMP: AtomicUsize = AtomicUsize::new(0);
-    fs::create_dir_all(path.parent().ok_or("Missing state directory")?)
-        .map_err(|e| e.to_string())?;
-    let tmp = path.with_extension(format!(
-        "{}-{}.tmp",
-        std::process::id(),
-        NEXT_TMP.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&tmp, serde_json::to_vec(value).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-    fs::rename(tmp, path).map_err(|e| e.to_string())
-}
 fn local_window(label: &str, url: &Url) -> bool {
     matches!(label, "main" | "panel")
         && url.port().is_none()
@@ -72,220 +20,45 @@ fn local_window(label: &str, url: &Url) -> bool {
             || (matches!(url.scheme(), "http" | "https")
                 && url.host_str() == Some("tauri.localhost")))
 }
-const COMMUNITY_RELEASES_PAGE: &str =
-    "https://github.com/alexzhong233/WuwaTappo-Full-Community/releases";
 
-/// 全图鉴整合包的发布版本；与 `package.json` 同源（bump-version 同步 Cargo.toml）。
-fn community_current_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
-fn official_update_status(region: crate::profile::Region) -> Result<Value, String> {
-    let region = if region == crate::profile::Region::Cn {
-        "cn"
-    } else {
-        "global"
-    };
-    let mut result = wuwatappo_assistant_core::release_updates::check_official(
-        region,
-        env!("WUWA_OFFICIAL_VERSION"),
-    )?;
-    result["communityReleasesUrl"] = json!(COMMUNITY_RELEASES_URL);
-    result["supportsLocalAdaptation"] = json!(false);
-    result["localAdaptationReason"] =
-        json!("已安装的 Mac 应用没有源码、Node、Rust、Xcode 和 7-Zip，不能在应用内安全重打包。");
-    result["local_adaptation_supported"] = json!(false);
-    result["local_adaptation_reason"] = result["localAdaptationReason"].clone();
-    result["message"] = json!(if result["newer"].as_bool() == Some(true) {
-        format!("检测到官方 {}，可下载官方 Windows 原包；Mac 全图鉴包需由本项目构建后从 Releases 更新。", result["remote"].as_str().unwrap_or(""))
-    } else {
-        result["message"]
-            .as_str()
-            .unwrap_or("官方版本检查完成")
-            .to_string()
-    });
-    Ok(result)
-}
-
-fn download_official_installer(
-    app: &AppHandle,
-    region: crate::profile::Region,
-) -> Result<Value, String> {
-    let region_id = if region == crate::profile::Region::Cn {
-        "cn"
-    } else {
-        "global"
-    };
-    let directory = app.path().download_dir().map_err(|e| e.to_string())?;
-    wuwatappo_assistant_core::release_updates::download_official_installer(
-        region_id,
-        env!("WUWA_OFFICIAL_VERSION"),
-        &directory,
-        true,
-    )
-}
 impl FullAtlasState {
-    pub fn new(dir: PathBuf) -> Result<Self, String> {
-        let path = dir.join("fullatlas.json");
-        let bytes = if path.exists() {
-            Some(fs::read(&path).map_err(|e| e.to_string())?)
-        } else {
-            None
-        };
-        let saved = bytes
-            .as_deref()
-            .map(|bytes| serde_json::from_slice(bytes))
-            .transpose()
-            .map_err(|e| format!("FullAtlas 状态文件损坏，请备份后修复：{e}"))?
-            .unwrap_or_default();
-        let core_state = bytes
-            .as_deref()
-            .and_then(|value| serde_json::from_slice(value).ok());
+    pub fn new(dir: PathBuf, region: crate::profile::Region) -> Result<Self, String> {
+        let is_cn = region == crate::profile::Region::Cn;
+        let service = FullAtlasService::new(ServiceConfig {
+            root: dir,
+            persistence: PersistenceMode::CombinedFile("fullatlas.json".into()),
+            region_id: if is_cn { "cn".into() } else { "global".into() },
+            region_code: if is_cn { "CN".into() } else { "GLOBAL".into() },
+            community_version: env!("CARGO_PKG_VERSION").into(),
+            client_version: env!("WUWA_OFFICIAL_VERSION").into(),
+            expected_asset_count: None,
+            on_sync_complete: None,
+        })?;
         Ok(Self {
-            dir,
-            inner: Mutex::new(Inner {
-                saved,
-                assistant: AssistantCore::new(core_state),
-                runtime: Runtime::default(),
-            }),
-            catalog: Mutex::new(None),
-            official_catalog: Mutex::new(None),
-            custom_error: Mutex::new(None),
-            updates: Default::default(),
-            installing: AtomicBool::new(false),
+            service: Arc::new(service),
         })
     }
-    fn include_prerelease(&self) -> bool {
-        self.inner
-            .lock()
-            .map(|inner| {
-                inner.assistant.saved()["settings"]["prerelease_updates"]
-                    .as_bool()
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
-    }
-    pub fn enabled(&self) -> bool {
-        self.inner.lock().map(|v| v.saved.enabled).unwrap_or(true)
-    }
-    fn save(&self, inner: &mut Inner, force: bool) -> Result<(), String> {
-        if force
-            || inner
-                .runtime
-                .last_save
-                .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
-        {
-            atomic_json(&self.dir.join("fullatlas.json"), &inner.assistant.saved())?;
-            inner.runtime.last_save = Some(Instant::now());
-        }
-        Ok(())
-    }
-    fn catalog(&self, app: &AppHandle, refresh: bool) -> Result<Value, String> {
-        // Serialize catalog reads with Mod installation/removal so a stale
-        // request cannot put a removed pack back into the memoized catalog.
-        let mut memo = self.catalog.lock().map_err(|_| "图鉴缓存锁失败")?;
-        if !refresh {
-            if let Some(value) = memo.as_ref() {
-                return Ok(value.clone());
-            }
-        }
-        let official = self.official_catalog(app, refresh)?;
-        let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn {
-            "CN"
-        } else {
-            "GLOBAL"
-        };
-        // Mod 叠加失败不能让全图鉴跟着不可用：降级返回官方数据，把原因留给
-        // 设置页显示。没有导入 Mod 时这里本来就走透传路径。
-        let (mut value, error) = crate::custom_resources::merge_or_official(
-            &official,
-            &self.dir.join("custom-atlas"),
-            region,
-        );
-        if let Ok(mut slot) = self.custom_error.lock() {
-            *slot = error;
-        }
-        // Mod 图片必须从本机 HTTP 取：官方渲染器只把 http(s)/asset 原样交给
-        // <img>，而 asset:// 在这个 WebView 里取不到。前端拿这个前缀拼
-        // `custom-assets/...` 相对键，与 Windows 侧 local_host 的语义一致。
-        value["customAssetBase"] = json!(app.state::<crate::mod_assets::ModAssetHost>().base());
-        *memo = Some(value.clone());
-        Ok(value)
+
+    pub fn ensure_initial_sync(&self) {
+        self.service.ensure_initial_sync();
     }
 
-    fn official_catalog(&self, app: &AppHandle, refresh: bool) -> Result<Value, String> {
-        let mut memo = self
-            .official_catalog
-            .lock()
-            .map_err(|_| "官方图鉴缓存锁失败")?;
-        if !refresh {
-            if let Some(value) = memo.as_ref() {
-                return Ok(value.clone());
-            }
-        }
-        let path = self.dir.join("fullatlas-catalog.json");
-        if !refresh {
-            let bundled = app
-                .path()
-                .resource_dir()
-                .map_err(|e| e.to_string())?
-                .join("fullatlas-catalog.json");
-            for source in [&path, &bundled] {
-                if let Ok(bytes) = fs::read(source) {
-                    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-                        if wuwatappo_assistant_core::resource_cache::validate_catalog(&value).is_ok()
-                            && value.get("assets_host").and_then(Value::as_str)
-                                == Some(
-                                    format!(
-                                        "https://{}",
-                                        crate::profile::Region::from_app(app).asset_host()
-                                    )
-                                    .as_str(),
-                                )
-                        {
-                            *memo = Some(value.clone());
-                            return Ok(value);
-                        }
-                    }
-                }
-            }
-        }
-        let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn {
-            "cn"
-        } else {
-            "global"
-        };
-        let snapshot = wuwatappo_assistant_core::resource_cache::fetch_catalog(region)?;
-        let host = snapshot.assets_host.as_str().trim_end_matches('/');
-        let value = json!({
-            "atlas": snapshot.atlas["data"],
-            "catalog": snapshot.catalog,
-            "assets_host": host,
-            "assets_json_ts": snapshot.activity.pointer("/data/assets_json_ts"),
-            "checked_at": unix_time()
-        });
-        wuwatappo_assistant_core::resource_cache::validate_catalog(&value)?;
-        atomic_json(&path, &value)?;
-        *memo = Some(value.clone());
-        Ok(value)
+    pub fn enabled(&self) -> bool {
+        self.service.enabled()
     }
-    fn assistant(&self, action: &str, body: &Value, physical_quiet: bool) -> Result<Value, String> {
-        let mut inner = self.inner.lock().map_err(|_| "全图鉴数据锁失败")?;
-        let offline = inner.assistant.app_enabled();
-        let result = inner.assistant.handle(
-            action,
-            body,
-            unix_time() as f64,
-            physical_quiet,
-            offline,
-            false,
-        )?;
-        self.save(
-            &mut inner,
-            action != "observe" || body.get("flush") == Some(&Value::Bool(true)),
-        )?;
-        Ok(result)
+
+    #[cfg(test)]
+    pub fn assistant(
+        &self,
+        action: &str,
+        body: &Value,
+        physical_quiet: bool,
+    ) -> Result<Value, String> {
+        self.service
+            .assistant(action, body, physical_quiet)
+            .map_err(|e| e.message)
     }
+
     fn request(
         &self,
         app: &AppHandle,
@@ -307,213 +80,105 @@ impl FullAtlasState {
         {
             return Err("该操作仅允许主桌宠执行".into());
         }
+        let asset_base = app
+            .try_state::<crate::mod_assets::ModAssetHost>()
+            .map(|h| h.base().to_owned())
+            .filter(|s| !s.is_empty());
+
+        if matches!(
+            action,
+            "community/version"
+                | "status"
+                | "sync/status"
+                | "sync"
+                | "offline-data"
+                | "custom/status"
+                | "custom/import"
+                | "custom/remove"
+                | "update/healthy"
+                | "diagnostic"
+        ) || action.starts_with("assistant/")
+        {
+            let quiet = app.state::<crate::input::InputMonitor>().status().running
+                && crate::input::physical_input_quiet();
+            if let Some(res) = self.service.handle_shared_action(
+                action,
+                body,
+                quiet,
+                asset_base.as_deref(),
+            ) {
+                return res.map_err(|e| e.message);
+            }
+        }
+
         match action {
             "official/releases" => crate::system::open_community_releases(app)
-                .map(|()| json!({"ok": true, "url": COMMUNITY_RELEASES_PAGE})),
+                .map(|()| json!({"ok": true, "url": COMMUNITY_RELEASES_URL})),
             "official/pet-site" => {
                 let region = crate::profile::Region::from_app(app);
                 crate::system::open_pet_site(app, region)
                     .map(|()| json!({"ok": true, "url": region.pet_site()}))
             }
-            "community/version" => Ok(json!({"current": community_current_version()})),
             "community/update-check" => {
                 let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
-                let mut value = self.updates.check_community_cached(
-                    community_current_version(),
-                    self.include_prerelease(),
-                    force,
-                );
-                let bundle_check = crate::mac_updater::current_installable_bundle();
-                let available =
-                    value.get("updateAvailable").and_then(Value::as_bool) == Some(true);
-                value["installable"] = json!(available && bundle_check.is_ok());
-                if available {
-                    if let Err(reason) = bundle_check {
-                        value["installableReason"] = json!(reason);
-                    }
-                }
-                Ok(value)
+                let bundle_check = crate::mac_updater::current_installable_bundle().map(|_| ());
+                Ok(self.service.community_update_check(force, bundle_check))
             }
-            "official/update-check" => {
-                official_update_status(crate::profile::Region::from_app(app))
-            }
+            "official/update-check" | "official/check" => self
+                .service
+                .official_update_check(true)
+                .map_err(|e| e.message),
             "official/download" => {
-                download_official_installer(app, crate::profile::Region::from_app(app))
+                let directory = app.path().download_dir().map_err(|e| e.to_string())?;
+                self.service
+                    .official_download(&directory, true)
+                    .map_err(|e| e.message)
             }
-            "status" => Ok(
-                json!({"ready":true,"enabled":self.enabled(),"mode_verified":true,"network_policy":"rooms-only","sync":{"status":"idle"}}),
-            ),
-            "sync/status" => Ok(json!({"status":"idle","done":0,"total":0,"checked_at":unix_time()})),
-            "offline-data" => self.catalog(app, false),
-            // 面板/背包要缩略图时不一定会先拉 offline-data，单独给一个轻量入口。
             "asset-base" => Ok(json!({
-                "base": app.state::<crate::mod_assets::ModAssetHost>().base()
+                "base": asset_base.unwrap_or_default(),
             })),
-            "sync" => {
-                let v = self.official_catalog(app, true)?;
-                *self.catalog.lock().map_err(|_| "图鉴缓存锁失败")? = None;
-                Ok(
-                    json!({"status":"complete","checked_at":unix_time(),"result":{"changed":true,"assets_json_ts":v["assets_json_ts"],"atlas_count":v["atlas"].as_array().map(Vec::len).unwrap_or(0)}}),
-                )
-            }
-            "custom/status" => {
-                let _catalog = self.catalog.lock().map_err(|_| "图鉴缓存锁失败")?;
-                let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn
-                {
-                    "CN"
-                } else {
-                    "GLOBAL"
-                };
-                let error = self.custom_error.lock().ok().and_then(|slot| slot.clone());
-                crate::custom_resources::status(
-                    &self.dir.join("custom-atlas"),
-                    region,
-                    self.enabled(),
-                    error,
-                )
-            }
-            "custom/import" => {
-                let mut memo = self.catalog.lock().map_err(|_| "图鉴缓存锁失败")?;
-                let path = body
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .ok_or("请选择 ZIP 资源包")?;
-                let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn
-                {
-                    "CN"
-                } else {
-                    "GLOBAL"
-                };
-                let summary = crate::custom_resources::install_archive(
-                    Path::new(path),
-                    &self.dir.join("custom-atlas"),
-                    region,
-                )?;
-                *memo = None;
-                Ok(
-                    json!({"installed":true,"id":summary.id,"name":summary.name,"item_count":summary.item_count,"asset_count":summary.asset_count,"region":region}),
-                )
-            }
-            "custom/remove" => {
-                let mut memo = self.catalog.lock().map_err(|_| "图鉴缓存锁失败")?;
-                let id = body
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .ok_or("Mod ID 无效")?;
-                let root = self.dir.join("custom-atlas");
-                crate::custom_resources::remove_pack(&root, id)?;
-                let region = if crate::profile::Region::from_app(app) == crate::profile::Region::Cn
-                {
-                    "CN"
-                } else {
-                    "GLOBAL"
-                };
-                let any = !crate::custom_resources::list_summaries(&root, region)?.is_empty();
-                *memo = None;
-                Ok(json!({"removed":id,"any_installed":any}))
-            }
             "mode" => {
                 let enabled = body
                     .get("enabled")
                     .and_then(Value::as_bool)
                     .ok_or("模式必须是布尔值")?;
-                if enabled {
-                    self.catalog(app, false)?;
-                }
-                let mut inner = self.inner.lock().map_err(|_| "全图鉴数据锁失败")?;
-                inner.saved.enabled = enabled;
-                inner.assistant.set_app_enabled(enabled);
-                self.save(&mut inner, true)?;
-                drop(inner);
+                let response = self
+                    .service
+                    .set_mode(enabled, false)
+                    .map_err(|e| e.message)?;
                 if enabled {
                     crate::socket::shutdown(app);
                 }
                 app.emit("fullatlas-mode-changed", enabled)
                     .map_err(|e| e.to_string())?;
-                Ok(json!({"enabled":enabled,"mode_verified":true,"network_policy":"rooms-only"}))
+                Ok(response)
             }
             "update/status" => {
-                let bundle_check = crate::mac_updater::current_installable_bundle();
-                let mut status = self.updates.policy_status(
-                    community_current_version(),
-                    self.include_prerelease(),
-                    bundle_check.is_ok(),
-                );
-                if status.get("available").and_then(Value::as_bool) == Some(true) {
-                    if let Err(reason) = bundle_check {
-                        status["installableReason"] = json!(reason);
-                    }
-                }
-                if let Some(installation) =
-                    wuwatappo_assistant_core::release_installer::read_progress(&self.dir)
-                {
-                    status["installation"] = installation;
-                }
-                Ok(status)
+                let bundle_check = crate::mac_updater::current_installable_bundle().map(|_| ());
+                Ok(self.service.update_status(bundle_check))
             }
             "update/check" => {
                 let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
-                let bundle_check = crate::mac_updater::current_installable_bundle();
-                let mut status = self.updates.policy_check(
-                    community_current_version(),
-                    self.include_prerelease(),
-                    bundle_check.is_ok(),
-                    force,
-                );
-                if status.get("available").and_then(Value::as_bool) == Some(true) {
-                    if let Err(reason) = bundle_check {
-                        status["installableReason"] = json!(reason);
-                    }
-                }
-                if let Some(installation) =
-                    wuwatappo_assistant_core::release_installer::read_progress(&self.dir)
-                {
-                    status["installation"] = installation;
-                }
-                Ok(status)
-            }
-            "update/healthy" => {
-                wuwatappo_assistant_core::release_installer::ack_healthy(
-                    &self.dir,
-                    community_current_version(),
-                );
-                Ok(json!({"healthy": true}))
+                let bundle_check = crate::mac_updater::current_installable_bundle().map(|_| ());
+                Ok(self.service.update_check(force, bundle_check))
             }
             "update/install" => {
-                if self
-                    .installing
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
-                    return Err("更新正在进行中，请稍候…".into());
-                }
-                struct InstallGuard<'a> {
-                    flag: &'a AtomicBool,
-                    armed: bool,
-                }
-                impl Drop for InstallGuard<'_> {
-                    fn drop(&mut self) {
-                        if self.armed {
-                            self.flag.store(false, Ordering::Release);
-                        }
-                    }
-                }
-                let mut guard = InstallGuard {
-                    flag: &self.installing,
-                    armed: true,
-                };
+                let guard = self.service.begin_install().map_err(|e| e.message)?;
                 crate::mac_updater::current_installable_bundle()?;
                 let region = crate::profile::Region::from_app(app);
                 let candidate =
                     wuwatappo_assistant_core::release_updates::community_installer_for_kind(
-                        community_current_version(),
-                        self.include_prerelease(),
+                        self.service.current_community_version(),
+                        self.service.include_prerelease(),
                         region.id(),
                         "macos",
                     )?;
-                let value =
-                    crate::mac_updater::prepare_update(&self.dir, region.identifier(), &candidate)?;
-                guard.armed = false;
+                let value = crate::mac_updater::prepare_update(
+                    self.service.root(),
+                    region.identifier(),
+                    &candidate,
+                )?;
+                guard.disarm();
                 let handle = app.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(400));
@@ -522,15 +187,6 @@ impl FullAtlasState {
                     handle.exit(0);
                 });
                 Ok(value)
-            }
-            "diagnostic" => {
-                wuwatappo_assistant_core::append_diagnostic(&self.dir, body);
-                Ok(json!({"ok":true}))
-            }
-            name if name.starts_with("assistant/") => {
-                let quiet = app.state::<crate::input::InputMonitor>().status().running
-                    && crate::input::physical_input_quiet();
-                self.assistant(name.trim_start_matches("assistant/"), body, quiet)
             }
             _ => Err(format!("未知全图鉴操作：{action}")),
         }
@@ -563,9 +219,15 @@ pub async fn fullatlas_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     fn state() -> FullAtlasState {
         static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-        FullAtlasState::new(std::env::temp_dir().join(format!(
+        FullAtlasState::new(
+            std::env::temp_dir().join(format!(
                 "fullatlas-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
@@ -573,7 +235,9 @@ mod tests {
                     .unwrap()
                     .as_nanos(),
                 NEXT_ID.fetch_add(1, Ordering::Relaxed)
-            )))
+            )),
+            crate::profile::Region::Cn,
+        )
         .unwrap()
     }
 
@@ -617,6 +281,7 @@ mod tests {
             .assistant("configure", &json!({"settings":{"speed":20}}), true)
             .is_err());
     }
+
     #[test]
     fn tick_does_not_own_shared_balance_threshold_policy() {
         let s = state();
@@ -639,6 +304,7 @@ mod tests {
             )
             .is_err());
     }
+
     #[test]
     fn rewards_require_confirmation_and_deduplicate() {
         let s = state();
@@ -660,13 +326,16 @@ mod tests {
             1
         );
     }
+
     #[test]
     fn saved_mode_and_auto_tasks_are_independent() {
         let s = state();
         s.assistant("configure", &json!({"settings":{"enabled":true}}), false)
             .unwrap();
         assert!(!s.enabled());
-        let loaded = FullAtlasState::new(s.dir.clone()).unwrap();
+        let loaded =
+            FullAtlasState::new(s.service.root().to_path_buf(), crate::profile::Region::Cn)
+                .unwrap();
         assert_eq!(
             loaded.assistant("state", &json!({}), false).unwrap()["settings"]["enabled"],
             true
@@ -704,6 +373,7 @@ mod tests {
             "Alice 2"
         );
     }
+
     #[test]
     fn only_local_main_and_panel_can_control() {
         for label in ["main", "panel"] {

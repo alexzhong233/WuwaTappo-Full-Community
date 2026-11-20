@@ -108,16 +108,11 @@ function checkMac() {
 
 function checkWin() {
   const rows = [];
-  const py = process.env.WUWA_PYTHON ?? which('python3.13') ?? which('python3.12') ?? which('python');
   rows.push(['平台', process.platform === 'win32' ? `win32/${process.arch}` : `当前是 ${process.platform}`, process.platform === 'win32']);
   rows.push(['Node', process.version, true]);
-  // 本地服务与启动器都是 shared/backend 的 Rust 产物；缺 cargo 时 build.ps1 会停在
-  // 第 3 步，所以这里必须挡住，别让前置检查报「可以构建」。
+  // 解包元数据、注入器、PE 重打包、本地服务与启动器全部由 shared/backend Rust 提供；缺 cargo 无法构建。
   const cargo = which('cargo');
   rows.push(['cargo', cargo ?? '未找到（装 Rust stable）', Boolean(cargo)]);
-  rows.push(['Python', py ?? '未找到', Boolean(py)]);
-  const venv = join(WINDOWS, '.venv', 'Scripts', 'python.exe');
-  rows.push(['windows\\.venv', existsSync(venv) ? '已就绪' : '未创建（setup-env.ps1 会自动建）', true]);
   const lockName = `shared/upstream/${region}.json`;
   const lockPath = join(repoRoot, lockName);
   rows.push(['区域', region === 'global' ? '国际服（global）' : '国服（cn）', true]);
@@ -128,7 +123,7 @@ function checkWin() {
   } else {
     rows.push([lockName, '缺失', false]);
   }
-  // 构建产物依赖：官方基底是否已解出（没有也可以由 fetch-official.ps1 现取）
+  // 构建产物依赖：官方基底是否已解出（没有也可以由 scripts/fetch-official-win.mjs 现取）
   const base = join(WINDOWS, winBuildDir, 'official', 'current.json');
   if (existsSync(base)) {
     const info = readJson(base);
@@ -207,16 +202,13 @@ function buildWin({ withPackage }) {
   };
   log(`区域：${region === 'global' ? '国际服' : '国服'}`);
 
-  if (!existsSync(join(WINDOWS, '.venv', 'Scripts', 'python.exe'))) {
-    section('准备 Python 环境');
-    call('setup-env.ps1');
-  }
-
   section('获取官方基底');
-  call('fetch-official.ps1', latest ? ['-Latest'] : []);
+  const fetchArgs = [join('scripts', 'fetch-official-win.mjs'), `--region=${region}`];
+  if (latest) fetchArgs.push('--latest');
+  run(process.execPath, fetchArgs);
 
   const infoPath = join(WINDOWS, winBuildDir, 'official', 'current.json');
-  if (!existsSync(infoPath)) throw new Error('fetch-official.ps1 未产出 build\\official\\current.json');
+  if (!existsSync(infoPath)) throw new Error('fetch-official-win.mjs 未产出 official/current.json');
   const info = readJson(infoPath);
 
   section('注入并装配');

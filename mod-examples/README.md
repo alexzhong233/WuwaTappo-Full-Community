@@ -7,10 +7,10 @@
 | `demo-animated-pet.zip` | 直接丢进「Mod 管理 → 导入 Mod ZIP」 |
 | `demo-pet/` | 解压后的包源，`manifest.json` / `items.json` / `assets/` 都在，改完重打即可 |
 | `frames.png` | 逐帧预览：每一帧长什么样、标签对应哪个字段 |
-| `make_demo_pack.py` | 角色包生成脚本，纯标准库，不需要 Pillow |
 | `demo-accessories.zip` / `demo-emotes.zip` | 只含挂饰（猫耳、蝴蝶结、围巾）和只含表情（开心、眨眼、生气）的包 |
 | `packs-preview.png` | 挂饰与表情的逐项预览 |
-| `make_accessory_emote_packs.py` | 挂饰包与表情包生成脚本 |
+
+> 注：以上 `.zip` 与预览图现在由 `shared/backend/src/demo_packs.rs` 生成（命令：`cargo run --locked --manifest-path shared/backend/Cargo.toml --bin assistant-core -- make-demo-packs --out-dir mod-examples`），纯 Rust 零外部图片库依赖。
 
 包名「演示 · 会动的小家伙」，1 个角色、5 个动作帧 + 1 张图标，画布 560×560、透明 PNG。
 
@@ -55,24 +55,27 @@
 
 ## 想改成自己的样子
 
-都在 `make_demo_pack.py` 里，改完跑 `python make_demo_pack.py` 重生成全部产物：
+图形渲染与 ZIP 打包逻辑都在 `shared/backend/src/demo_packs.rs` 里，改完跑：
 
-- **配色**：文件顶部常量（`BODY` 身体、`HEAD` 头部、`OUTLINE` 描边、`EAR_INNER` 耳内、`CHEEK` 腮红、`ACCENT` 标记）。
-- **体型**：`draw_body` 里躯干的 `ellipse(cx, 404, 74, 66, ...)`、`draw_head` 里头的 `ellipse(280, 236, 112, 106, ...)`。
-- **姿势**：`draw_body` 里 `if pose == 'idle' / 'left' / else` 三组坐标。
-- **眨眼方式**：`draw_head(canvas, blink)` 的 `if blink:` 分支。
-- **包名 / 条目名**：文件末尾 `MANIFEST` 与 `ITEMS`。改名会被当成新包或新条目（ID 由名字推导），想保留编号就别动名字。
+```bash
+cargo run --locked --manifest-path shared/backend/Cargo.toml --bin assistant-core -- make-demo-packs --out-dir mod-examples
+```
+
+可调整项（均位于 `shared/backend/src/demo_packs.rs`）：
+- **配色**：文件顶部的 RGBA 常量。
+- **体型 / 姿势 / 眨眼**：`draw_body` 与 `draw_head`。
+- **包名 / 条目名**：`demo-animated-pet`、`demo-accessories`、`demo-emotes` 的 `MANIFEST` 与 `ITEMS` JSON（改名会被当成新包或新条目）。
 
 注意两点：一张图都别少给（缺 `body2`/`body3`/`head2` 会被基础帧自动补齐，效果是动作时画面静止）；头、身两张图必须同画布尺寸，否则叠起来会错位。
 
 ## 校验
 
 ```bash
-cd mod-examples && python make_demo_pack.py           # 重新生成包与预览
-cd windows/src && python -m unittest discover -s tests -p "test_custom*.py"
+cargo run --locked --manifest-path shared/backend/Cargo.toml --bin assistant-core -- make-demo-packs --out-dir mod-examples
+cargo test --locked --manifest-path shared/backend/Cargo.toml
 ```
 
-导入时的 ZIP 校验（路径逃逸、符号链接、Windows 保留名、图片魔数、压缩比、大小上限）在 `shared/backend/src/custom_resources.rs`，两侧共用同一份实现。包的格式规范见 [Mod 制作说明](../MODS.md)。
+导入时的 ZIP 校验（路径逃逸、符号链接、Windows 保留名、图片魔数、压缩比、大小上限）在 `shared/backend/src/custom_resources.rs`，两侧共用同一份实现。包的格式规范见 [Mod 制作说明](../docs/MODS.md)。
 
 ## 挂饰包与表情包
 
@@ -81,4 +84,4 @@ cd windows/src && python -m unittest discover -s tests -p "test_custom*.py"
 - `demo-accessories.zip`：猫耳、蝴蝶结、围巾，都是 560×560 透明画布，画在头部/颈部的实际位置，导入后戴上就能对齐。
 - `demo-emotes.zip`：开心、眨眼、生气，一张圆脸换眉眼和嘴。
 
-两者的 `icon` 是同一形状放大居中后的版本，背包缩略图里才看得清。重画：`python make_accessory_emote_packs.py`。
+两者的 `icon` 是同一形状放大居中后的版本，背包缩略图里才看得清；它们也会在执行 `make-demo-packs` 时一并重新生成。

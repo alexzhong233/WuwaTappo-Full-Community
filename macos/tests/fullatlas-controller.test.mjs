@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { test } from 'node:test';
+import { renderPlatformModule } from '../../scripts/sync-frontend.mjs';
 
-const source = await readFile(new URL('../fullatlas-source/local_atlas_controller.js', import.meta.url), 'utf8');
+const source = await renderPlatformModule('local_atlas_controller.js', 'mac');
 const factory = vm.runInNewContext(`${source}\ncreateLocalAtlasController`, { URL, AbortController, console });
 
 function controller({ document } = {}) {

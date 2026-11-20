@@ -39,10 +39,10 @@ node scripts/build-platform.mjs --platform=win --region=global --package --no-ru
 
 ## 从零构建
 
-需要 Windows 10/11 x64、Python 3.13、PowerShell 5.1、Node 18+，以及 Rust stable
-（`cargo` + MSVC 链接器 + Windows SDK —— 本地服务和启动器都是 Rust 产物）。
+需要 Windows 10/11 x64、PowerShell 5.1、Node 24+，以及 Rust stable
+（`cargo` + MSVC 链接器 + Windows SDK —— PE 解包元数据、注入打包、本地服务和启动器都是 Rust 产物，已零 Python 依赖）。
 
-**推荐走仓库根的统一入口**（会自动建 `.venv`、取官方基底、注入、装配、打包）：
+**推荐走仓库根的统一入口**（会自动取官方基底、注入、装配、打包）：
 
 ```powershell
 cd <仓库根>
@@ -53,75 +53,63 @@ node scripts/build-platform.mjs --platform=win --package
 只想手动一步步来：
 
 ```powershell
+# 1. 取官方基底（按 shared/upstream/cn.json 锁定版本自动下载并解包）
+node scripts/fetch-official-win.mjs --region=cn
+
+#    本机已装官方客户端、只是不想再下安装包时（可选）
+node scripts/fetch-official-win.mjs --region=cn --official-exe D:\path\WuwaTappo.exe
+
+# 2. 全量重建：解包 → 注入全图鉴 → 编译 Rust 本地服务与启动器 → 装配
 cd windows
+powershell -File tools\build.ps1 -Extract
 
-# 1. 建 .venv 并装依赖（只需一次；已存在会跳过）
-powershell -File tools\setup-env.ps1
-
-# 2. 取官方基底（按 shared/upstream/cn.json 锁定的 1.0.4 自动下载并解包）
-powershell -File tools\fetch-official.ps1
-
-#    本机已装官方客户端、只是不想再下 192 MB 安装包时（可选，不是必须）
-powershell -File tools\fetch-official.ps1 -OfficialExe D:\path\WuwaTappo.exe
-
-# 3. 全量重建：解包 → 注入全图鉴 → 编译 Rust 本地服务与启动器 → 装配
-powershell -File tools\build.ps1 -Extract -Base build\official\1.0.4\base
-
-# 4. 打安装包到 dist\（NSIS；首次先装：winget install -e --id NSIS.NSIS 或 choco install nsis -y）
+# 3. 打安装包到 dist\（NSIS；首次先装：winget install -e --id NSIS.NSIS 或 choco install nsis -y）
 powershell -File tools\package-installer.ps1 -NoRuntime
 
 #    只要绿色版 zip 时用这个：
 powershell -File tools\package-win.ps1 -NoRuntime
 ```
 
-`build.ps1 -Extract` 会重新解包官方 EXE，`-Base <目录>` 可指向新版基底。`deploy.ps1 -Target <目录>` 可装配到别处，`-NoAssets` 跳过素材缓存。
+`build.ps1 -Extract` 会重新解包官方 EXE，`-Base <目录>` 可指向指定基底（默认读取 `build\official\current.json`）。`deploy.ps1 -Target <目录>` 可装配到别处，`-NoAssets` 跳过素材缓存。
 
-`-NoRuntime` 不把系统那份 WebView2（约 870 MB）拷进 `runtime\`。入口 stub 探到 `runtime\` 不存在时不设 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`，交给 WebView2 自己去找机器上的 Evergreen 运行时——和官方客户端的行为一致。代价是目标机器必须已经装了 WebView2（Win11 自带，Win10 未必）：安装包会在安装阶段检查并给出下载入口；已经装了却仍报「找不到 WebView2」，通常是 `runtime\` 里留了个坏目录，删掉即可，或用 `tools\fix-webview2.ps1` 重建。
+`-NoRuntime` 不把系统那份 WebView2（约 870 MB）拷进 `runtime\`。入口 stub 探到 `runtime\` 不存在时不设 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`，交给 WebView2 自己去找机器上的 Evergreen 运行时——和官方客户端的行为一致。代价是目标机器必须已经装了 WebView2（Win11 自带，Win10 未必）：安装包会在安装阶段检查并给出下载入口；已经装了却仍报「找不到 WebView2」，通常是 `runtime\` 里留了个坏目录，删掉重新装配即可。
 
 ### 官方安装包只解包，不执行
 
-官方 1.0.4 的安装包是**两层包装**：外层是个自解压壳（把内层整个塞进 `.rdata`），里面才是真正的 NSIS-3 安装器。
+官方客户端安装包是**两层包装**：外层是个自解压壳（把内层整个塞进 `.rdata`），里面才是真正的 NSIS-3 安装器。
 
 7-Zip 只看得到外层，会把它当普通 PE 解析——解出来的是 `.text`、`.rdata`、`.pdata`、`CERTIFICATE` 这些节区，一个安装文件都没有。这跟 7-Zip 版本无关：23.01 / 24.09 / 25.01 三个版本表现一致，强制 `-t#` 也认不出。
 
-所以 `fetch-official.ps1` 不再自己剥壳：它调用仓库根目录统一的 `scripts/extract-assets.mjs`，用 `findEmbeddedNsis` 找到内层安装器，再把选中的主程序写到 Windows 构建目录。NSIS/PE 解析只有这一份实现。
+所以 `scripts/fetch-official-win.mjs` 调用统一的 `scripts/extract-assets.mjs`，用 `findEmbeddedNsis` 找到内层安装器，再把选中的主程序写到 Windows 构建目录。NSIS/PE 解析只有这一份实现。
 
-共享提取器同时接受 `WuwaTappo.exe` 和 Tauri 的 `$_21_` 变量名，选中后写入 base；随后按 canonical lock 的 `platforms.windows.executable.sha256` 校验。
+共享提取器同时接受 `WuwaTappo.exe` 和 Tauri 的 `$_21_` 变量名，选中后写入 base；随后按 canonical lock 校验安装包 SHA-256 与官方 Authenticode EV 签名。
 
 全程**不执行安装器**：执行会真的把客户端装进系统、启动进程、在 `%LOCALAPPDATA%` 写安装缓存，和本机已装版本混在一起。
 
-需要 7-Zip（CI runner 自带；本地 `winget install 7zip.7zip`）。本地只想省掉这次下载时，才用 `-OfficialExe`——版本仍按 `shared/upstream/cn.json` 记录，不会退回旧版。
+需要 7-Zip（CI runner 自带；本地 `winget install 7zip.7zip`）。本地只想省掉这次下载时，才用 `--official-exe`——仍会校验主程序 Authenticode 签名。
 
 ### 版本锁定
 
-`shared/upstream/cn.json` 记录的是**构建输入**：官方客户端版本、安装包直链与 SHA-256，以及 Windows 解出的主程序指纹。它由 [同步工作流](../.github/workflows/sync-upstream.yml) 跟随官方最新版自动更新，不再需要人工改。
+`shared/upstream/cn.json` 记录的是**构建输入**：官方客户端版本、安装包直链与 SHA-256。它由 [同步工作流](../.github/workflows/sync-upstream.yml) 跟随官方最新版自动更新，不再需要人工改。
 
 - 官方发新版后工作流自动更新国服 / 国际服两份 canonical lock（`shared/upstream/cn.json` 与 `shared/upstream/global.json`）并立刻编译；编过就直接发预发布，编不过才开草稿 PR 等人改适配。
 - **版本号不是准入条件**：注入器不再维护"允许的版本清单"，兼容性由结构断言和注入结果判定。官方换了版本号但锚点没漂，就不需要改任何代码。
-- 想在本机手动跟随：`powershell -File tools\fetch-official.ps1 -Latest`，取官方最新并校验哈希。
-
-主程序哈希与锁定值不符时脚本会告警——那说明解出来的二进制和上次适配过的不是同一份，先跑一次注入确认锚点再继续。
+- 想在本机手动跟随：`node scripts/fetch-official-win.mjs --latest`，取官方最新并校验 EV 签名。
 
 ## 目录
 
 ```
 windows\
-├─ src\              注入用的 FullAtlas 源码（原上游仓库内容 + 1.0.4 适配改动）
-│   ├─ src\          前端模块（shared/frontend 生成的副本）与注入钩子
-│   ├─ tools\        build_integration.py（注入）、extract_static.py（Windows PE 元数据）、pe_packer.py（重打包）
-│   └─ installer\    提权脚本存档（本机策略会删 .ps1，见「已知限制」）
+├─ src\              Windows 安装脚本与测试（installer\、tests\）
 ├─ tools\
-│   ├─ setup-env.ps1 / fetch-official.ps1          环境与官方基底
-│   ├─ build.ps1 / deploy.ps1 / payload.ps1        构建、装配、共享契约白名单过滤
+│   ├─ build.ps1 / deploy.ps1 / payload.ps1        构建（调用 ../scripts/extract-assets.mjs 与 shared/backend assistant-core）、装配、白名单过滤
 │   ├─ package-win.ps1 / package-installer.ps1     绿色 zip 与 NSIS 安装包 + 原地升级 zip
-│   ├─ check-update.ps1 / update-watch.ps1         官方版本检查与跟进
-│   ├─ apply-update.ps1                            替换运行目录（带备份与回滚）
 │   ├─ build-launcher.ps1                          无控制台启动器（编译 shared/backend 的 Rust 产物）
-│   ├─ make_shortcut.py / make-shortcut.ps1        桌面快捷方式（本机禁 COM，手写 .lnk）
-│   └─ patches\                                    1.0.3 适配差异存档
+│   ├─ make-shortcut.ps1                           桌面快捷方式（调用 assistant-core make-shortcut 写 .lnk 二进制）
+│   └─ region.ps1                                  从 shared/config/regions.json 读取区域配置
 ```
 
-`app\`、`build\`、`.venv\`、`assets\` 都是产物或缓存，已在 `.gitignore` 里，不会进仓库。
+`app\`、`build\`、`assets\` 都是产物或缓存，已在 `.gitignore` 里，不会进仓库。
 
 ## 和 macOS 侧怎么分工
 
@@ -129,32 +117,30 @@ windows\
 
 | | macOS（`macos/`） | Windows（本目录） | 能否共用 |
 | --- | --- | --- | --- |
-| 运行时 | `macos\src-tauri\src\*.rs`，Rust + Tauri IPC | `shared\backend`，Rust 本机 HTTP 服务 + 原生适配（Rust 产物在两侧共用） | 共用域逻辑，平台适配各自实现 |
-| 构建层 | `macos\scripts\*.mjs`、`package-macos.sh`、dmg | `tools\*.ps1`、Cargo、PE 重打包、NSIS | 不能。工具链不同 |
-| 注入器 | `macos\tools\fullatlas-integration.py`（改 Tauri 资源） | `src\tools\build_integration.py`（改 PE 资源段） | 主流程共用 `shared/tools/`，只保留资源发现与输出适配 |
-| 前端模块 | `macos\fullatlas-source\*.js` | `src\src\*.js` | **共用**，见下 |
+| 运行时 | `macos\src-tauri\src\*.rs` + `shared\backend` `FullAtlasService` | `shared\backend` Rust 本机 HTTP 服务 + 原生适配 | 共用域逻辑与 `FullAtlasService`，平台壳层各自实现 |
+| 构建层 | `macos\scripts\*.mjs`、`package-macos.sh`、dmg | `scripts/fetch-official-win.mjs`、`tools\*.ps1`、Cargo、NSIS | 解包/上游同步完全共用 `scripts/`；封装按平台实现 |
+| 注入与 PE 重打包 | `shared\backend\src\injector.rs`（输出前端目录） | `shared\backend\src\injector.rs` + `pe_repack.rs`（写入 PE 节区） | **共用**同一套注入器，只按 `--platform` 选择输出目标 |
+| 前端模块 | 直接由 `injector.rs` 渲染 `shared/frontend/` | 直接由 `injector.rs` 渲染 `shared/frontend/` | **共用**唯一源，无生成副本 |
 
-助手的三个前端模块已收敛到仓库根 `shared/frontend/`，`npm run sync:frontend` 生成 `src\src\` 的 Windows 构建副本和 Mac 副本；`npm test` 会逐字节检查生成结果。上游快照中的其他文件和 Windows 原生服务仍留在本目录。
-
-助手主流程与注入基础能力在仓库根 `shared/tools/`；平台目录只负责读取对应基底、补充原生集成并写回各自格式。跨平台文档、共享源和维护命令见根目录 [`docs/`](../docs/ARCHITECTURE.md)。
+助手主流程、FullAtlas 服务与注入器全部收敛到 `shared/`（`shared/frontend/` 与 `shared/backend/`）；不再留存平台生成副本或 Python 脚本。跨平台文档、共享源和维护命令见根目录 [`docs/`](../docs/ARCHITECTURE.md)。
 
 ## 官方更新怎么跟
 
 游戏版本和 FullAtlas 前端是两条独立的轴：
 
-- **游戏版本**：基线跟随官方最新版，**两个平台锁同一版本**。前端 JS 结构变化会让注入锚点失效，所以升级动作是「先验证、再改锁」：`check-update.ps1` 查版本，`update-watch.ps1`（或 `fetch-official.ps1 -Latest`）取新版基底并试注入到 staging（不碰 `app\`、不执行安装器），锚点断裂会直接报出是哪一处。验证通过后同步更新 `shared/upstream/*.json` 的 `version` / `installer` / `platforms.windows.executable`。
-- **版本漂移会被测试挡住**：`macos/tests/upstream-baseline.test.mjs` 断言 Windows 与 macOS 锁的官方版本、安装包哈希完全一致，`npm test` 里跑。一边升、另一边没升会当场红掉——2026-11-08 那次发版就是 Windows 停在 1.0.3、macOS 已经 1.0.4，Windows 产物里还是旧客户端。
-- **FullAtlas 前端**（上游仓库 v1.2 → v1.3）：只改 `shared/frontend/` 那 3 个 JS，运行 `npm run sync:frontend` 生成双端构建副本，再重跑构建验证。
+- **游戏版本**：基线跟随官方最新版，**两个平台锁同一版本**。前端 JS 结构变化会让注入锚点失效，所以升级动作是「先验证、再改锁」：跑 `node scripts/fetch-official-win.mjs --latest` 与 `powershell -File windows\tools\build.ps1 -Extract -NoDeploy` 在 `build\` 验证注入锚点（不碰 `app\`、不执行安装器），锚点断裂会直接报出是哪一处。
+- **版本漂移会被测试挡住**：`macos/tests/upstream-baseline.test.mjs` 断言 Windows 与 macOS 锁的官方版本、安装包哈希完全一致，`npm test` 里跑。
+- **FullAtlas 前端**：只改 `shared/frontend/` 里的共享 JS，运行 `npm test` 验证双端渲染与契约测试。
 
-发行版设置面板发现官方新版本时，会提供本项目 Releases 和官方原包下载入口。原包下载只保存到用户 `Downloads`，不会覆盖现有全图鉴程序；只有检测到完整源码与 `tools\update-watch.ps1` / `tools\apply-update.ps1` 的维护环境，才显示本地适配按钮。普通安装包无法安全地自行推断新版注入锚点。
+发行版设置面板发现官方新版本时，会提示新版本并提供下载入口（或原地更新入口），用户可选择更新并校验文件完整性。
 
-注入锚点是压缩后的变量名，1.0.3 相对 1.0.2 断了 6 处（主锚点 `applyCatalog(e,t,n)` 三次都没变，辅助模块会漂移）；1.0.4 相对 1.0.3 没有新增断点，两侧锚点全部命中，行为不变。锚点不对时脚本直接报错并保持 `app\` 不动，不做「能启动但 UI 错位」的静默失败。
+注入锚点是压缩后的变量名；锚点不对时 Rust 注入器直接报错并保持 `app\` 不动，不做「能启动但 UI 错位」的静默失败。
 
-官方 CDN 从境外的 GitHub runner 会间歇性连不上（2026-11-08 国服两个平台都被它打断）。`fetch-official.ps1` 现在会在主源重试 3 次仍失败后，改用仓库 `upstream-resources` 发布里的镜像包（文件名带安装包 sha256），下载完照样按 canonical lock 的 `installer.sha256` 校验字节。镜像地址由 CI 的 `WUWA_INSTALLER_MIRROR_BASE` 传入，与 macOS 侧同一套约定。
+官方 CDN 从境外的 GitHub runner 会间歇性连不上（2026-11-08 国服两个平台都被它打断）。`scripts/fetch-official-win.mjs` 会在主源重试后，改用仓库 `upstream-resources` 发布里的镜像包（文件名带安装包 sha256），下载完照样按 canonical lock 的 `installer.sha256` 与 Authenticode EV 签名校验字节。镜像地址由 CI 的 `WUWA_INSTALLER_MIRROR_BASE` 传入，与 macOS 侧同一套约定。
 
 ## 已知限制
 
-1. **本机安全策略禁止 COM**（`WScript.Shell`、`Shell.Application` 一律拦截）。快捷方式改用 `pylnk3` 直接写 `.lnk` 二进制（`tools\make_shortcut.py`）。手写字节不行——Windows 要求 `LinkTargetIDList`，只有 `LinkInfo` 的链接会被 shell 拒绝。
+1. **本机安全策略禁止 COM**（`WScript.Shell`、`Shell.Application` 一律拦截）。快捷方式由 `shared/backend` 的 `assistant-core make-shortcut` 模块直接写入带 `LinkTargetIDList` 和 `LinkInfo` 的 `.lnk` 二进制。
 2. **`launch.ps1` 会被安全策略自动删除**（自提权脚本 `Start-Process -Verb RunAs`）。内容存档在 `src\installer\launch.ps1.disabled.txt`，入口统一用 `WuwaTappoLauncher.exe`。
 3. **`schtasks.exe` 被黑名单拦截**，开机自启托管由 `shared/backend/src/windows_startup.rs` 用 PowerShell 原生 `Register-ScheduledTask` 注册 `WuwaTappoLauncher.exe`（缺失时兼容 `launch.ps1`）。
 4. **CI 已接入**（`.github/workflows/build-windows.yml`，`windows-2022` runner）。发行包统一不带素材缓存与内嵌 WebView2，体积约 80 MB；首次启动由本地素材服务自动补齐（约 100 MB / 3000+ 张），补齐前 `/status` 的 `ready` 为 `false`，前端按联机模式启动、设置页显示下载进度，不阻塞进入游戏（`tools\payload.ps1` 直接读取 `shared/contracts/windows-update.json` 白名单过滤文件，本机跑过 `LocalGalleryHost.exe --prepare-cache` 也不会让安装包翻倍）。没有内嵌运行时，所以产物依赖系统 WebView2；CI 里有一条断言盯着入口 stub 的回退分支（`build_report_v2.json` 的 `runtime_fallback`），防止「stub 又把浏览器路径钉死到空目录」这类回归。
@@ -165,4 +151,4 @@ windows\
 
 ## 与 macOS 侧的关系
 
-前端那 3 个模块（`local_atlas_controller.js` / `assistant_dashboard.js` / `desktop_assistant.js`）已经由 `shared/frontend/` 单一源生成，平台差异只由 `scripts/sync-frontend.mjs` 的 `TARGETS` 注入。两侧目录下的副本是构建输入，不要手改；改功能只改 shared 源，然后运行 `npm run sync:frontend`。
+助手前端 4 个模块（`local_atlas_controller.js` / `assistant_dashboard.js` / `desktop_assistant.js` / `desktop_context_menu.js`）由 `shared/frontend/` 单一源维护，构建时由 `shared/backend/src/injector.rs` 按目标平台占位符直接渲染，不再保留平台目录下的生成副本。

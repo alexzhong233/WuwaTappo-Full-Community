@@ -1,6 +1,6 @@
 {
   "name": "wuwatappo-full-community",
-  "version": "1.3.2-beta.5",
+  "version": "1.3.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,12 +14,12 @@
     "build:win": "node scripts/build-platform.mjs --platform=win",
     "build:all": "node scripts/build-platform.mjs --platform=all",
     "build:check": "node scripts/build-platform.mjs --check",
-    "test:shared": "node scripts/sync-frontend.mjs --check && node shared/tests/host-routes.cjs && node shared/tests/chest-input.cjs && node shared/tests/chest-input.cjs windows/src/src/desktop_assistant.js && node shared/tests/balance-threshold.cjs && node shared/tests/dashboard-and-emote.cjs && node --test macos/tests/frontend-sync.test.mjs macos/tests/fullatlas-controller.test.mjs macos/tests/fullatlas-mod.test.mjs macos/tests/loading-gate.test.mjs macos/tests/regions.test.mjs macos/tests/release-assets.test.mjs macos/tests/repo-layout.test.mjs macos/tests/upstream-baseline.test.mjs macos/tests/upstream-baseline-automation.test.mjs",
+    "test:shared": "node scripts/sync-frontend.mjs --check && node shared/tests/host-routes.cjs && node shared/tests/chest-input.cjs && node shared/tests/balance-threshold.cjs && node shared/tests/dashboard-and-emote.cjs && node --test macos/tests/frontend-sync.test.mjs macos/tests/fullatlas-controller.test.mjs macos/tests/fullatlas-mod.test.mjs macos/tests/loading-gate.test.mjs macos/tests/regions.test.mjs macos/tests/release-assets.test.mjs macos/tests/repo-layout.test.mjs macos/tests/upstream-baseline.test.mjs macos/tests/upstream-baseline-automation.test.mjs",
     "test:mac": "node --test macos/tests/*.test.mjs",
-    "test:win": "node windows/src/tests/test_controller_bootstrap.cjs && node windows/src/tests/test_desktop_assistant.cjs",
+    "test:win": "node windows/src/tests/test_controller_bootstrap.cjs && node windows/src/tests/test_desktop_assistant.cjs && node windows/src/tests/test_initialize.cjs",
     "test": "npm run test:shared && npm run test:mac && npm run test:win",
     "test:rust": "node macos/scripts/app.mjs test:rust",
-    "sync:frontend": "node scripts/sync-frontend.mjs",
+    "sync:frontend": "node scripts/sync-frontend.mjs --check",
     "assets:sync": "node scripts/sync-upstream.mjs",
     "upstream:check": "node scripts/sync-upstream.mjs --check",
     "upstream:update": "node scripts/sync-upstream.mjs --update-lock",
@@ -30,7 +30,7 @@
     "dev:global": "WUWA_REGION=global npm run dev",
     "build:global": "WUWA_REGION=global npm run build",
     "package:global": "WUWA_REGION=global npm run package",
-    "test:fullatlas": "node --test macos/tests/fullatlas*.test.mjs && node shared/tests/chest-input.cjs && node shared/tests/chest-input.cjs windows/src/src/desktop_assistant.js"
+    "test:fullatlas": "node --test macos/tests/fullatlas*.test.mjs && node shared/tests/chest-input.cjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.4",

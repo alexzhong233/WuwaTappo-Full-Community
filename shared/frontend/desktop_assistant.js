@@ -7,28 +7,30 @@ function resolveBalanceAutoClick(settings,balance) {
 }
 
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
-  const VERSION='1.3.2-beta.5', updateRequired=ref(false);
+  const VERSION='1.3.2', updateRequired=ref(false);
   const state=ref({settings:__WUWA_ASSISTANT_DEFAULTS__});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
   const ready=atlas.ready.then(()=>request('state')).then(v=>{state.value=v;updateRequired.value=!!v.update_required;});
   let started=false,disposed=false,timer=null,mainDependencies=null,sent=0,confirmed=0,lastObserve=0;
   let dashboard=null,updateDialog=null,autoSide=null,autoUntil=0,flushing=null;
   const readyButtons=new Map(),retryAfter=new Map();
-  // 打字/点击自动表情：跟随桌宠真实的 localClickCount 递增计数随机触发，
+  // 打字/点击自动表情：跟随桌宠真实的 localClickCount 递增计数触发（可选±40%随机或固定间隔），
   // 不探测其他应用的焦点，不申请辅助功能权限；自动点击（F24）同步屏蔽且发完表情后短暂停避。
   const emoteStats={clicks:0,sent:0,remaining:0,reason:'waiting-input',slots:[]};
-  let virtualClicking=false,emoteYieldUntil=0,lastEmoteAt=0,emoteTargetBase=0,emoteRemaining=0;
-  function rollEmoteTarget(interval){
+  let virtualClicking=false,emoteYieldUntil=0,lastEmoteAt=0,emoteTargetBase=0,emoteTargetRandom=null,emoteRemaining=0;
+  function rollEmoteTarget(interval,random=true){
     const base=Math.max(1,Math.min(1000,Math.round(Number(interval)||25)));
-    if(base<=1)return 1;
+    if(!random||base<=1)return base;
     const low=Math.max(1,Math.round(base*0.6)),high=Math.max(low,Math.round(base*1.4));
     return low+Math.floor(Math.random()*(high-low+1));
   }
   function syncEmoteTarget(){
     const base=Math.max(1,Math.min(1000,Math.round(Number(state.value.settings?.auto_emote_interval)||25)));
-    if(emoteTargetBase!==base||emoteRemaining<=0){
+    const rnd=state.value.settings?.auto_emote_random!==false;
+    if(emoteTargetBase!==base||emoteTargetRandom!==rnd||emoteRemaining<=0){
       emoteTargetBase=base;
-      emoteRemaining=rollEmoteTarget(base);
+      emoteTargetRandom=rnd;
+      emoteRemaining=rollEmoteTarget(base,rnd);
       emoteStats.remaining=emoteRemaining;
     }
   }
@@ -62,7 +64,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       if(emoteStats.reason!=='sent')emoteStats.reason='ready';
       return;
     }
-    emoteRemaining=rollEmoteTarget(s.auto_emote_interval);
+    emoteRemaining=rollEmoteTarget(s.auto_emote_interval,s.auto_emote_random!==false);
     emoteStats.remaining=emoteRemaining;
     const now=Date.now();
     if((Number(s.auto_emote_interval)||25)>1&&now-lastEmoteAt<150)return;

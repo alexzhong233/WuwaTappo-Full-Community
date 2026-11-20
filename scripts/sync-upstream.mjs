@@ -88,7 +88,7 @@ export function assertOfficialSigner(text, expected = OFFICIAL_SIGNER) {
 ///
 /// 这是唯一独立于本仓库的可信依据：哈希由流水线自己算、自己写回锁，锁被改就一起通过；
 /// 签名由库洛私钥产生，镜像被换、锁被改都绕不过去。
-export function verifyPublisher(bytes, { execute = runOsslsigncode } = {}) {
+export function verifyPublisher(bytes, { execute = process.platform === 'win32' ? runWindowsAuthenticode : runOsslsigncode } = {}) {
   const result = execute(bytes);
   const output = `${result.stdout || ''}\n${result.stderr || ''}`;
   if (result.status !== 0) {
@@ -106,6 +106,37 @@ function runOsslsigncode(bytes) {
     const result = spawnSync('osslsigncode', ['verify', '-in', file], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
     if (result.error?.code === 'ENOENT') {
       throw new Error('缺少 osslsigncode，无法校验官方安装包签名（macOS: brew install osslsigncode）。');
+    }
+    if (result.error) throw result.error;
+    return result;
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+function runWindowsAuthenticode(bytes) {
+  const work = mkdtempSync(path.join(tmpdir(), 'wuwatappo-sign-'));
+  try {
+    const file = path.join(work, 'setup.exe');
+    writeFileSync(file, bytes);
+    // 只读校验 Authenticode 签名链，绝不执行安装包。
+    const psCommand = [
+      "$ErrorActionPreference = 'Stop'",
+      '$sig = Get-AuthenticodeSignature -LiteralPath $env:WUWA_SIGN_TARGET',
+      "if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate) {",
+      '  Write-Error ("Authenticode status: " + $sig.Status + " " + $sig.StatusMessage)',
+      '  exit 1',
+      '}',
+      'Write-Output ("Subject : " + $sig.SignerCertificate.Subject)',
+      'Write-Output ("Issuer  : " + $sig.SignerCertificate.Issuer)',
+    ].join('; ');
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCommand], {
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, WUWA_SIGN_TARGET: file },
+    });
+    if (result.error?.code === 'ENOENT') {
+      throw new Error('缺少 powershell.exe，无法读取安装包 Authenticode 签名。');
     }
     if (result.error) throw result.error;
     return result;
@@ -175,7 +206,11 @@ async function exists(filename) {
 }
 
 export function findSevenZip(explicit, environment = process.env) {
-  for (const candidate of [explicit, environment.SEVENZIP, '7zz', '7z'].filter(Boolean)) {
+  const candidates = [explicit, environment.SEVENZIP, '7zz', '7z'];
+  if (process.platform === 'win32') {
+    candidates.push('C:\\Program Files\\7-Zip\\7z.exe', 'C:\\Program Files (x86)\\7-Zip\\7z.exe');
+  }
+  for (const candidate of candidates.filter(Boolean)) {
     const probe = spawnSync(candidate, ['i'], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
     if (!probe.error && probe.status === 0) return candidate;
     if (candidate === explicit || candidate === environment.SEVENZIP) throw new Error(`无法运行指定的 7-Zip：${candidate}`);
@@ -193,6 +228,21 @@ export function pinnedInstallerCache(lock, projectRoot = root, profile = cn) {
   return {
     key: `official-installer-v1-${profile.id}-${lock.installer.size}-${lock.installer.sha256}-${encodeURIComponent(new URL(lock.installer.url).pathname)}`,
     path: installerCachePath(lock.installer.url, path.join(projectRoot, '.work'), profile),
+  };
+}
+
+export function windowsOfficialCache(lock, _projectRoot = path.resolve(root, '..'), profile = cn) {
+  validateLock(lock, profile);
+  const urlhash = createHash('sha256').update(String(lock.installer.url), 'utf8').digest('hex').slice(0, 16);
+  const buildDir = profile.id === 'global' ? 'build-global' : 'build';
+  return {
+    version: lock.version,
+    urlhash,
+    key: `windows-official-${profile.id}-${lock.version}-${urlhash}`,
+    path: [
+      `windows/${buildDir}/official/*/*setup.exe`,
+      `windows/${buildDir}/official/*/base/WuwaTappo.official.exe`,
+    ].join('\n'),
   };
 }
 
