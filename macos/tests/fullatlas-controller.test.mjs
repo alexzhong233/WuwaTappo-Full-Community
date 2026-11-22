@@ -199,6 +199,16 @@ test('click choices add independent local and official tags and local-only items
   assert.equal(choice.row.children.length, 2, 'local-only item exposes only local and close');
   choice.row.children[0].onclick();
   assert.deepEqual({...instance.sourceFor(2, 'accessory')}, {local:true, official:false});
+  const emitted = [];
+  instance.enabled.value = false;
+  assert.equal(instance.beginPanelSelect(item, payload => emitted.push(payload)), true);
+  choice = body.children.at(-1);
+  choice.row.children[0].onclick();
+  assert.equal(emitted.at(-1).wuwa_choice, 'local');
+  assert.equal(instance.beginPanelSelect(item, payload => emitted.push(payload)), true);
+  choice = body.children.at(-1);
+  await choice.row.children[1].onclick();
+  assert.equal(emitted.at(-1).wuwa_choice, 'official');
   instance.dispose();
 });
 

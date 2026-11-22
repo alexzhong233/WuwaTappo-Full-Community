@@ -102,7 +102,14 @@ function createLocalAtlasController(d) {
   let choiceNode = null;
   let refreshSourceBadges = null;
   let badgeObserver = null;
-  const isPanelHash = () => String(d.window.location?.hash || '').startsWith('#/panel');
+  let badgeCatalogPromise = null;
+  const isPanelHash = () => {
+    const location = d.window.location || {};
+    return String(location.hash || '').startsWith('#/panel')
+      || /\/panel(?:\/|$)/.test(String(location.pathname || ''))
+      || /(?:^|[?&])panel(?:=|&|$)/.test(String(location.search || ''))
+      || /功能面板|panel/i.test(String(d.window.document?.title || ''));
+  };
   const localMeta = new Map();
   const atlasIndex = new Map();
   const petIdByAtlasId = new Map();
@@ -152,12 +159,26 @@ function createLocalAtlasController(d) {
     }
     marks.value = next;
     d.storage.setItem(MARKS_KEY, JSON.stringify(next));
+    if (d.request) d.request('/diagnostic', {kind:'hybrid_mark_set',detail:{id:Number(id)||0,type:normalizedType(type),source,value:Boolean(value),atlasIndex:atlasIndex.size}}).catch(()=>{});
     revision.value++;
     refreshSourceBadges?.();
     return markFor(id, type);
   }
   function sourceFor(id, type) {
     return markFor(id, type);
+  }
+  function ensureBadgeCatalog() {
+    if (offlineData.value) {
+      if (!atlasIndex.size) indexLocalData(offlineData.value);
+      reportChoice('hybrid_badge_catalog', {source:'memory', size:atlasIndex.size});
+      return Promise.resolve();
+    }
+    if (badgeCatalogPromise) return badgeCatalogPromise;
+    badgeCatalogPromise = prepare(false)
+      .then(data => { indexLocalData(data); reportChoice('hybrid_badge_catalog', {source:'fetch', size:atlasIndex.size}); refreshSourceBadges?.(); })
+      .catch(error => { reportChoice('hybrid_badge_catalog_failed', {message:String(error?.message||error)}); })
+      .finally(() => { badgeCatalogPromise = null; });
+    return badgeCatalogPromise;
   }
   function clearLocal(type) {
     const wanted = normalizedType(type), s = {...selection.value};
@@ -183,15 +204,17 @@ function createLocalAtlasController(d) {
       html[data-wuwa-capture="transparent"] body{background:transparent!important}
     `;
     doc.head.append(style);
-    if (!isPanelHash()) return;
     const observe = () => {
-      if (disposed || typeof doc.querySelectorAll !== 'function' || !atlasIndex.size) return;
+      if (disposed || typeof doc.querySelectorAll !== 'function') return;
+      const panelRoot = isPanelHash() || doc.querySelector?.('.panel-window-root, .atlas-module, .role-panel');
+      if (!panelRoot) return;
+      if (!atlasIndex.size) { ensureBadgeCatalog(); return; }
       for (const img of doc.querySelectorAll('img')) {
         const raw = String(img.currentSrc || img.src || '').split(/[?#]/)[0];
         const base = decodeURIComponent(raw.split('/').pop() || '').replace(/\.(png|webp|gif|jpe?g)$/i, '').toLowerCase();
         const row = atlasIndex.get(base);
         if (!row) continue;
-        const card = img.closest('[class*="atlas"],[class*="bag"],[class*="appearance"],[class*="preset"],[class*="item"]') || img.parentElement;
+        const card = img.closest('.atlas-item, .preset-item, [class*="atlas-item"], [class*="preset-item"]');
         if (!card) continue;
         const source = sourceFor(row.asset_id, row.asset_type);
         const existing = Array.from(card.children || []).find(node => node.classList?.contains('wuwa-source-tags'));
@@ -214,26 +237,40 @@ function createLocalAtlasController(d) {
     let scheduled = false;
     const schedule = () => { if (disposed || scheduled) return; scheduled = true; d.window.setTimeout(() => { scheduled = false; observe(); }, 80); };
     refreshSourceBadges = schedule;
-    const Observer = d.window.MutationObserver;
-    if (typeof Observer === 'function' && doc.documentElement) {
-      badgeObserver = new Observer(schedule);
-      badgeObserver.observe(doc.documentElement, {childList:true,subtree:true,attributes:true,attributeFilter:['src','style']});
+    let observerStarted = false;
+    const startObserver = () => {
+      if (observerStarted) return true;
+      if (!isPanelHash() && !doc.querySelector?.('.panel-window-root, .atlas-module, .role-panel')) return false;
+      observerStarted = true;
+      const Observer = d.window.MutationObserver;
+      if (typeof Observer === 'function' && doc.documentElement) {
+        badgeObserver = new Observer(schedule);
+        badgeObserver.observe(doc.documentElement, {childList:true,subtree:true,attributes:true,attributeFilter:['src','style']});
+      }
+      schedule();
+      return true;
+    };
+    if (!startObserver() && typeof d.window.setInterval === 'function') {
+      let attempts = 0;
+      const probe = d.window.setInterval(() => {
+        if (startObserver() || ++attempts >= 20) d.window.clearInterval?.(probe);
+      }, 500);
     }
-    schedule();
   }
-  function showAssetChoice(item, official, maxEmotes, applyOfficial) {
+  function showAssetChoice(item, official, maxEmotes, applyOfficial, choose, forceOfficial = false) {
     const doc = d.window.document;
-    if (!doc || typeof doc.createElement !== 'function' || !doc.body || !enabled.value) return;
+    if (!doc || typeof doc.createElement !== 'function' || !doc.body) return false;
     choiceNode?.remove();
     const type = normalizedType(item.asset_type);
-    const owned = officialOwned(item.asset_id, type);
+    const owned = forceOfficial || item.owned === true || officialOwned(item.asset_id, type);
     const node = doc.createElement('section');
-    if (typeof node.querySelector !== 'function' || !node.append) return;
+    if (typeof node.querySelector !== 'function' || !node.append) return false;
     node.className = 'wt-source-choice';
     node.innerHTML = `<strong>${owned ? '官方已有外观' : '仅本地外观'}</strong><p>${owned ? '可以只在本机使用，也可以设为官方联机外观；两个标签可以同时存在。' : '该外观不在官方背包中，只能作为本机外观使用。'}</p><div class="row"></div>`;
     const row = node.querySelector('.row');
     const local = doc.createElement('button'); local.className='primary'; local.textContent='设为本地';
     local.onclick = () => {
+      if (choose) { choose('local'); node.remove(); choiceNode=null; return; }
       try { select(item, official, maxEmotes, {quiet:true}); setMark(item.asset_id, type, 'local', true); }
       catch (error) { node.querySelector('p').textContent = error.message; return; }
       node.remove(); choiceNode=null;
@@ -243,6 +280,7 @@ function createLocalAtlasController(d) {
     if (owned) {
       const officialButton = doc.createElement('button'); officialButton.textContent='设为官方';
       officialButton.onclick = async () => {
+        if (choose) { choose('official'); node.remove(); choiceNode=null; return; }
         if (typeof applyOfficial !== 'function') { node.querySelector('p').textContent='当前官方界面不支持设置外观'; return; }
         officialButton.disabled = true;
         try { await applyOfficial(); setMark(item.asset_id, type, 'official', true); }
@@ -253,11 +291,21 @@ function createLocalAtlasController(d) {
     }
     row.append(close);
     doc.body.append(node); choiceNode=node;
+    return true;
   }
   function beginSelect(item, official, maxEmotes, applyOfficial) {
     if (!enabled.value) return false;
     showAssetChoice(item, official, maxEmotes, applyOfficial);
     return true;
+  }
+  function beginPanelSelect(item, emit, forceOfficial = false) {
+    if (d.request) d.request('/diagnostic', {kind:'hybrid_panel_select',detail:{id:Number(item.asset_id)||0,type:normalizedType(item.asset_type),forceOfficial,hash:String(d.window.location?.hash||'')}}).catch(()=>{});
+    const opened = showAssetChoice(item, null, 8, null, choice => {
+      if (d.request) d.request('/diagnostic', {kind:'hybrid_panel_choice',detail:{id:Number(item.asset_id)||0,choice}}).catch(()=>{});
+      emit({...item, wuwa_choice:choice});
+    }, forceOfficial);
+    if (!opened) emit(item);
+    return opened;
   }
   const capture = d.ref((() => { try { const v=JSON.parse(d.storage.getItem(CAPTURE_KEY)||'{}'); return v&&typeof v==='object'?v:{mode:'off',panelOpacity:0.96}; } catch { return {mode:'off',panelOpacity:0.96}; } })());
   function applyCaptureStyle() {
@@ -641,7 +689,6 @@ function createLocalAtlasController(d) {
     return Boolean(enabled.value && item?.asset_id);
   }
   function select(item, official, maxEmotes, options={}) {
-    if (!enabled.value) throw new Error('本地外观尚未就绪');
     const user = viewUser(official), s = {...selection.value};
     const type = normalizedType(item.asset_type);
     const id = resolveItemId(item.asset_id);
@@ -865,6 +912,12 @@ function createLocalAtlasController(d) {
       else offlineData.value=null;
       return;
     }
+    if(event.key===MARKS_KEY){
+      marks.value=readMarks();
+      revision.value++;
+      refreshSourceBadges?.();
+      return;
+    }
     if(event.key===PRESET_KEY){presets.value=readPresets();revision.value++;return;}
     if (event.key !== KEY) return;
     const state = read();
@@ -960,7 +1013,7 @@ function createLocalAtlasController(d) {
     presetList, createLocalPreset, deleteLocalPreset, applyLocalPreset, collectionProgress,
     mergePresets, applyPreset,
     ownedBag, accessoryTransform, setAccessoryTransform, resetAccessoryTransform, activateLocalIfReady, startOverlay,
-    officialOwned, sourceFor, markFor, setMark, beginSelect, afterOfficialSelect, clearLocal, shouldCreateLocalPreset,
+    officialOwned, sourceFor, markFor, setMark, beginSelect, beginPanelSelect, afterOfficialSelect, clearLocal, shouldCreateLocalPreset,
     synthesizeDuplicates, capture, setCapture, applyCaptureStyle,
     restricted,normalCumulative:()=>d.getAccountCumulative?.()??0,normalPending:()=>d.getAccountPending?.()??0};
 }

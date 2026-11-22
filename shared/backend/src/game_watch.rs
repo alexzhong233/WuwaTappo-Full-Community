@@ -22,6 +22,7 @@ fn matches_process(name: &str) -> bool {
     GAME_PROCESSES.iter().any(|candidate| name == *candidate)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn name_from_path(raw: &str) -> &str {
     let trimmed = raw.trim().trim_matches('"');
     trimmed.rsplit('/').next().unwrap_or(trimmed)

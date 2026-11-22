@@ -1020,7 +1020,15 @@ pub fn integrate_build(
         &mut edits,
         select_name,
         format!(
-            "if(__lg.enabled.value && !__skipLocalSelectChoice){{
+            "if(!__skipLocalSelectChoice && {select_param}.wuwa_choice){{
+ const __choice={select_param}.wuwa_choice;
+ try{{__lg.request('/diagnostic',{{kind:'hybrid_main_marker',detail:{{id:{select_param}.asset_id,choice:__choice,type:{select_param}.asset_type}}}}).catch(()=>{{}});}}catch{{}}
+ if(__choice==='local'){{try{{__lg.select({select_param},{store}.userInfo,{max_emotes});if(!__lg.enabled.value)__lg.startOverlay?.();__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}
+ __lg.setMark({select_param}.asset_id,{select_param}.asset_type,'official',true);
+ __skipLocalSelectChoice=true;
+ try{{return {select_name}({select_param});}}finally{{__skipLocalSelectChoice=false;}}
+}}
+if(__lg.enabled.value && !__skipLocalSelectChoice){{
  if(__lg.beginSelect({select_param},{store}.userInfo,{max_emotes},()=>{{
   __skipLocalSelectChoice=true;
   try{{return {select_name}({select_param});}}finally{{__skipLocalSelectChoice=false;}}
@@ -1161,6 +1169,7 @@ pub fn integrate_build(
         }
     }
 
+    let panel_sync_fn = function_for(&component_functions, &main_orig, "Tc())")?;
     let local_code = format!(
         r#"
  let __localSaved=null,__skipLocalSelectChoice=false;
@@ -1172,6 +1181,7 @@ function __localRefresh(){{
  {accessory}={getaccess_sym}(user)||null;
  {emotes}={getemotes_sym}(user).map(item=>({{id:item.id,name:item.name}}));
   {atlas}=__lg.mergeAtlas({atlas});
+  {sync_fn}();
 }}
 {watch_sym}(__lg.enabled,on=>{{
  if(on){{__localSaved={{role:{role},accessory:{accessory},emotes:[...{emotes}],host:{host},atlas:{atlas}}};__localRefresh();}}
@@ -1182,6 +1192,7 @@ function __localRefresh(){{
 "#,
         act_fn = activity_loader.name,
         bag_fn = bag_loader.name,
+        sync_fn = panel_sync_fn.name,
     );
     let main_return = main_component
         .return_start
@@ -1449,11 +1460,51 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
             m.start(),
             m.end(),
             format!(
-                "\"is-item-clickable\": (__c => window.__WUWA_LOCAL_ATLAS__?.enabled.value ? window.__WUWA_LOCAL_ATLAS__.canSelect(__c) : {name}(__c))"
+                "\"is-item-clickable\": (__c => window.__WUWA_LOCAL_ATLAS__ ? Boolean(__c?.asset_id) : {name}(__c))"
             ),
         ));
     }
 
+    // The panel is a separate WebView from the pet window. Its cards must
+    // open the local/official choice in the panel itself; sending the choice
+    // back to the pet window makes the popup get clipped by the pet window.
+    let bag_component_for_choice = find_component(p_raw, "MainPanelBagTab")?;
+    let panel_select_re = Regex::new(r"onSelectItem\s*:\s*([A-Za-z0-9_$]+)\s*,").unwrap();
+    for caps in panel_select_re.captures_iter(&panel_orig) {
+        let m = caps.get(0).unwrap();
+        let handler = &caps[1];
+        let force_official = bag_component_for_choice.start <= m.start()
+            && m.start() < bag_component_for_choice.end;
+        panel_edits.push(Edit::new(
+            m.start(),
+            m.end(),
+            format!(
+                "onSelectItem: (__c => {{ const __lg=window.__WUWA_LOCAL_ATLAS__; if(__lg?.beginPanelSelect) return __lg.beginPanelSelect(__c, __next=>{{ window.__WUWA_PENDING_CHOICE__=__next.wuwa_choice; try{{return {handler}(__next);}}finally{{window.__WUWA_PENDING_CHOICE__=null;}} }}, {force_official}); return {handler}(__c); }}),"
+            ),
+        ));
+    }
+    let panel_o_re = Regex::new(r"function\s+o\(C\)\s*\{[\s\S]{0,240}?W\s*=\s*a\(O\);").unwrap();
+    if let Some(caps) = panel_o_re.captures(&panel_orig) {
+        let insert = caps.get(0).unwrap().end();
+        panel_edits.push(Edit::new(
+            insert,
+            insert,
+            "if(W&&window.__WUWA_PENDING_CHOICE__)W.wuwa_choice=window.__WUWA_PENDING_CHOICE__;",
+        ));
+    }
+    let atlas_sanitize_re = Regex::new(
+        r"(?s)(function a\(C\) \{[\s\S]*?star_level: C\.star_level)(\s*\}\s*:\s*null)",
+    )
+    .unwrap();
+    if let Some(caps) = atlas_sanitize_re.captures(&panel_orig) {
+        let insert = caps.get(1).unwrap().end();
+        panel_edits.push(Edit::new(insert, insert, ",wuwa_choice: C.wuwa_choice"));
+    }
+    let minified_sanitize_anchor = "star_level:C.star_level}:null";
+    for (idx, _) in panel_orig.match_indices(minified_sanitize_anchor) {
+        let insert = idx + minified_sanitize_anchor.len() - "}:null".len();
+        panel_edits.push(Edit::new(insert, insert, ",wuwa_choice:C.wuwa_choice"));
+    }
     let preset_add_re = Regex::new(
         r#"\{\s*"preset-item--add":\s*([A-Za-z0-9_$]+)\.kind\s*===\s*"add"\s*\}"#,
     )
@@ -1502,6 +1553,10 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     ));
 
     let mut panel = apply_edits(&panel_orig, panel_edits)?;
+    panel = panel.replace(
+        "function o(C){const O=C,W=a(O);",
+        "function o(C){const O=C,W=a(O);if(W&&O.wuwa_choice)W.wuwa_choice=O.wuwa_choice;",
+    );
     let panel_accessory_alias = require_import(&pi, "getUserAccessoryOffset")?;
     if let Ok(patched) = patch_accessory_transform(&mut rec, &panel, panel_accessory_alias) {
         panel = patched;
