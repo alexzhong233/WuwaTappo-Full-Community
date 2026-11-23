@@ -5618,7 +5618,7 @@ dependencies = [
 
 [[package]]
 name = "wuwatappo-assistant-core"
-version = "1.4.0-beta.2"
+version = "1.4.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "brotli",
@@ -5636,7 +5636,7 @@ dependencies = [
 
 [[package]]
 name = "wuwatappo-mac"
-version = "1.4.0-beta.2"
+version = "1.4.0-beta.3"
 dependencies = [
  "block2",
  "chrono",
