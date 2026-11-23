@@ -11,7 +11,18 @@ function createLocalAtlasController(d) {
   const enabled = d.ref(false), busy = d.ref(false), selection = d.ref({}), favorites = d.ref({});
   const MARKS_KEY='wuwatappo-appearance-marks';
   const readMarks=()=>{try{const rows=JSON.parse(d.storage.getItem(MARKS_KEY)||'{}');return rows&&typeof rows==='object'&&!Array.isArray(rows)?rows:{};}catch{return {};}};
+  let lastMarksRaw=d.storage.getItem(MARKS_KEY);
   const marks=d.ref(readMarks());
+  function syncMarksFromStorage(){
+    const raw=d.storage.getItem(MARKS_KEY);
+    if(raw===lastMarksRaw)return false;
+    lastMarksRaw=raw;
+    marks.value=readMarks();
+    return true;
+  }
+  function logHybrid(kind,detail){
+    if(d.request)d.request('/diagnostic',{kind,detail}).catch(()=>{});
+  }
   const offlineData = d.ref(null), revision = d.ref(0);
   const syncStatus = d.ref({status: 'idle', done: 0, total: 0});
   // 发行包不带素材缓存（近百 MB），所以「装完第一次启动」必然是 ready=false。
@@ -56,14 +67,43 @@ function createLocalAtlasController(d) {
     const number = Number(value);
     return Number.isFinite(number) ? Math.min(high, Math.max(low, number)) : fallback;
   };
-  const currentAccessoryId = user => String(
-    (user ? viewUser(user)?.accessory?.id : selection.value.accessory?.id) || '');
-  /** 官方渲染层每帧算 translate 时来问这里：返回 null 表示没有本地调整。 */
+  const currentAccessoryId = user => {
+    if (user) {
+      const source = enabled.value && !bypassLocalView ? viewUser(user) : user;
+      return String(source?.accessory?.id || '');
+    }
+    if (enabled.value && Object.hasOwn(selection.value, 'accessory')) {
+      return String(selection.value.accessory?.id || '');
+    }
+    const localId = Number(selection.value.accessory?.id) || 0;
+    if (localId) return String(localId);
+    const officialId = Number(d.getOfficialUser?.()?.accessory?.id) || 0;
+    if (officialId) return String(officialId);
+    syncMarksFromStorage();
+    for (const [key, row] of Object.entries(marks.value || {})) {
+      if (!key.startsWith('accessory:') || !row || typeof row !== 'object') continue;
+      if ((enabled.value && row.local === true) || row.official === true) {
+        const rawId = Number(key.slice('accessory:'.length)) || 0;
+        if (rawId) return String(resolveItemId(rawId) || rawId);
+      }
+    }
+    return '';
+  };
+  function currentAccessoryInfo() {
+    const id = Number(currentAccessoryId(null)) || 0;
+    if (!id) return {id: 0, name: ''};
+    const name = (enabled.value && selection.value.accessory?.id ? selection.value.accessory?.name : '')
+      || d.getOfficialUser?.()?.accessory?.name
+      || assetMeta(id)?.asset_name
+      || assetMeta(id)?.file_name
+      || '';
+    return {id, name: String(name || '')};
+  }
+  /** 官方渲染层每帧算 translate 时来问这里：返回 null 表示没有调整。 */
   function accessoryTransform(user) {
     // 读一次 revision：调用方是官方的 computed，靠这次读取订阅本机改动，
     // 拖动滑杆才能立刻重算，而不是等下一次切页。
     revision.value;
-    if (!enabled.value) return null;
     const id = currentAccessoryId(user);
     const row = id ? transforms.value[id] : null;
     if (!row) return null;
@@ -71,9 +111,8 @@ function createLocalAtlasController(d) {
       scale: clampNum(row.scale, 0.3, 3, 1), rotate: clampNum(row.rotate, -180, 180, 0)};
   }
   function setAccessoryTransform(patch) {
-    if (!enabled.value) throw new Error('本地外观尚未就绪');
-    const id = String(selection.value.accessory?.id || '');
-    if (!id) throw new Error('先选择一个本地挂饰');
+    const id = currentAccessoryId(null);
+    if (!id) throw new Error('请先在背包或图鉴佩戴一个挂饰');
     const row = {...{dx: 0, dy: 0, scale: 1, rotate: 0}, ...(transforms.value[id] || {}), ...(patch || {})};
     const saved = {dx: Math.round(clampNum(row.dx, -400, 400, 0)),
       dy: Math.round(clampNum(row.dy, -400, 400, 0)),
@@ -85,16 +124,18 @@ function createLocalAtlasController(d) {
     else next[id] = saved;
     transforms.value = next;
     d.storage.setItem(XFORM_KEY, JSON.stringify(next));
+    d.emit?.('wuwa-accessory-transform', next);
     revision.value++;
     return saved;
   }
   function resetAccessoryTransform() {
-    const id = String(selection.value.accessory?.id || '');
+    const id = currentAccessoryId(null);
     if (!id || !transforms.value[id]) return {dx: 0, dy: 0, scale: 1, rotate: 0};
     const next = {...transforms.value};
     delete next[id];
     transforms.value = next;
     d.storage.setItem(XFORM_KEY, JSON.stringify(next));
+    d.emit?.('wuwa-accessory-transform', next);
     revision.value++;
     return {dx: 0, dy: 0, scale: 1, rotate: 0};
   }
@@ -103,6 +144,12 @@ function createLocalAtlasController(d) {
   let refreshSourceBadges = null;
   let badgeObserver = null;
   let badgeCatalogPromise = null;
+  let onFocusBadge = null;
+  let onVisibleBadge = null;
+  let bypassLocalView = false;
+  let unlistenMarks = null;
+  let unlistenTransform = null;
+  let unlistenCustom = null;
   const isPanelHash = () => {
     const location = d.window.location || {};
     return String(location.hash || '').startsWith('#/panel')
@@ -119,9 +166,14 @@ function createLocalAtlasController(d) {
   const normalizedType = value => String(value || '').replace(/_atlas$/, '');
   const markKey = (id, type) => normalizedType(type) + ':' + (Number(id) || 0);
   function relatedIds(id) {
-    const raw = Number(id) || 0, ids = new Set([raw]);
-    const primary = petIdByAtlasId.get(raw);
-    if (primary) ids.add(primary);
+    const raw = Number(id) || 0, ids = new Set();
+    if (!raw) return ids;
+    ids.add(raw);
+    const primary = petIdByAtlasId.get(raw) || d.resolvePetAssetIdFromAppearanceId?.(raw) || 0;
+    if (primary) {
+      ids.add(primary);
+      for (const alias of atlasIdsByPetId.get(primary) || []) ids.add(alias);
+    }
     for (const alias of atlasIdsByPetId.get(raw) || []) ids.add(alias);
     return ids;
   }
@@ -132,6 +184,21 @@ function createLocalAtlasController(d) {
     const wanted = normalizedType(type || assetMeta(assetId)?.asset_type);
     return bagRows().some(row => Number(row.asset_id) === assetId
       && (!wanted || normalizedType(row.asset_type) === wanted));
+  }
+  function isModOrLocalOnlyItem(item) {
+    if (!item || typeof item !== 'object') return true;
+    const id = Number(item.asset_id ?? item.assetId ?? item.id) || 0;
+    if (id <= 0 || id >= 1000000000) return true;
+    if (item.wuwa_local_only === true || String(item.rarity || '').toUpperCase() === 'MOD' || Boolean(item.custom_pack_id)) return true;
+    if (String(item.asset_code || '').startsWith('mod:')) return true;
+    const meta = assetMeta(id) || assetMeta(resolveItemId(id));
+    return Boolean(meta && (String(meta.rarity || '').toUpperCase() === 'MOD' || meta.custom_pack_id || String(meta.url || '').includes('custom-assets/')));
+  }
+  function canApplyOfficial(item) {
+    if (isModOrLocalOnlyItem(item)) return false;
+    if (item.owned === false || item.unowned === true) return false;
+    if (Array.isArray(accountBag) && accountBag.length > 0) return officialOwned(item.asset_id ?? item.assetId ?? item.id, item.asset_type);
+    return true;
   }
   function selectedLocal(id, type) {
     const s = selection.value || {}, wanted = normalizedType(type);
@@ -149,20 +216,96 @@ function createLocalAtlasController(d) {
     }
     return result;
   }
-  function setMark(id, type, source, value = true) {
-    const next = {...marks.value};
-    for (const alias of relatedIds(id)) {
-      const key = markKey(alias, type), row = {...(next[key] || {})};
-      row[source] = Boolean(value);
-      if (!row.local && !row.official) delete next[key];
-      else next[key] = row;
+  function clearSourceMarks(next, source, types = null) {
+    const allowed = types ? new Set(Array.from(types, normalizedType)) : null;
+    for (const key of Object.keys(next)) {
+      const colon = key.indexOf(':');
+      if (colon <= 0) continue;
+      const keyType = normalizedType(key.slice(0, colon));
+      if (allowed && !allowed.has(keyType)) continue;
+      const row = next[key];
+      if (!row || typeof row !== 'object' || !Object.hasOwn(row, source)) continue;
+      const updated = {...row};
+      delete updated[source];
+      if (!updated.local && !updated.official) delete next[key];
+      else next[key] = updated;
     }
+  }
+  function addSourceMark(next, id, type, source, extraIds = []) {
+    const kind = normalizedType(type);
+    if (!kind) return;
+    const allIds = new Set(relatedIds(id));
+    for (const extra of extraIds) {
+      for (const alias of relatedIds(extra)) allIds.add(alias);
+    }
+    for (const alias of allIds) {
+      if (!alias) continue;
+      const key = markKey(alias, kind), row = {...(next[key] || {})};
+      row[source] = true;
+      next[key] = row;
+    }
+  }
+  function writeMarks(next, logKind, logDetail) {
+    const beforeRaw = JSON.stringify(marks.value || {});
+    const raw = JSON.stringify(next);
+    const unchangedEmpty = lastMarksRaw === null && Object.keys(next).length === 0 && beforeRaw === '{}';
+    const changed = !unchangedEmpty && (raw !== beforeRaw || raw !== lastMarksRaw || d.storage.getItem(MARKS_KEY) !== raw);
     marks.value = next;
-    d.storage.setItem(MARKS_KEY, JSON.stringify(next));
-    if (d.request) d.request('/diagnostic', {kind:'hybrid_mark_set',detail:{id:Number(id)||0,type:normalizedType(type),source,value:Boolean(value),atlasIndex:atlasIndex.size}}).catch(()=>{});
-    revision.value++;
-    refreshSourceBadges?.();
-    return markFor(id, type);
+    if (changed) {
+      lastMarksRaw = raw;
+      d.storage.setItem(MARKS_KEY, raw);
+      if (logKind) logHybrid(logKind, logDetail);
+      revision.value++;
+      d.emit?.('wuwa-marks-updated', raw);
+      refreshSourceBadges?.();
+    } else if (logKind) {
+      logHybrid(logKind, logDetail);
+    }
+    return changed;
+  }
+  function setMark(id, type, source, value = true) {
+    syncMarksFromStorage();
+    const next = {...marks.value};
+    const kind = normalizedType(type);
+    if (Boolean(value)) {
+      if (kind === 'character_skin' || kind === 'accessory') clearSourceMarks(next, source, [kind]);
+      addSourceMark(next, id, kind, source);
+    } else {
+      for (const alias of relatedIds(id)) {
+        const key = markKey(alias, kind), row = {...(next[key] || {})};
+        delete row[source];
+        if (!row.local && !row.official) delete next[key];
+        else next[key] = row;
+      }
+    }
+    writeMarks(next, 'hybrid_mark_set', {id:Number(id)||0,type:kind,source,value:Boolean(value),atlasIndex:atlasIndex.size});
+    return markFor(id, kind);
+  }
+  function syncLocalMarks(extraByType = null) {
+    syncMarksFromStorage();
+    const next = {...marks.value};
+    clearSourceMarks(next, 'local');
+    const s = selection.value || {};
+    if (s.character?.id) addSourceMark(next, s.character.id, 'character_skin', 'local', extraByType?.character_skin || []);
+    if (s.accessory?.id) addSourceMark(next, s.accessory.id, 'accessory', 'local', extraByType?.accessory || []);
+    for (const item of Array.isArray(s.emote) ? s.emote : []) {
+      if (item?.id) addSourceMark(next, item.id, 'emote', 'local', extraByType?.emote || []);
+    }
+    writeMarks(next);
+    return marks.value;
+  }
+  function syncOfficialMarks(officialUser) {
+    if (!officialUser || typeof officialUser !== 'object') return marks.value;
+    syncMarksFromStorage();
+    const next = {...marks.value};
+    clearSourceMarks(next, 'official');
+    if (officialUser.character?.id) addSourceMark(next, officialUser.character.id, 'character_skin', 'official');
+    if (officialUser.accessory?.id) addSourceMark(next, officialUser.accessory.id, 'accessory', 'official');
+    for (const item of Array.isArray(officialUser.emote) ? officialUser.emote : []) {
+      if (item?.id) addSourceMark(next, item.id, 'emote', 'official');
+    }
+    writeMarks(next);
+    return marks.value;
   }
   function sourceFor(id, type) {
     return markFor(id, type);
@@ -170,13 +313,13 @@ function createLocalAtlasController(d) {
   function ensureBadgeCatalog() {
     if (offlineData.value) {
       if (!atlasIndex.size) indexLocalData(offlineData.value);
-      reportChoice('hybrid_badge_catalog', {source:'memory', size:atlasIndex.size});
+      logHybrid('hybrid_badge_catalog', {source:'memory', size:atlasIndex.size});
       return Promise.resolve();
     }
     if (badgeCatalogPromise) return badgeCatalogPromise;
     badgeCatalogPromise = prepare(false)
-      .then(data => { indexLocalData(data); reportChoice('hybrid_badge_catalog', {source:'fetch', size:atlasIndex.size}); refreshSourceBadges?.(); })
-      .catch(error => { reportChoice('hybrid_badge_catalog_failed', {message:String(error?.message||error)}); })
+      .then(data => { indexLocalData(data); logHybrid('hybrid_badge_catalog', {source:'fetch', size:atlasIndex.size}); refreshSourceBadges?.(); })
+      .catch(error => { logHybrid('hybrid_badge_catalog_failed', {message:String(error?.message||error)}); })
       .finally(() => { badgeCatalogPromise = null; });
     return badgeCatalogPromise;
   }
@@ -185,7 +328,7 @@ function createLocalAtlasController(d) {
     if (wanted === 'character_skin') delete s.character;
     else if (wanted === 'accessory') s.accessory = null;
     else if (wanted === 'emote') s.emote = [];
-    selection.value = s; save(); revision.value++; refreshSourceBadges?.();
+    selection.value = s; syncLocalMarks(); save(); refreshSourceBadges?.();
   }
   function installSourceBadges() {
     const doc = d.window.document;
@@ -204,34 +347,46 @@ function createLocalAtlasController(d) {
       html[data-wuwa-capture="transparent"] body{background:transparent!important}
     `;
     doc.head.append(style);
+    function applyBadge(card, source) {
+      const existing = Array.from(card.children || []).find(node => node.classList?.contains('wuwa-source-tags'));
+      if (!source.local && !source.official) {
+        existing?.remove();
+        card.removeAttribute('data-wuwa-marked');
+        return;
+      }
+      card.setAttribute('data-wuwa-marked', '');
+      const tags = existing || doc.createElement('span');
+      if (!existing) { tags.className='wuwa-source-tags'; tags.setAttribute('aria-hidden','true'); card.append(tags); }
+      const signature = `${source.local ? 'l' : ''}${source.official ? 'o' : ''}`;
+      if (tags.dataset.signature === signature) return;
+      tags.dataset.signature = signature;
+      tags.textContent = '';
+      if (source.local) { const tag=doc.createElement('span'); tag.className='wuwa-source-tag wuwa-source-tag--local'; tag.textContent='本地'; tags.append(tag); }
+      if (source.official) { const tag=doc.createElement('span'); tag.className='wuwa-source-tag wuwa-source-tag--official'; tag.textContent='官方'; tags.append(tag); }
+    }
     const observe = () => {
       if (disposed || typeof doc.querySelectorAll !== 'function') return;
-      const panelRoot = isPanelHash() || doc.querySelector?.('.panel-window-root, .atlas-module, .role-panel');
+      const panelRoot = isPanelHash() || doc.querySelector?.('.panel-window-root, .atlas-module, .role-panel, .atlas-item[data-wuwa-asset-id]');
       if (!panelRoot) return;
+      if (syncMarksFromStorage()) revision.value++;
+      const seen = new Set();
+      for (const card of doc.querySelectorAll('.atlas-item[data-wuwa-asset-id]')) {
+        const id = Number(card.getAttribute?.('data-wuwa-asset-id') || card.dataset?.wuwaAssetId || 0) || 0;
+        if (!id) continue;
+        const type = card.getAttribute?.('data-wuwa-asset-type') || card.dataset?.wuwaAssetType || '';
+        seen.add(card);
+        applyBadge(card, sourceFor(id, type));
+      }
       if (!atlasIndex.size) { ensureBadgeCatalog(); return; }
       for (const img of doc.querySelectorAll('img')) {
+        const card = img.closest?.('.atlas-item, .preset-item, [class*="atlas-item"], [class*="preset-item"]');
+        if (!card || seen.has(card)) continue;
         const raw = String(img.currentSrc || img.src || '').split(/[?#]/)[0];
-        const base = decodeURIComponent(raw.split('/').pop() || '').replace(/\.(png|webp|gif|jpe?g)$/i, '').toLowerCase();
+        const base = imageStem(raw);
         const row = atlasIndex.get(base);
         if (!row) continue;
-        const card = img.closest('.atlas-item, .preset-item, [class*="atlas-item"], [class*="preset-item"]');
-        if (!card) continue;
-        const source = sourceFor(row.asset_id, row.asset_type);
-        const existing = Array.from(card.children || []).find(node => node.classList?.contains('wuwa-source-tags'));
-        if (!source.local && !source.official) {
-          existing?.remove();
-          card.removeAttribute('data-wuwa-marked');
-          continue;
-        }
-        card.setAttribute('data-wuwa-marked', '');
-        const tags = existing || doc.createElement('span');
-        if (!existing) { tags.className='wuwa-source-tags'; tags.setAttribute('aria-hidden','true'); card.append(tags); }
-        const signature = `${source.local ? 'l' : ''}${source.official ? 'o' : ''}`;
-        if (tags.dataset.signature === signature) continue;
-        tags.dataset.signature = signature;
-        tags.textContent = '';
-        if (source.local) { const tag=doc.createElement('span'); tag.className='wuwa-source-tag wuwa-source-tag--local'; tag.textContent='本地'; tags.append(tag); }
-        if (source.official) { const tag=doc.createElement('span'); tag.className='wuwa-source-tag wuwa-source-tag--official'; tag.textContent='官方'; tags.append(tag); }
+        seen.add(card);
+        applyBadge(card, sourceFor(row.asset_id, row.asset_type));
       }
     };
     let scheduled = false;
@@ -240,13 +395,17 @@ function createLocalAtlasController(d) {
     let observerStarted = false;
     const startObserver = () => {
       if (observerStarted) return true;
-      if (!isPanelHash() && !doc.querySelector?.('.panel-window-root, .atlas-module, .role-panel')) return false;
+      if (!isPanelHash() && !doc.querySelector?.('.panel-window-root, .atlas-module, .role-panel, .atlas-item[data-wuwa-asset-id]')) return false;
       observerStarted = true;
       const Observer = d.window.MutationObserver;
       if (typeof Observer === 'function' && doc.documentElement) {
         badgeObserver = new Observer(schedule);
-        badgeObserver.observe(doc.documentElement, {childList:true,subtree:true,attributes:true,attributeFilter:['src','style']});
+        badgeObserver.observe(doc.documentElement, {childList:true,subtree:true,attributes:true,attributeFilter:['src','style','data-wuwa-asset-id','data-wuwa-asset-type']});
       }
+      onFocusBadge = () => schedule();
+      onVisibleBadge = () => { if (doc.visibilityState !== 'hidden') schedule(); };
+      d.window.addEventListener?.('focus', onFocusBadge);
+      doc.addEventListener?.('visibilitychange', onVisibleBadge);
       schedule();
       return true;
     };
@@ -271,7 +430,7 @@ function createLocalAtlasController(d) {
     const local = doc.createElement('button'); local.className='primary'; local.textContent='设为本地';
     local.onclick = () => {
       if (choose) { choose('local'); node.remove(); choiceNode=null; return; }
-      try { select(item, official, maxEmotes, {quiet:true}); setMark(item.asset_id, type, 'local', true); }
+      try { select(item, official, maxEmotes, {quiet:true}); }
       catch (error) { node.querySelector('p').textContent = error.message; return; }
       node.remove(); choiceNode=null;
     };
@@ -283,7 +442,11 @@ function createLocalAtlasController(d) {
         if (choose) { choose('official'); node.remove(); choiceNode=null; return; }
         if (typeof applyOfficial !== 'function') { node.querySelector('p').textContent='当前官方界面不支持设置外观'; return; }
         officialButton.disabled = true;
-        try { await applyOfficial(); setMark(item.asset_id, type, 'official', true); }
+        try {
+          await applyOfficial();
+          if (d.getOfficialUser?.()) syncOfficialMarks(d.getOfficialUser());
+          else setMark(item.asset_id, type, 'official', true);
+        }
         catch (error) { officialButton.disabled=false; node.querySelector('p').textContent=error?.message || String(error); return; }
         node.remove(); choiceNode=null;
       };
@@ -299,10 +462,17 @@ function createLocalAtlasController(d) {
     return true;
   }
   function beginPanelSelect(item, emit, forceOfficial = false) {
-    if (d.request) d.request('/diagnostic', {kind:'hybrid_panel_select',detail:{id:Number(item.asset_id)||0,type:normalizedType(item.asset_type),forceOfficial,hash:String(d.window.location?.hash||'')}}).catch(()=>{});
+    logHybrid('hybrid_panel_select', {id:Number(item.asset_id)||0,type:normalizedType(item.asset_type),forceOfficial,hash:String(d.window.location?.hash||'')});
     const opened = showAssetChoice(item, null, 8, null, choice => {
-      if (d.request) d.request('/diagnostic', {kind:'hybrid_panel_choice',detail:{id:Number(item.asset_id)||0,choice}}).catch(()=>{});
+      logHybrid('hybrid_panel_choice', {id:Number(item.asset_id)||0,choice});
       emit({...item, wuwa_choice:choice});
+      for (const delay of [120, 400, 1000, 2000]) {
+        d.window.setTimeout?.(() => {
+          if (disposed) return;
+          if (syncMarksFromStorage()) revision.value++;
+          refreshSourceBadges?.();
+        }, delay);
+      }
     }, forceOfficial);
     if (!opened) emit(item);
     return opened;
@@ -340,7 +510,9 @@ function createLocalAtlasController(d) {
   function restricted() { return false; }
   const save = () => {
     d.storage.setItem(KEY, JSON.stringify({enabled: enabled.value, desired: desiredLocal, selection: selection.value, favorites: favorites.value, marks: marks.value}));
-    d.storage.setItem(MARKS_KEY, JSON.stringify(marks.value));
+    const rawMarks = JSON.stringify(marks.value);
+    lastMarksRaw = rawMarks;
+    d.storage.setItem(MARKS_KEY, rawMarks);
     revision.value++;
   };
   // 宿主刚起来、或后台正在跑素材同步时，本机 HTTP 会有短暂不响应。
@@ -504,7 +676,8 @@ function createLocalAtlasController(d) {
       }
       const urls = [];
       collectUrls(catalog[row.asset_type]?.[row.asset_id], urls);
-      collectUrls(catalog[type]?.[id], urls);
+      const primaryId = petIdByAtlasId.get(id) || id;
+      collectUrls(catalog[type]?.[primaryId], urls);
       for (const url of urls) {
         const stem = imageStem(url);
         if (stem) atlasIndex.set(stem, row);
@@ -512,7 +685,7 @@ function createLocalAtlasController(d) {
     }
   }
   function mergeAtlas(officialAtlas) {
-    const rows = Array.isArray(officialAtlas) ? officialAtlas.slice() : [];
+    const rows = (Array.isArray(officialAtlas) ? officialAtlas : []).filter(row => !row?.wuwa_local_only);
     if (!enabled.value || !offlineData.value) return rows;
     const seen = new Set(rows.map(row => markKey(row.asset_id, row.asset_type)));
     for (const row of offlineData.value.atlas || []) {
@@ -612,7 +785,38 @@ function createLocalAtlasController(d) {
       return /_atlas$/.test(raw.slice(0, slash).toLowerCase()) ? row.atlas : row.preview;
     };
   }
-  function applyData(data) { registerModNames(data); indexLocalData(data); }
+  function applyData(data) {
+    registerModNames(data);
+    indexLocalData(data);
+    d.augmentCatalog?.(runtimeCatalog(data));
+  }
+  function reapplyCatalogOverlay() {
+    if (enabled.value && offlineData.value) d.augmentCatalog?.(runtimeCatalog(offlineData.value));
+  }
+  function pruneUnavailableSelection() {
+    const s = {...selection.value};
+    let changed = false;
+    if (s.character?.id && !assetMeta(s.character.id)) {
+      delete s.character;
+      changed = true;
+    }
+    if (s.accessory?.id && !assetMeta(s.accessory.id)) {
+      delete s.accessory;
+      changed = true;
+    }
+    if (Array.isArray(s.emote)) {
+      const kept = s.emote.filter(item => item?.id && assetMeta(item.id));
+      if (kept.length !== s.emote.length) {
+        s.emote = kept;
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+    selection.value = s;
+    syncLocalMarks();
+    save();
+    return true;
+  }
   async function applyMode(on) {
     if (on) {
       enabled.value = true;
@@ -622,6 +826,7 @@ function createLocalAtlasController(d) {
       applyData(data);
     } else {
       enabled.value = false;
+      d.clearCatalogOverlay?.();
       // Restore reactively; reloading would discard a running background driver.
     }
     revision.value++;
@@ -663,6 +868,7 @@ function createLocalAtlasController(d) {
     const all = new Set(), owned = new Set();
     if (!loading) for (const row of Array.isArray(rows) ? rows : []) {
       if (!Number.isSafeInteger(row.asset_id) || row.asset_id <= 0) continue;
+      if (row.wuwa_local_only === true || String(row.rarity || '').toUpperCase() === 'MOD' || Boolean(row.custom_pack_id) || row.asset_id >= 1000000000) continue;
       const key = String(row.asset_type) + ':' + row.asset_id;
       all.add(key);
       if (row.owned === true) owned.add(key);
@@ -671,7 +877,7 @@ function createLocalAtlasController(d) {
     return {collected, total, percent: total ? Math.max(0, Math.min(100, collected / total * 100)) : 0, loading};
   }
   function viewUser(official) {
-    if (!enabled.value) return official;
+    if (!enabled.value || bypassLocalView) return official;
     const s = selection.value;
     let character = s.character || official?.character || null;
     // A clean install has no account appearance yet. Pick a real cached
@@ -685,13 +891,19 @@ function createLocalAtlasController(d) {
       emote: (s.emote || official?.emote || []).filter(item => assetMeta(item.id)),
       role_id: String(assetMeta(character?.id)?.game_role_id || official?.role_id || '')};
   }
+  function runWithOfficialState(fn) {
+    bypassLocalView = true;
+    try { return fn(); }
+    finally { bypassLocalView = false; }
+  }
   function canSelect(item) {
     return Boolean(enabled.value && item?.asset_id);
   }
   function select(item, official, maxEmotes, options={}) {
     const user = viewUser(official), s = {...selection.value};
     const type = normalizedType(item.asset_type);
-    const id = resolveItemId(item.asset_id);
+    const rawId = Number(item.asset_id) || 0;
+    const id = resolveItemId(rawId);
     const meta = assetMeta(id);
     const asset = {id, name: item.asset_name || item.name || meta?.asset_name || meta?.file_name || ''};
     const itemRole = String(meta?.game_role_id || '');
@@ -712,7 +924,14 @@ function createLocalAtlasController(d) {
       if (!existing && list.length >= maxEmotes) throw new Error('已达到可选表情数量上限');
       s.emote = existing ? list.filter(e => e.id !== asset.id) : [...list, asset];
     }
-    selection.value = s; setMark(id, type, 'local', true); save(); refreshSourceBadges?.();
+    selection.value = s;
+    const stillSelected = type === 'character_skin'
+      ? Number(s.character?.id) === id
+      : type === 'accessory'
+        ? Number(s.accessory?.id) === id
+        : (s.emote || []).some(e => Number(e.id) === id);
+    syncLocalMarks(stillSelected && rawId && rawId !== id ? {[type]: [rawId]} : null);
+    save(); refreshSourceBadges?.();
     return selection.value;
   }
   function afterOfficialSelect(item, official, maxEmotes, applyOfficial) { return beginSelect(item, official, maxEmotes, applyOfficial); }
@@ -754,10 +973,19 @@ function createLocalAtlasController(d) {
   // 账号预设（官方那份）与本地预设并排展示：本地 id 为负，账号 id 为正。
   // 点账号那条＝把它的搭配复制成本地外观，账号本身不动、也不联网写回。
   let accountPresets = [];
+  function sameAssetIds(left, right) {
+    const a = Array.isArray(left) ? left.map(x => Number(x?.id) || 0).filter(Boolean).sort((x, y) => x - y) : [];
+    const b = Array.isArray(right) ? right.map(x => Number(x?.id) || 0).filter(Boolean).sort((x, y) => x - y) : [];
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  }
   function shouldCreateLocalPreset(official) {
     const user = viewUser(official);
     const assets = [user?.character, user?.accessory, ...(user?.emote || [])].filter(Boolean);
-    return assets.some(item => !officialOwned(item.id, assetMeta(item.id)?.asset_type));
+    if (assets.some(item => isModOrLocalOnlyItem({asset_id: item.id}) || !officialOwned(item.id, assetMeta(item.id)?.asset_type))) return true;
+    if (!official || typeof official !== 'object') return false;
+    if (Number(user?.character?.id || 0) !== Number(official.character?.id || 0)) return true;
+    if (Number(user?.accessory?.id || 0) !== Number(official.accessory?.id || 0)) return true;
+    return !sameAssetIds(user?.emote, official.emote);
   }
   function mergePresets(localRows, accountRows) {
     accountPresets = (Array.isArray(accountRows) ? accountRows : []).map(row => ({...row, wuwa_source: 'official'}));
@@ -784,7 +1012,7 @@ function createLocalAtlasController(d) {
       .map(id2 => ({id: id2, name: (Array.isArray(row.emotes) ? row.emotes : [])
         .find(item => Number(item.asset_id) === id2)?.asset_name || ''}));
     selection.value = {character, accessory, emote};
-    for (const item of [character, accessory, ...emote].filter(Boolean)) setMark(item.id, assetMeta(item.id)?.asset_type, 'official', true);
+    syncOfficialMarks({character, accessory, emote});
     save();
     return selection.value;
   }
@@ -806,13 +1034,13 @@ function createLocalAtlasController(d) {
     emote.forEach((e, i) => e.name = row.emotes[i].asset_name || e.name);
     const before = selection.value;
     selection.value = {character, accessory, emote};
-    for (const item of [character, accessory, ...emote].filter(Boolean)) setMark(item.id, assetMeta(item.id)?.asset_type, 'local', true);
-    try { save(); } catch (error) { selection.value = before; throw error; }
+    syncLocalMarks();
+    try { save(); } catch (error) { selection.value = before; syncLocalMarks(); throw error; }
   }
   function reorder(ids, official) {
     const list = viewUser(official).emote || [], byId = new Map(list.map(e => [e.id, e]));
     if (ids.length !== list.length || new Set(ids).size !== ids.length || ids.some(id => !byId.has(id))) return;
-    selection.value = {...selection.value, emote: ids.map(id => byId.get(id))}; save();
+    selection.value = {...selection.value, emote: ids.map(id => byId.get(id))}; syncLocalMarks(); save();
   }
   async function synthesizeDuplicates(kind='same-level') {
     const rows = bagRows();
@@ -865,7 +1093,7 @@ function createLocalAtlasController(d) {
     if (syncStatus.value.status === 'failed') throw new Error(syncStatus.value.error || '图鉴同步失败，原缓存保留');
     const status = await localRequest('/status');
     cacheReady.value = status.ready === true;
-    if(enabled.value){const data=await prepare(true);applyData(data);revision.value++;}
+    if(enabled.value){const data=await prepare(true);applyData(data);pruneUnavailableSelection();revision.value++;}
     if(syncStatus.value.result?.changed){
       const generation=String(syncStatus.value.result.assets_json_ts||syncStatus.value.checked_at);
       if(d.storage.getItem(CACHE_KEY)!==generation)d.storage.setItem(CACHE_KEY,generation);
@@ -876,7 +1104,11 @@ function createLocalAtlasController(d) {
   async function refreshCustomResources() {
     offlineData.value = null;
     d.storage.setItem(CACHE_KEY, 'mod:' + Date.now() + ':' + (++resourceRevision));
-    if (enabled.value && d.catalogConsumer !== false) applyData(await prepare(true));
+    d.emit?.('wuwa-custom-resources-updated', resourceRevision);
+    if (enabled.value && d.catalogConsumer !== false) {
+      applyData(await prepare(true));
+      pruneUnavailableSelection();
+    }
     revision.value++;
   }
   async function importCustomResources(path) {
@@ -894,6 +1126,7 @@ function createLocalAtlasController(d) {
   enabled.value = false;
   if (initial.marks && typeof initial.marks === 'object' && !Array.isArray(initial.marks)) marks.value = {...initial.marks, ...marks.value};
   selection.value = initial.selection || {}; favorites.value = initial.favorites || {};
+  syncLocalMarks();
   installLoadingFade();
   installModBadge();
   installSourceBadges();
@@ -908,16 +1141,18 @@ function createLocalAtlasController(d) {
   d.window.addEventListener('storage', event => {
     if(disposed)return;
     if(event.key===CACHE_KEY){
-      if(enabled.value&&d.catalogConsumer!==false)prepare(true).then(applyData).then(()=>{revision.value++;}).catch(d.onError);
+      if(enabled.value&&d.catalogConsumer!==false)prepare(true).then(applyData).then(()=>{pruneUnavailableSelection();revision.value++;}).catch(d.onError);
       else offlineData.value=null;
       return;
     }
     if(event.key===MARKS_KEY){
+      lastMarksRaw=d.storage.getItem(MARKS_KEY);
       marks.value=readMarks();
       revision.value++;
       refreshSourceBadges?.();
       return;
     }
+    if(event.key===XFORM_KEY){transforms.value=readTransforms();revision.value++;return;}
     if(event.key===PRESET_KEY){presets.value=readPresets();revision.value++;return;}
     if (event.key !== KEY) return;
     const state = read();
@@ -926,6 +1161,30 @@ function createLocalAtlasController(d) {
     // Serialize mode changes so a stale async enable cannot overwrite a later disable.
     pending = pending.catch(() => {}).then(() => applyMode(state.enabled === true)).catch(d.onError);
     revision.value++;
+  });
+  const unlistenHandles = [];
+  const watchEvent = (name, handler) => {
+    if (typeof d.listen !== 'function') return;
+    try { unlistenHandles.push(d.listen(name, handler)); } catch {}
+  };
+  watchEvent('wuwa-marks-updated', () => {
+    if (disposed) return;
+    if (syncMarksFromStorage()) revision.value++;
+    refreshSourceBadges?.();
+  });
+  watchEvent('wuwa-accessory-transform', event => {
+    if (disposed) return;
+    const p = event?.payload;
+    transforms.value = p && typeof p === 'object' && !Array.isArray(p) ? p : readTransforms();
+    revision.value++;
+  });
+  watchEvent('wuwa-custom-resources-updated', () => {
+    if (disposed) return;
+    if (enabled.value && d.catalogConsumer !== false) {
+      prepare(true).then(applyData).then(() => { pruneUnavailableSelection(); revision.value++; }).catch(d.onError);
+    } else {
+      offlineData.value = null;
+    }
   });
   async function loadModBase() {
     try { const info = await localRequest('/asset-base'); if (info?.base) modBase.value = String(info.base); } catch {}
@@ -975,12 +1234,22 @@ function createLocalAtlasController(d) {
     return status;
   });
   let overlayPromise = null;
-  function startOverlay() {
-    if (overlayPromise) return overlayPromise;
+  function startOverlay(force = false) {
+    if (force) desiredLocal = true;
+    if (overlayPromise) {
+      return force ? overlayPromise.then(ok => (ok || enabled.value) ? true : activateLocalIfReady()) : overlayPromise;
+    }
     overlayPromise = Promise.resolve()
-      .then(() => desiredLocal && cacheReady.value ? activateLocalIfReady() : false)
+      .then(() => (force || (desiredLocal && cacheReady.value)) ? activateLocalIfReady() : false)
       .finally(() => { overlayPromise = null; });
     return overlayPromise;
+  }
+  async function applyLocalChoice(item, official, maxEmotes) {
+    if (!enabled.value) {
+      const ok = await startOverlay(true);
+      if (!ok && !enabled.value) throw new Error(cacheProgressMessage());
+    }
+    return select(item, official, maxEmotes);
   }
   if (d.window.setInterval) {
     let checkingStatus = false;
@@ -1007,13 +1276,13 @@ function createLocalAtlasController(d) {
       finally { checkingStatus = false; }
     }, d.catalogConsumer===false?15000:1500);
   }
-  function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);if(gameTimer!==null)d.window.clearInterval?.(gameTimer);badgeObserver?.disconnect();badgeObserver=null;choiceNode?.remove();}
-  return {enabled, busy, selection, favorites, marks, revision, ready, cacheReady, setEnabled, inventory, viewUser, select, mergeAtlas, canSelect,
-    favorite, reorder, prepare, offlineData, get assetsHost() { return resolveAssetsHost(); }, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, assetUrl, request: localRequest, dispose,
+  function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);if(gameTimer!==null)d.window.clearInterval?.(gameTimer);if(onFocusBadge)d.window.removeEventListener?.('focus',onFocusBadge);if(onVisibleBadge)d.window.document?.removeEventListener?.('visibilitychange',onVisibleBadge);badgeObserver?.disconnect();badgeObserver=null;choiceNode?.remove();for(const handle of unlistenHandles){Promise.resolve(handle).then(fn=>{if(typeof fn==='function')fn();}).catch(()=>{});}}
+  return {enabled, busy, selection, favorites, marks, revision, ready, cacheReady, setEnabled, inventory, viewUser, runWithOfficialState, select, applyLocalChoice, mergeAtlas, canSelect,
+    favorite, reorder, prepare, offlineData, get assetsHost() { return resolveAssetsHost(); }, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, reapplyCatalogOverlay, assetUrl, request: localRequest, dispose,
     presetList, createLocalPreset, deleteLocalPreset, applyLocalPreset, collectionProgress,
     mergePresets, applyPreset,
-    ownedBag, accessoryTransform, setAccessoryTransform, resetAccessoryTransform, activateLocalIfReady, startOverlay,
-    officialOwned, sourceFor, markFor, setMark, beginSelect, beginPanelSelect, afterOfficialSelect, clearLocal, shouldCreateLocalPreset,
+    ownedBag, currentAccessoryInfo, accessoryTransform, setAccessoryTransform, resetAccessoryTransform, activateLocalIfReady, startOverlay,
+    officialOwned, isModOrLocalOnlyItem, canApplyOfficial, sourceFor, markFor, setMark, syncLocalMarks, syncOfficialMarks, beginSelect, beginPanelSelect, afterOfficialSelect, clearLocal, shouldCreateLocalPreset,
     synthesizeDuplicates, capture, setCapture, applyCaptureStyle,
     restricted,normalCumulative:()=>d.getAccountCumulative?.()??0,normalPending:()=>d.getAccountPending?.()??0};
 }

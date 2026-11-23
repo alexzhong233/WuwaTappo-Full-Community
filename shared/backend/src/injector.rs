@@ -560,6 +560,22 @@ pub fn patch_atlas_guards(
     )
 }
 
+pub fn patch_apply_catalog(rec: &mut PatchRecorder, text: &str) -> Result<String, String> {
+    let re = Regex::new(
+        r"(?s)(function applyCatalog\([^)]*\)\s*\{[^}]*?notifyAppearanceCatalogReady\(\))",
+    )
+    .unwrap();
+    let Some(caps) = re.captures(text) else {
+        return Err("applyCatalog anchor missing".into());
+    };
+    let anchor = &caps[1];
+    rec.replace(
+        text,
+        anchor,
+        &format!("{anchor}, window.__WUWA_LOCAL_ATLAS__?.reapplyCatalogOverlay?.()"),
+    )
+}
+
 fn prepare_mac_shared(rec: &mut PatchRecorder, shared: &str) -> Result<String, String> {
     let mut out = shared.to_owned();
     for name in [
@@ -628,16 +644,53 @@ fn controller_init(platform: Platform, config: &Value, controller: &str) -> Resu
     ).unwrap();
     Ok(format!(
         "{controller}\nconst localAtlasRoute = ['/', '/panel'].includes((window.location.hash || '#/').slice(1).split('?')[0]);\n\
+const __wuwaInjectedAssets = new Set(), __wuwaInjectedAtlases = new Set();\n\
+let __wuwaAugmenting = false;\n\
 let localAtlasController = null;\n\
 if (localAtlasRoute) try {{\n\
  localAtlasController = createLocalAtlasController({{\n\
 ref, window, storage: localStorage, {transport}, normalizeAtlasList, resolvePetAssetIdFromAppearanceId, getAppearanceAssetById,\n\
 apiBase: {api_base}, synthesisAtlas, synthesisAtlasSame, refreshBag: getBagList,\n\
+getOfficialUser: () => globalStore.userInfo,\n\
+emit: (event, payload) => invoke('plugin:event|emit', {{event, payload}}).catch(() => {{}}),\n\
+listen: (event, cb) => (typeof listen$1 === 'function' ? listen$1 : listen)(event, cb),\n\
 setGameMode: enabled => invoke('plugin:event|emit',{{event:'cat-settings-game-mode',payload:{{enabled:Boolean(enabled)}}}}).catch(()=>{{}}),\n\
 snapshotCatalog: () => ({{assets: appearanceAssetCatalog.value, atlases: appearanceAtlasCatalog.value, host: loadedAssetsHost, ts: loadedAssetsJsonTs}}),\n\
 getAccountCumulative: () => globalStore.userInfo ? isFrozenClickCount(globalStore.serverClickTotal) ? globalStore.serverClickTotal : clampClickCountSum(globalStore.serverClickTotal+globalStore.localClickCount) : parseSafeClickCount(globalStore.localClickCount),\n\
 getAccountPending: () => parseSafeClickCount(globalStore.localClickCount),\n\
 catalogConsumer: localAtlasRoute,\n\
+augmentCatalog: payload => {{\n\
+ if (__wuwaAugmenting) return;\n\
+ __wuwaAugmenting = true;\n\
+ try {{\n\
+  const nextAssets = new Map(appearanceAssetCatalog.value), nextAtlases = new Map(appearanceAtlasCatalog.value);\n\
+  for (const id of __wuwaInjectedAssets) nextAssets.delete(id);\n\
+  for (const id of __wuwaInjectedAtlases) nextAtlases.delete(id);\n\
+  __wuwaInjectedAssets.clear(); __wuwaInjectedAtlases.clear();\n\
+  if (payload) {{\n\
+   const maps = buildCatalogMaps(payload);\n\
+   for (const [id, entry] of maps.assets) {{ if (!nextAssets.has(id)) {{ nextAssets.set(id, entry); __wuwaInjectedAssets.add(id); }} }}\n\
+   for (const [id, entry] of maps.atlases) {{ if (!nextAtlases.has(id)) {{ nextAtlases.set(id, entry); __wuwaInjectedAtlases.add(id); }} }}\n\
+  }}\n\
+  appearanceAssetCatalog.value = nextAssets;\n\
+  appearanceAtlasCatalog.value = nextAtlases;\n\
+  notifyAppearanceCatalogReady();\n\
+ }} finally {{ __wuwaAugmenting = false; }}\n\
+}},\n\
+clearCatalogOverlay: () => {{\n\
+ if (__wuwaAugmenting) return;\n\
+ __wuwaAugmenting = true;\n\
+ try {{\n\
+  if (!__wuwaInjectedAssets.size && !__wuwaInjectedAtlases.size) return;\n\
+  const nextAssets = new Map(appearanceAssetCatalog.value), nextAtlases = new Map(appearanceAtlasCatalog.value);\n\
+  for (const id of __wuwaInjectedAssets) nextAssets.delete(id);\n\
+  for (const id of __wuwaInjectedAtlases) nextAtlases.delete(id);\n\
+  __wuwaInjectedAssets.clear(); __wuwaInjectedAtlases.clear();\n\
+  appearanceAssetCatalog.value = nextAssets;\n\
+  appearanceAtlasCatalog.value = nextAtlases;\n\
+  notifyAppearanceCatalogReady();\n\
+ }} finally {{ __wuwaAugmenting = false; }}\n\
+}},\n\
 applyOfflineCatalog: (payload, host) => applyCatalog(buildCatalogMaps(payload), host, Date.now()),\n\
 restoreCatalog: saved => applyCatalog({{assets: saved.assets, atlases: saved.atlases}}, saved.host, saved.ts),\n\
 onError: error => console.error('[local-gallery]', error)\n\
@@ -894,6 +947,7 @@ pub fn integrate_build(
     shared = patch_display_version(&shared, &community_version, &official_version)?;
     shared = patch_invoke_guard(&mut rec, &shared, true)?;
     shared = patch_atlas_guards(&mut rec, &shared, "")?;
+    shared = patch_apply_catalog(&mut rec, &shared)?;
 
     let controller = render_frontend_module(repo_root, "local_atlas_controller.js", platform)?;
     let init = controller_init(platform, &config, &controller)?;
@@ -1023,10 +1077,31 @@ pub fn integrate_build(
             "if(!__skipLocalSelectChoice && {select_param}.wuwa_choice){{
  const __choice={select_param}.wuwa_choice;
  try{{__lg.request('/diagnostic',{{kind:'hybrid_main_marker',detail:{{id:{select_param}.asset_id,choice:__choice,type:{select_param}.asset_type}}}}).catch(()=>{{}});}}catch{{}}
- if(__choice==='local'){{try{{__lg.select({select_param},{store}.userInfo,{max_emotes});if(!__lg.enabled.value)__lg.startOverlay?.();__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}
- __lg.setMark({select_param}.asset_id,{select_param}.asset_type,'official',true);
+ if(__choice==='local'){{try{{await __lg.applyLocalChoice({select_param},{store}.userInfo,{max_emotes});__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}
+ if(__lg.canApplyOfficial && !__lg.canApplyOfficial({select_param})){{{show_toast_sym}('仅本地或 Mod 外观不能设为官方外观');return;}}
  __skipLocalSelectChoice=true;
- try{{return {select_name}({select_param});}}finally{{__skipLocalSelectChoice=false;}}
+ let __officialPromise;
+ const __u={store}.userInfo,__savedRole={role},__savedAcc={accessory};
+ if(__lg.enabled.value&&__u){{
+  const __rn={getchar_sym}(__u);
+  {role}=__rn?__rn.replace(/\\.png$/i,''):'';
+  {accessory}={getaccess_sym}(__u)||null;
+ }}
+ try{{
+  __officialPromise=__lg.runWithOfficialState?__lg.runWithOfficialState(()=>({select_name}({select_param}))):{select_name}({select_param});
+ }}finally{{
+  if(__lg.enabled.value&&__u){{
+   {role}=__savedRole;
+   {accessory}=__savedAcc;
+  }}
+ }}
+ try{{return await __officialPromise;}}
+ finally{{
+  __skipLocalSelectChoice=false;
+  if({store}.userInfo)__lg.syncOfficialMarks?.({store}.userInfo);
+  else __lg.setMark({select_param}.asset_id,{select_param}.asset_type,'official',true);
+  if(__lg.enabled.value)__localRefresh();
+ }}
 }}
 if(__lg.enabled.value && !__skipLocalSelectChoice){{
  if(__lg.beginSelect({select_param},{store}.userInfo,{max_emotes},()=>{{
@@ -1057,7 +1132,7 @@ if(__lg.enabled.value && !__skipLocalSelectChoice){{
         &mut edits,
         favorite_name,
         format!(
-            "if(__lg.enabled.value){{__lg.favorite({favorite_param}.assetId,{favorite_param}.is_collect===1);return;}}"
+            "if(__lg.enabled.value && !__lg.canApplyOfficial?.({{asset_id:{favorite_param}.assetId}})){{__lg.favorite({favorite_param}.assetId,{favorite_param}.is_collect===1);return;}}"
         ),
     )?;
 
@@ -1145,6 +1220,33 @@ if(__lg.enabled.value && !__skipLocalSelectChoice){{
     );
     edits.push(Edit::new(snapshot.start, snapshot.end, snap_text));
 
+    let report_heartbeat = require_import(&mi, "reportHeartbeat")?;
+    let heartbeat_fn = function_for(
+        &component_functions,
+        &main_orig,
+        &format!("{report_heartbeat}({{"),
+    )?;
+    let apply_preset_fn = named(
+        &component_functions,
+        m_raw
+            .cases
+            .get("apply-preset")
+            .ok_or("缺少 case apply-preset")?,
+    )?;
+    let official_emotes_fn = function_for(
+        &component_functions,
+        &main_orig,
+        &format!("return {getemotes_sym}({store}.userInfo).map("),
+    )?;
+    let official_only_spans = [
+        (snapshot.start, snapshot.end),
+        (heartbeat_fn.start, heartbeat_fn.end),
+        (create_preset_fn.start, create_preset_fn.end),
+        (apply_preset_fn.start, apply_preset_fn.end),
+        (official_emotes_fn.start, official_emotes_fn.end),
+        (select_fn.start, select_fn.end),
+    ];
+
     for meaning in [
         "getUserCharacterAssetId",
         "getUserCharacterAssetName",
@@ -1159,7 +1261,10 @@ if(__lg.enabled.value && !__skipLocalSelectChoice){{
             Regex::new(&format!(r"{}\({}\.userInfo\)", regex::escape(alias), regex::escape(store)))
                 .unwrap();
         for m in call_re.find_iter(&main_orig) {
-            if !(snapshot.start <= m.start() && m.start() < snapshot.end) {
+            if !official_only_spans
+                .iter()
+                .any(|&(start, end)| start <= m.start() && m.start() < end)
+            {
                 edits.push(Edit::new(
                     m.start(),
                     m.end(),
@@ -1189,6 +1294,7 @@ function __localRefresh(){{
 }},{{immediate:true}});
 {watch_sym}([__lg.selection,__lg.revision,{appear_catalog_sym}],()=>{{if(__lg.enabled.value)__localRefresh();}});
 {watch_sym}([()=>{role},()=>{accessory},()=>{host}],()=>{{if(__lg.enabled.value)__localRefresh();}});
+{watch_sym}(()=>({store}.userInfo),u=>{{if(u)__lg.syncOfficialMarks?.(u);}},{{immediate:true,deep:true}});
 "#,
         act_fn = activity_loader.name,
         bag_fn = bag_loader.name,
@@ -1483,28 +1589,129 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
             ),
         ));
     }
-    let panel_o_re = Regex::new(r"function\s+o\(C\)\s*\{[\s\S]{0,240}?W\s*=\s*a\(O\);").unwrap();
-    if let Some(caps) = panel_o_re.captures(&panel_orig) {
-        let insert = caps.get(0).unwrap().end();
-        panel_edits.push(Edit::new(
-            insert,
-            insert,
-            "if(W&&window.__WUWA_PENDING_CHOICE__)W.wuwa_choice=window.__WUWA_PENDING_CHOICE__;",
-        ));
-    }
-    let atlas_sanitize_re = Regex::new(
-        r"(?s)(function a\(C\) \{[\s\S]*?star_level: C\.star_level)(\s*\}\s*:\s*null)",
+    let card_component = find_component(p_raw, "BagAtlasItem")?;
+    let card_text = &panel_orig[card_component.start..card_component.end];
+    let card_props_re = Regex::new(
+        r#"(?s)("atlas-item--unowned":\s*!!([A-Za-z0-9_$]+)\.unowned\s*\},\s*[A-Za-z0-9_$]+\.value\]\]\),\s*)(onClick:\s*[A-Za-z0-9_$]+)"#,
     )
     .unwrap();
-    if let Some(caps) = atlas_sanitize_re.captures(&panel_orig) {
-        let insert = caps.get(1).unwrap().end();
-        panel_edits.push(Edit::new(insert, insert, ",wuwa_choice: C.wuwa_choice"));
+    let card_props_caps: Vec<_> = card_props_re.captures_iter(card_text).collect();
+    if card_props_caps.len() != 1 {
+        return Err(format!(
+            "BagAtlasItem props anchor count unexpected: {}",
+            card_props_caps.len()
+        ));
     }
-    let minified_sanitize_anchor = "star_level:C.star_level}:null";
-    for (idx, _) in panel_orig.match_indices(minified_sanitize_anchor) {
-        let insert = idx + minified_sanitize_anchor.len() - "}:null".len();
-        panel_edits.push(Edit::new(insert, insert, ",wuwa_choice:C.wuwa_choice"));
+    let card_props_name = &card_props_caps[0][2];
+    let card_onclick_pos = card_component.start + card_props_caps[0].get(3).unwrap().start();
+    panel_edits.push(Edit::new(
+        card_onclick_pos,
+        card_onclick_pos,
+        format!(
+            "\"data-wuwa-asset-id\": {card_props_name}.item?.asset_id, \"data-wuwa-asset-type\": {card_props_name}.item?.asset_type, "
+        ),
+    ));
+    let card_flag_re = Regex::new(r"\]\s*,\s*2\)\)").unwrap();
+    let card_flag_matches: Vec<_> = card_flag_re.find_iter(card_text).collect();
+    if card_flag_matches.len() != 1 {
+        return Err(format!(
+            "BagAtlasItem patchFlag anchor count unexpected: {}",
+            card_flag_matches.len()
+        ));
     }
+    let card_flag = card_flag_matches[0];
+    panel_edits.push(Edit::new(
+        card_component.start + card_flag.start(),
+        card_component.start + card_flag.end(),
+        r#"], 10, ["data-wuwa-asset-id", "data-wuwa-asset-type"]))"#,
+    ));
+
+    let atlas_guard_re = Regex::new(
+        r"if\s*\(\s*!([A-Za-z0-9_$]+)\.owned\s*\|\|\s*!([A-Za-z0-9_$]+)\.asset_id\s*\)\s*return\s+null;",
+    )
+    .unwrap();
+    let atlas_guard_caps: Vec<_> = atlas_guard_re.captures_iter(atlas_text).collect();
+    if atlas_guard_caps.len() != 1 {
+        return Err(format!(
+            "MainPanelAtlasTab owned guard count unexpected: {}",
+            atlas_guard_caps.len()
+        ));
+    }
+    let guard_m = atlas_guard_caps[0].get(0).unwrap();
+    panel_edits.push(Edit::new(
+        atlas_component.start + guard_m.start(),
+        atlas_component.start + guard_m.end(),
+        format!(
+            "if ((!{}.owned && {}.wuwa_choice !== \"local\" && window.__WUWA_PENDING_CHOICE__ !== \"local\") || !{}.asset_id) return null;",
+            &atlas_guard_caps[0][1], &atlas_guard_caps[0][1], &atlas_guard_caps[0][2]
+        ),
+    ));
+
+    let atlas_star_re = Regex::new(
+        r"(?s)(star_level:\s*([A-Za-z0-9_$]+)\.star_level)(\s*\}\s*:\s*null)",
+    )
+    .unwrap();
+    let atlas_star_caps: Vec<_> = atlas_star_re.captures_iter(atlas_text).collect();
+    if atlas_star_caps.len() != 1 {
+        return Err(format!(
+            "MainPanelAtlasTab star_level sanitize anchor count unexpected: {}",
+            atlas_star_caps.len()
+        ));
+    }
+    let star_insert = atlas_component.start + atlas_star_caps[0].get(1).unwrap().end();
+    panel_edits.push(Edit::new(
+        star_insert,
+        star_insert,
+        format!(
+            ", wuwa_choice: {}.wuwa_choice || window.__WUWA_PENDING_CHOICE__",
+            &atlas_star_caps[0][2]
+        ),
+    ));
+
+    let atlas_emit_re = Regex::new(
+        r#"([A-Za-z0-9_$]+)\s*&&\s*([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\)\s*&&\s*([A-Za-z0-9_$]+)\("select-appearance",\s*([A-Za-z0-9_$]+)\)"#,
+    )
+    .unwrap();
+    let atlas_emit_caps: Vec<_> = atlas_emit_re.captures_iter(atlas_text).collect();
+    if atlas_emit_caps.len() != 1 {
+        return Err(format!(
+            "MainPanelAtlasTab emit select-appearance count unexpected: {}",
+            atlas_emit_caps.len()
+        ));
+    }
+    let emit_m = atlas_emit_caps[0].get(0).unwrap();
+    panel_edits.push(Edit::new(
+        atlas_component.start + emit_m.start(),
+        atlas_component.start + emit_m.end(),
+        format!(
+            "{w} && ({w}.wuwa_choice === \"local\" || window.__WUWA_PENDING_CHOICE__ === \"local\" || {h}({c})) && {emit}(\"select-appearance\", {w2})",
+            w = &atlas_emit_caps[0][1],
+            h = &atlas_emit_caps[0][2],
+            c = &atlas_emit_caps[0][3],
+            emit = &atlas_emit_caps[0][4],
+            w2 = &atlas_emit_caps[0][5]
+        ),
+    ));
+
+    let module_skin_re =
+        Regex::new(r#"if\s*\(\s*([A-Za-z0-9_$]+)\.asset_type\s*===\s*"character_skin"\s*\)"#)
+            .unwrap();
+    let module_skin_caps: Vec<_> = module_skin_re.captures_iter(module_text).collect();
+    if module_skin_caps.len() != 1 {
+        return Err(format!(
+            "MainModulePanel character_skin guard count unexpected: {}",
+            module_skin_caps.len()
+        ));
+    }
+    let mod_m = module_skin_caps[0].get(0).unwrap();
+    panel_edits.push(Edit::new(
+        module_component.start + mod_m.start(),
+        module_component.start + mod_m.end(),
+        format!(
+            "if ({}.asset_type === \"character_skin\" && {}.wuwa_choice !== \"local\")",
+            &module_skin_caps[0][1], &module_skin_caps[0][1]
+        ),
+    ));
     let preset_add_re = Regex::new(
         r#"\{\s*"preset-item--add":\s*([A-Za-z0-9_$]+)\.kind\s*===\s*"add"\s*\}"#,
     )
@@ -1552,11 +1759,31 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         ),
     ));
 
+    let bag_emit_re = Regex::new(
+        r#"([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\)\s*&&\s*([A-Za-z0-9_$]+)\("select-appearance",\s*([A-Za-z0-9_$]+)\)"#,
+    )
+    .unwrap();
+    let bag_emit_caps: Vec<_> = bag_emit_re.captures_iter(bag_text).collect();
+    if bag_emit_caps.len() != 1 {
+        return Err(format!(
+            "MainPanelBagTab emit select-appearance count unexpected: {}",
+            bag_emit_caps.len()
+        ));
+    }
+    let bag_emit_m = bag_emit_caps[0].get(0).unwrap();
+    panel_edits.push(Edit::new(
+        bag_component.start + bag_emit_m.start(),
+        bag_component.start + bag_emit_m.end(),
+        format!(
+            "({arg}?.wuwa_choice === \"local\" || window.__WUWA_PENDING_CHOICE__ === \"local\" || {check}({arg})) && {emit}(\"select-appearance\", {arg2})",
+            check = &bag_emit_caps[0][1],
+            arg = &bag_emit_caps[0][2],
+            emit = &bag_emit_caps[0][3],
+            arg2 = &bag_emit_caps[0][4]
+        ),
+    ));
+
     let mut panel = apply_edits(&panel_orig, panel_edits)?;
-    panel = panel.replace(
-        "function o(C){const O=C,W=a(O);",
-        "function o(C){const O=C,W=a(O);if(W&&O.wuwa_choice)W.wuwa_choice=O.wuwa_choice;",
-    );
     let panel_accessory_alias = require_import(&pi, "getUserAccessoryOffset")?;
     if let Ok(patched) = patch_accessory_transform(&mut rec, &panel, panel_accessory_alias) {
         panel = patched;
@@ -1611,7 +1838,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     let fav_item = fav_caps[3].to_owned();
     panel.insert_str(
         fav_pos,
-        &format!("__lg.enabled.value ? __lg.favorite({fav_item}.item.asset_id,!{fav_flag}.value) : "),
+        &format!("__lg.enabled.value && !__lg.canApplyOfficial?.({{...{fav_item}.item,unowned:{fav_item}.unowned}}) ? __lg.favorite({fav_item}.item.asset_id,!{fav_flag}.value) : "),
     );
 
     // Phase 2: Desktop assistant + platform hooks (assistant_core + WindowsHooks)
@@ -1759,6 +1986,21 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         &format!(
             "{store}.isLoggedIn && (!__lg.enabled.value || __lg.officialOwned?.(e.id, 'emote')) && {}(e.id);",
             &sync_call_caps[1]
+        ),
+    )?;
+    let report_call_caps = Regex::new(&format!(
+        r"{}\(\{{\s*itemId:\s*e\.id,\s*itemRarity:\s*[A-Za-z0-9_$]+\?\.rarity\s*\}}\);",
+        regex::escape(report_sticker)
+    ))
+    .unwrap()
+    .captures(emote_text)
+    .ok_or("original sticker telemetry contract changed")?;
+    main = rec.replace(
+        &main,
+        &report_call_caps[0],
+        &format!(
+            "(!__lg.enabled.value || __lg.officialOwned?.(e.id, 'emote')) && {}",
+            &report_call_caps[0]
         ),
     )?;
 
@@ -2214,7 +2456,7 @@ mod tests {
             "no wrapper here"
         );
 
-        let guard_src = "async function ensureAppearanceAssetCatalog(e) {\n}\nfunction applyCatalog(e, t, n) {\n}\nfunction atlas() {\n}\nthis.instance.interceptors.request.use(t => {\n";
+        let guard_src = "async function ensureAppearanceAssetCatalog(e) {\n}\nfunction applyCatalog(e, t, n) {\n  appearanceAssetCatalog.value = e.assets, notifyAppearanceCatalogReady()\n}\nfunction atlas() {\n}\nthis.instance.interceptors.request.use(t => {\n";
         let guard_out = patch_atlas_guards(&mut rec, guard_src, "\n PLATFORM_EXTRA").unwrap();
         assert!(guard_out.contains("api/common/activity-config"));
         assert!(guard_out.contains("PLATFORM_EXTRA"));
@@ -2225,6 +2467,8 @@ mod tests {
                 .count(),
             1
         );
+        let apply_out = patch_apply_catalog(&mut rec, &guard_out).unwrap();
+        assert!(apply_out.contains("notifyAppearanceCatalogReady(), window.__WUWA_LOCAL_ATLAS__?.reapplyCatalogOverlay?.()"));
 
         let taskbar_out = patch_taskbar_default(
             &mut rec,

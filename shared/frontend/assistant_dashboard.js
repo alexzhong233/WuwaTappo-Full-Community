@@ -28,7 +28,7 @@ function assistantUi(window) {
     .wt-console input[type=checkbox]{appearance:none;flex-shrink:0;width:38px;height:22px;background:#d7d3ca;border:0;border-radius:15px;position:relative;cursor:pointer}.wt-console input[type=checkbox]:after{content:'';display:block;background:white;box-shadow:0 1px 3px #0002;width:16px;height:16px;border-radius:50%;position:absolute;top:3px;left:3px;transition:transform .15s}.wt-console input[type=checkbox]:checked{background:#b8965a}.wt-console input[type=checkbox]:checked:after{transform:translateX(16px)}
     .wt-console input[type=number]{font:inherit;color:var(--ink);width:112px;border:1px solid var(--line);padding:6px 10px;border-radius:8px;background:#faf9f7}.wt-chart{display:flex;gap:14px;align-items:flex-end;height:180px;margin:20px 0 8px}.wt-column{flex:1;min-width:0;text-align:center;font-size:11px;color:var(--muted)}.wt-bar{margin:5px auto;background:#ddc292;border-radius:5px 5px 2px 2px;width:70%}.wt-empty{padding:28px 10px;text-align:center;color:var(--muted);font-size:12px}
     .wt-console footer{padding:10px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:11px;color:var(--muted);background:#faf9f6;flex-shrink:0}.wt-console footer button{font-size:11px;padding:4px 10px;min-height:28px}.wt-notice{font-size:12px;color:#9c6c32;padding:6px 0;min-height:20px}
-    .wt-transform-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-top:12px}.wt-transform-field{display:grid;gap:5px;font-size:12px;color:var(--muted)}.wt-transform-field input{width:100%}
+    .wt-transform-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-top:12px}.wt-transform-field{display:grid;gap:5px;font-size:12px;color:var(--muted)}.wt-transform-field input{width:100%}.wt-transform-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.wt-transform-head .wt-row{gap:4px}.wt-transform-field .wt-transform-num{width:68px;padding:3px 6px;font-size:12px;text-align:right}.wt-mod-apply{margin-top:5px;width:100%;font-size:11px;padding:3px 6px;min-height:24px}
     .wt-versions{margin-top:10px;border-top:1px solid var(--line)}
     .wt-notes{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
     .wt-notes h3{margin-bottom:6px}
@@ -149,17 +149,43 @@ function createAssistantDashboard(d){
       const modeActions=el('div',undefined,hero,'wt-controls');
       button('检查并同步官方图鉴',modeActions,async()=>{try{await d.atlas.syncCache(true);notice.textContent='官方图鉴与本地素材已同步';}catch(e){notice.textContent=e.message;}},'wt-primary');
       const xform=card();el('h3','挂饰位置 / 大小 / 角度',xform);
-      el('p','只修改本机显示，不影响账号联机外观。选择本地挂饰后拖动滑杆即可。',xform,'wt-muted');
+      el('p','只修改本机显示，不影响账号联机外观。佩戴官方或本地挂饰后均可拖动滑杆或输入数值微调。',xform,'wt-muted');
+      const xformInfo=el('p','当前挂饰：读取中…',xform,'wt-muted');xformInfo.style.marginTop='6px';
       const xformControls={};const xformRow=el('div',undefined,xform,'wt-transform-grid');
-      for(const [key,label,min,max,step] of [['dx','水平位置',-400,400,1],['dy','垂直位置',-400,400,1],['scale','大小',0.3,3,0.01],['rotate','角度',-180,180,1]]){
-        const field=el('label',undefined,xformRow,'wt-transform-field');el('span',label,field);
-        const input=el('input',undefined,field);input.type='range';input.min=min;input.max=max;input.step=step;
-        input.oninput=()=>{try{d.atlas.setAccessoryTransform?.({[key]:Number(input.value)});}catch(e){notice.textContent=e.message;}};
-        xformControls[key]=input;
+      for(const [key,label,unit,rMin,rMax,step,nMin,nMax] of [['dx','水平位置','px',-200,200,1,-400,400],['dy','垂直位置','px',-200,200,1,-400,400],['scale','大小','x',0.3,3,0.01,0.3,3],['rotate','角度','°',-180,180,1,-180,180]]){
+        const field=el('label',undefined,xformRow,'wt-transform-field');
+        const head=el('div',undefined,field,'wt-transform-head');
+        el('span',label,head);
+        const numBox=el('div',undefined,head,'wt-row');
+        const num=el('input',undefined,numBox,'wt-transform-num');num.type='number';num.min=nMin;num.max=nMax;num.step=step;num.setAttribute('aria-label',label+'数值');
+        el('span',unit,numBox,'wt-muted');
+        const range=el('input',undefined,field);range.type='range';range.min=rMin;range.max=rMax;range.step=step;range.setAttribute('aria-label',label);
+        const applyVal=raw=>{
+          if(raw===''||raw===undefined)return;
+          const val=Number(raw);
+          if(!Number.isFinite(val))return;
+          try{const saved=d.atlas.setAccessoryTransform?.({[key]:val});if(saved){range.value=Math.max(rMin,Math.min(rMax,saved[key]));if(doc.activeElement!==num)num.value=saved[key];}}catch(e){notice.textContent=e.message;}
+        };
+        range.oninput=()=>{const val=Number(range.value);num.value=String(val);applyVal(val);};
+        num.oninput=()=>applyVal(num.value);
+        xformControls[key]={range,num,rMin,rMax};
       }
       const xformActions=el('div',undefined,xform,'wt-controls');
-      button('恢复默认',xformActions,()=>{try{d.atlas.resetAccessoryTransform?.();paintTransform();}catch(e){notice.textContent=e.message;}});
-      function paintTransform(){const row=d.atlas.accessoryTransform?.(null)||{dx:0,dy:0,scale:1,rotate:0};for(const key of Object.keys(xformControls))xformControls[key].value=row[key];}
+      const resetXformBtn=button('恢复默认',xformActions,()=>{try{d.atlas.resetAccessoryTransform?.();paintTransform();}catch(e){notice.textContent=e.message;}});
+      function paintTransform(){
+        const hasInfo=typeof d.atlas.currentAccessoryInfo==='function';
+        const info=hasInfo?d.atlas.currentAccessoryInfo():null;
+        const hasAccessory=!hasInfo||Boolean(info?.id);
+        if(hasInfo)xformInfo.textContent=info?.id?('当前挂饰：'+(info.name||'#'+info.id)):'当前未佩戴挂饰，请先在背包或图鉴佩戴一个挂饰';
+        resetXformBtn.disabled=!hasAccessory;
+        const row=d.atlas.accessoryTransform?.(null)||{dx:0,dy:0,scale:1,rotate:0};
+        for(const [key,ctrl] of Object.entries(xformControls)){
+          ctrl.range.disabled=!hasAccessory;
+          ctrl.num.disabled=!hasAccessory;
+          if(doc.activeElement!==ctrl.range)ctrl.range.value=Math.max(ctrl.rMin,Math.min(ctrl.rMax,Number(row[key])||0));
+          if(doc.activeElement!==ctrl.num)ctrl.num.value=row[key];
+        }
+      }
       const tools=card();el('h3','已安装的资源包',tools);const summary=el('p','正在读取…',tools,'wt-muted');
       const actions=el('div',undefined,tools,'wt-controls');
       const importPack=button('导入 Mod ZIP',actions,importArchive,'wt-primary');button('重新扫描',actions,()=>refreshPacks());
@@ -178,6 +204,23 @@ function createAssistantDashboard(d){
           await refreshPacks();
         }catch(e){notice.textContent='导入失败：'+e.message;}
         finally{importPack.disabled=false;}
+      }
+      async function applyModItem(pack,item){
+        try{
+          const data=d.atlas.offlineData?.value||await d.atlas.prepare?.(false);
+          const entry=(data?.atlas||[]).find(row=>row.custom_pack_id===pack.id&&row.custom_item_id===item.id);
+          if(!entry){notice.textContent='未在本地图鉴目录找到该素材：'+item.name;return;}
+          const payloadItem={...entry,wuwa_choice:'local'};
+          if(window.__TAURI_INTERNALS__?.invoke){
+            await window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'cat-panel-action',payload:{type:'select-appearance',item:payloadItem}});
+          }else if(typeof d.atlas.applyLocalChoice==='function'){
+            await d.atlas.applyLocalChoice(payloadItem,null,8);
+          }else{
+            throw new Error('当前环境不支持直接切换外观');
+          }
+          notice.textContent='已设为本地：'+item.name;
+          window.setTimeout(()=>{if(!closed)paintTransform();},250);
+        }catch(e){notice.textContent='应用失败：'+(e?.message||e);}
       }
       async function refreshPacks(){
         try{
@@ -199,6 +242,7 @@ function createAssistantDashboard(d){
               if(src){const img=el('img',undefined,cell,'wt-mod-thumb');img.src=src;img.alt=item.name;img.loading='lazy';}
               else el('div',undefined,cell,'wt-mod-thumb');
               el('span',item.name,cell);el('em',item.type==='character'?'角色':item.type==='accessory'?'挂饰':'表情',cell,'wt-mod-type');
+              button('设为本地',cell,()=>applyModItem(pack,item),'wt-mod-apply');
             }
           }
           paintMode();
