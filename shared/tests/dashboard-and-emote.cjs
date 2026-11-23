@@ -133,7 +133,6 @@ async function testDashboard(platform) {
       auto_emote_random: true,
       auto_emote_slots: 31,
       threshold: 1000,
-      remember_monitor: false,
       prerelease_updates: false,
       speed: 5,
     },
@@ -145,6 +144,17 @@ async function testDashboard(platform) {
     },
   };
 
+  const synthKinds = [];
+  const perfCalls = [];
+  const roomLayoutCalls = [];
+  const arrangeCalls = [];
+  const clearPositionCalls = [];
+  const toggleHiddenCalls = [];
+  const transformCalls = [];
+  const transforms = [
+    { id: '88', name: 'official_hat.png', dx: 12, dy: -4, scale: 1.2, rotate: 15 },
+    { id: '99', name: 'local_star.png', dx: 0, dy: 8, scale: 0.9, rotate: -10 },
+  ];
   let communityMode = 'error';
   let installMode = 'error';
   let installStatusOverride = null;
@@ -154,13 +164,68 @@ async function testDashboard(platform) {
     busy: { value: false },
     cacheReady: { value: true },
     assistant: { emoteStats: {} },
+    panelState: { value: { roomMembers: [{ id: 101, nickname: '小猫甲' }, { id: 102, nickname: '小猫乙' }] } },
+    officialUser: { value: { accessory: { id: 88, name: 'official_hat.png' } } },
+    selection: { value: { accessory: null } },
+    roomLayout: { value: { positions: {}, hidden: {}, scale: 1, opacity: 1, nameScale: 1, arrangeMode: 'horizontal' } },
+    perf: { value: { fpsCap: 60, idlePause: true, reduceMotion: false, hideMainPet: false } },
+    listAccessoryTransforms: () => transforms.map(row => ({ ...row })),
+    accessoryTransform(id) {
+      const targetId = id === undefined || id === null
+        ? String(atlas.officialUser.value.accessory?.id ?? '')
+        : String(id);
+      return transforms.find(row => String(row.id) === targetId) || null;
+    },
+    setAccessoryTransform(patch, id) {
+      transformCalls.push({ patch, id });
+      const targetId = id === undefined || id === null
+        ? String(atlas.officialUser.value.accessory?.id ?? '')
+        : String(id);
+      const row = transforms.find(item => String(item.id) === targetId);
+      if (row) Object.assign(row, patch);
+      else transforms.push({ id: targetId, ...patch });
+    },
+    resetAccessoryTransform(id) {
+      transformCalls.push({ reset: true, id });
+    },
+    deleteAccessoryTransform(id) {
+      transformCalls.push({ delete: true, id });
+      const idx = transforms.findIndex(row => String(row.id) === String(id));
+      if (idx !== -1) transforms.splice(idx, 1);
+    },
+    setRoomLayout(patch) {
+      roomLayoutCalls.push(patch);
+      Object.assign(atlas.roomLayout.value, patch);
+    },
+    toggleRoomMemberHidden(id) {
+      toggleHiddenCalls.push(id);
+      const hidden = atlas.roomLayout.value.hidden;
+      hidden[id] = !hidden[id];
+    },
+    isRoomMemberHidden(id) {
+      return !!atlas.roomLayout.value.hidden[id];
+    },
+    requestRoomArrange(mode) {
+      arrangeCalls.push(mode);
+      atlas.roomLayout.value.arrangeMode = mode;
+    },
+    clearRoomPositions() {
+      clearPositionCalls.push(true);
+      atlas.roomLayout.value.positions = {};
+    },
+    setPerf(patch) {
+      perfCalls.push(patch);
+      Object.assign(atlas.perf.value, patch);
+    },
     prepare: async () => {},
     setEnabled: async v => { atlas.enabled.value = v; },
+    synthesizeDuplicates: async kind => { synthKinds.push(kind); return { count: 3, batches: 1, groups: 1 }; },
     async request(route, body) {
       requests.push({ route, body });
       if (route === '/community/version') return { current: '1.3.2-beta.3' };
       if (route === '/official/update-check') return { latestVersion: '1.0.4', currentVersion: '1.0.4', updateAvailable: false };
       if (route === '/custom/status') return { packs: [], atlas_count: 10, asset_count: 20 };
+      if (route === '/diagnostic/synth/list') return { entries: [{ time: '2026-11-23T08:00:00Z', entry: { kind: 'same-level', consumed: 5, batches: 1, durationMs: 42 } }] };
       if (route === '/update/status') {
         statusCalls++;
         if (installStatusOverride) {
@@ -205,19 +270,62 @@ async function testDashboard(platform) {
 
   await flush();
   await flush();
-  for (const key of ['rewards', 'daily', 'rooms', 'mods', 'update', 'settings', 'overview']) {
-    dash.showTab(key);
-    await flush();
+  const cardWithTitle = title => doc.body.findAll(n =>
+    n.className.split(/\s+/).includes('wt-card') &&
+    n.findAll(h => h.tagName === 'H3' && h._text === title).length > 0,
+  )[0];
+
+  // Six-tab console: top nav labels are the new canonical set.
+  const nav = doc.body.findAll(n => n.tagName === 'NAV')[0];
+  assert.ok(nav, 'console nav exists');
+  assert.deepEqual(
+    nav.findAll(n => n.tagName === 'BUTTON').map(n => n._text),
+    ['概览', '自动助手', '统计与记录', '联机房间', '外观与 Mod', '系统与更新'],
+    'top nav exposes the six reorganized tabs',
+  );
+
+  // Legacy tab keys keep working through the alias router.
+  for (const [alias, canonical] of [
+    ['rewards', 'records'], ['daily', 'records'], ['settings', 'automation'], ['update', 'system'],
+  ]) {
+    dash.showTab(alias);
+    assert.equal(dash.currentTab(), canonical, alias + ' resolves to ' + canonical);
   }
 
-  // Test `update` tab: no ReferenceError on fields, no stuck 检查更新 button, prerelease toggle re-checks
+  // Overview: live status pills and KPI/progress/recent cards, but no speed picker.
+  dash.showTab('overview');
+  await flush();
+  const statCards = doc.body.findAll(n => n.className.split(/\s+/).includes('wt-stat'));
+  assert.equal(statCards.length, 4, 'overview shows four KPI stat cards');
+  assert.deepEqual(
+    statCards.map(c => c.findAll(n => n.className === 'wt-label')[0]?._text),
+    ['可用点数', '累计点数', '本次发送', '本次开箱'],
+    'overview KPI labels',
+  );
+  const chestProgressCard = cardWithTitle('宝箱进度');
+  assert.ok(chestProgressCard && chestProgressCard.textContent.includes('宝箱1') && chestProgressCard.textContent.includes('宝箱2'), '宝箱进度 card lists both chests');
+  assert.ok(cardWithTitle('最近获得'), '最近获得 card exists on overview');
+  const pills = doc.body.findAll(n => n.className.split(/\s+/).includes('wt-pill'));
+  assert.equal(pills.length, 3, 'overview shows three live status pills');
+  assert.ok(pills.some(p => p.textContent.includes('点击速度')), 'speed status pill exists');
+  assert.ok(pills.some(p => p.textContent.includes('自动开箱')), 'chest status pill exists');
+  assert.ok(pills.some(p => p.textContent.includes('打字表情')), 'emote status pill exists');
+  assert.equal(doc.body.querySelector('.wt-speeds'), null, 'overview must not host the speed picker');
+
+  // System tab (`update` alias): version/update behavior plus perf rendering and local assets.
   dash.showTab('update');
+  assert.equal(dash.currentTab(), 'system');
   await flush();
   await flush();
   const checkBtn = doc.body.findAll(n => n.tagName === 'BUTTON' && n._text === '检查更新')[0];
   const preBox = doc.body.querySelector('[aria-label="包含预发布版本"]');
   assert.ok(checkBtn, '检查更新 button exists');
   assert.ok(preBox, '包含预发布版本 toggle exists');
+  assert.deepEqual(
+    checkBtn.parentNode.children.filter(n => n.tagName === 'BUTTON').map(n => n._text),
+    ['打开 GitHub Releases', '打开官方桌宠下载页', '检查更新'],
+    'update action row keeps GitHub / official site / check order',
+  );
 
   await checkBtn.onclick();
   assert.equal(checkBtn.disabled, false, '检查更新 button re-enables after error response');
@@ -279,11 +387,53 @@ async function testDashboard(platform) {
   assert.equal(installFallbackBtn.parentNode.hidden, false, 'manual GitHub fallback shown on update tab when background install fails');
   installStatusOverride = null;
 
-  // Test `settings` tab: no Accessibility button, frequency input, 1-5 slot picker, live emote hint
+  // Perf card: FPS presets and render toggles go through atlas.setPerf.
+  const perfCard = cardWithTitle('性能与省内存渲染');
+  assert.ok(perfCard, '性能与省内存渲染 card lives on the system tab');
+  const perfCheckboxes = doc.body.findAll(n => n.tagName === 'INPUT' && n.type === 'checkbox' && n.getAttribute('data-perf-setting') === 'true');
+  assert.equal(perfCheckboxes.length, 3, 'system tab exposes exactly three render toggles');
+  assert.deepEqual(
+    perfCheckboxes.map(n => n.getAttribute('aria-label')),
+    ['空闲停帧', '精简动画效果', '停止渲染桌面主角'],
+    'perf toggles are idle pause, reduced motion and hide main pet',
+  );
+  const fps30 = perfCard.findAll(n => n.tagName === 'BUTTON' && n._text === '30 FPS（省电）')[0];
+  assert.ok(fps30, '30 FPS preset exists');
+  await fps30.onclick();
+  assert.deepEqual({ ...perfCalls.at(-1) }, { fpsCap: 30 }, '30 FPS preset calls setPerf with fpsCap 30');
+  assert.ok(fps30.className.includes('wt-primary'), '30 FPS preset becomes primary after selection');
+  assert.equal(atlas.perf.value.fpsCap, 30, 'atlas.perf reflects the selected FPS cap');
+  const perfBox = label => perfCard.findAll(n => n.tagName === 'INPUT' && n.getAttribute('data-perf-setting') === 'true' && n.getAttribute('aria-label') === label)[0];
+  const idlePauseBox = perfBox('空闲停帧');
+  const hidePetBox = perfBox('停止渲染桌面主角');
+  assert.ok(idlePauseBox && hidePetBox, 'perf checkbox toggles exist');
+  idlePauseBox.checked = false;
+  await idlePauseBox.onchange();
+  assert.deepEqual({ ...perfCalls.at(-1) }, { idlePause: false }, '空闲停帧 toggle calls setPerf with idlePause false');
+  assert.equal(atlas.perf.value.idlePause, false, 'atlas.perf reflects idlePause off');
+  hidePetBox.checked = true;
+  await hidePetBox.onchange();
+  assert.deepEqual({ ...perfCalls.at(-1) }, { hideMainPet: true }, '停止渲染桌面主角 toggle calls setPerf with hideMainPet true');
+  assert.equal(atlas.perf.value.hideMainPet, true, 'atlas.perf reflects hideMainPet on');
+
+  const assetsCard = cardWithTitle('本机素材资源');
+  assert.ok(assetsCard, '本机素材资源 card lives on the system tab');
+  assert.equal(assetsCard.findAll(n => n.tagName === 'BUTTON' && n._text === '检查并同步素材缓存').length, 1, '本机素材资源 offers the cache-sync button');
+
+  // Automation tab (`settings` alias): emote triggers, balance policy and batch synthesis.
   dash.showTab('settings');
   await flush();
+  assert.equal(dash.currentTab(), 'automation');
   assert.equal(doc.body.querySelector('[data-accessibility-btn]'), null, 'Accessibility permission button must be removed');
   assert.equal(requests.some(r => r.route === '/accessibility/request'), false);
+
+  const speedGrid = doc.body.querySelector('.wt-speeds');
+  assert.ok(speedGrid, 'speed presets live on automation, not overview');
+  assert.deepEqual(
+    speedGrid.findAll(n => n.tagName === 'BUTTON').map(b => b.findAll(s => s.tagName === 'STRONG')[0]?._text),
+    ['轻缓 · 1 次/秒', '标准 · 5 次/秒', '快速 · 10 次/秒'],
+    'three speed presets are listed with their labels',
+  );
 
   const freqInput = doc.body.querySelector('[aria-label="自动表情平均间隔"]');
   assert.ok(freqInput, 'auto_emote_interval input exists');
@@ -347,6 +497,170 @@ async function testDashboard(platform) {
   assert.ok(nextHint.textContent.includes('已触发 4 次'), nextHint.textContent);
   assert.ok(nextHint.textContent.includes('8 次'), nextHint.textContent);
 
+  // Automation exposes exactly the five supported toggles; perf toggles now live on system.
+  const settingCheckboxes = doc.body.findAll(n => n.tagName === 'INPUT' && n.type === 'checkbox');
+  const settingToggles = settingCheckboxes.filter(n => n.getAttribute('data-perf-setting') !== 'true');
+  const toggleLabels = settingToggles.map(n => String(n.getAttribute('aria-label') || ''));
+  assert.equal(settingToggles.length, 5, 'automation page exposes only the five automation toggles');
+  assert.deepEqual(
+    toggleLabels,
+    ['后台自动点击', '按可用点数自动启停', '自动开宝箱', '打字自动表情', 'Alt+1～5 快捷表情'],
+    'automation toggles are enabled / balance / chest / emote / hotkeys',
+  );
+  assert.ok(
+    !toggleLabels.some(label => /游戏模式|显示器|记住/.test(label)),
+    'auto_game_mode / remember_monitor toggles must be removed',
+  );
+
+  const enabledToggle = doc.body.querySelector('[aria-label="后台自动点击"]');
+  const balanceToggle = doc.body.querySelector('[aria-label="按可用点数自动启停"]');
+  assert.ok(enabledToggle && balanceToggle, 'enabled and auto_click_balance toggles exist');
+  enabledToggle.checked = true;
+  await enabledToggle.onchange();
+  assert.equal(state.settings.enabled, true);
+  balanceToggle.checked = true;
+  await balanceToggle.onchange();
+  assert.equal(state.settings.auto_click_balance, true);
+  enabledToggle.checked = false;
+  await enabledToggle.onchange();
+  assert.equal(state.settings.enabled, false);
+  assert.equal(state.settings.auto_click_balance, true, 'turning off enabled keeps auto_click_balance decoupled');
+
+  state.settings.enabled = true;
+  state.runtime.balance_paused = true;
+  await refreshLoop.fn();
+  const badgeNode = doc.body.findAll(n => n.className.split(/\s+/).includes('wt-badge'))[0];
+  assert.ok(badgeNode, 'status badge exists');
+  assert.equal(badgeNode.textContent, '点数达上限 · 待机', 'badge shows the balance-paused idle state');
+  state.settings.enabled = false;
+  state.runtime.balance_paused = false;
+
+  const synthCard = cardWithTitle('背包批量合成');
+  assert.ok(synthCard, '背包批量合成 card exists');
+  const sameLevelBtn = synthCard.findAll(n => n.tagName === 'BUTTON' && n._text === '批量同阶合成（5 合 1）')[0];
+  const upgradeBtn = synthCard.findAll(n => n.tagName === 'BUTTON' && n._text === '批量升阶合成（10 合 1）')[0];
+  assert.ok(sameLevelBtn && upgradeBtn, 'both batch synthesis buttons live inside the card');
+  await sameLevelBtn.onclick();
+  await upgradeBtn.onclick();
+  assert.deepEqual(synthKinds, ['same-level', 'upgrade'], 'batch synthesis buttons call the right modes');
+
+  // Automation search: filters setting rows and the 背包批量合成 card.
+  const searchInput = doc.body.querySelector('[data-settings-search="true"]');
+  assert.ok(searchInput, 'settings search input exists');
+  assert.equal(cardWithTitle('快捷键速览'), undefined, '快捷键速览 card removed');
+  const automationRow = doc.body.findAll(n => n.className === 'wt-setting' && n.textContent.includes('后台自动点击'))[0];
+  assert.ok(automationRow, '后台自动点击 setting row exists');
+  const clearSearchBtn = doc.body.findAll(n => n.tagName === 'BUTTON' && n._text === '清空')[0];
+  assert.ok(clearSearchBtn, 'search clear button exists');
+  assert.equal(clearSearchBtn.disabled, true, 'clear button starts disabled while the search box is empty');
+  searchInput.value = '合成';
+  await searchInput.oninput();
+  assert.equal(synthCard.hidden, false, '背包批量合成 stays visible when searching 合成');
+  assert.equal(automationRow.hidden, true, 'unrelated setting rows hide when searching 合成');
+  searchInput.value = '不存在关键字xyz';
+  await searchInput.oninput();
+  const searchEmpty = doc.body.findAll(n => n.className === 'wt-empty' && n.textContent.includes('未找到匹配'))[0];
+  assert.ok(searchEmpty, 'empty search hint exists');
+  assert.equal(searchEmpty.hidden, false, 'empty search hint is shown when nothing matches');
+  assert.equal(synthCard.hidden, true, '背包批量合成 hides when nothing matches');
+  await clearSearchBtn.onclick();
+  assert.equal(synthCard.hidden, false, 'clearing the search restores the synth card');
+  assert.equal(automationRow.hidden, false, 'clearing the search restores setting rows');
+  assert.equal(searchEmpty.hidden, true, 'clearing the search hides the empty hint');
+  assert.equal(clearSearchBtn.disabled, true, 'clear button is disabled again after clearing');
+
+  // Synth log: first click loads /diagnostic/synth/list and renders entries, second click collapses it.
+  const synthLogBtn = doc.body.querySelector('[data-synth-log-btn="true"]');
+  assert.ok(synthLogBtn, 'synth log button exists');
+  const synthLog = doc.body.querySelector('.wt-synth-log');
+  assert.ok(synthLog, 'synth log container exists');
+  assert.equal(synthLog.hidden, true, 'synth log starts collapsed');
+  await synthLogBtn.onclick();
+  await flush();
+  assert.ok(requests.some(r => r.route === '/diagnostic/synth/list'), 'opening the synth log requests /diagnostic/synth/list');
+  assert.equal(synthLog.hidden, false, 'synth log is visible after opening');
+  assert.ok(synthLog.textContent.includes('同阶合成'), synthLog.textContent);
+  assert.ok(synthLog.textContent.includes('消耗 5 个'), synthLog.textContent);
+  await synthLogBtn.onclick();
+  assert.equal(synthLog.hidden, true, 'second click collapses the synth log');
+
+  // Records tab: 7-day statistics and the real chest reward log.
+  dash.showTab('records');
+  await flush();
+  assert.equal(dash.currentTab(), 'records');
+  assert.ok(cardWithTitle('最近 7 天统计'), 'records tab has the 最近 7 天统计 card');
+  assert.ok(cardWithTitle('真实开箱获得记录'), 'records tab has the 真实开箱获得记录 card');
+
+  // Rooms tab: member layout card, hiding members and layout sliders/arrange buttons.
+  dash.showTab('rooms');
+  await flush();
+  await flush();
+  const layoutCard = doc.body.findAll(n => n.className.split(/\s+/).includes('wt-card') && n.findAll(h => h.tagName === 'H3' && h._text === '联机角色样式与布局').length > 0)[0];
+  assert.ok(layoutCard, '联机角色样式与布局 card exists');
+  assert.ok(layoutCard.textContent.includes('小猫甲'), 'room member 小猫甲 is listed');
+  assert.ok(layoutCard.textContent.includes('小猫乙'), 'room member 小猫乙 is listed');
+  const hideMemberBtn = layoutCard.findAll(n => n.tagName === 'BUTTON' && n._text === '隐藏')[0];
+  assert.ok(hideMemberBtn, 'first room member has a 隐藏 button');
+  await hideMemberBtn.onclick();
+  assert.deepEqual(toggleHiddenCalls, [101], 'hiding the first member calls toggleRoomMemberHidden(101)');
+  assert.ok(layoutCard.findAll(n => n.tagName === 'BUTTON' && n._text === '显示').length > 0, 'hidden member button switches to 显示');
+  for (const [label, next] of [['联机角色大小', 1.5], ['联机角色透明度', 0.6], ['联机昵称大小', 1.3]]) {
+    const slider = layoutCard.findAll(n => n.tagName === 'INPUT' && n.getAttribute('aria-label') === label)[0];
+    assert.ok(slider, label + ' slider exists');
+    slider.value = next;
+    await slider.oninput();
+  }
+  assert.deepEqual(
+    roomLayoutCalls.map(call => ({ ...call })),
+    [{ scale: 1.5 }, { opacity: 0.6 }, { nameScale: 1.3 }],
+    'layout sliders call setRoomLayout with the changed key',
+  );
+  await layoutCard.findAll(n => n.tagName === 'BUTTON' && n._text === '横向排列')[0].onclick();
+  await layoutCard.findAll(n => n.tagName === 'BUTTON' && n._text === '纵向排列')[0].onclick();
+  await layoutCard.findAll(n => n.tagName === 'BUTTON' && n._text === '重置位置')[0].onclick();
+  assert.deepEqual(arrangeCalls, ['horizontal', 'vertical'], 'arrange buttons request horizontal and vertical layouts');
+  assert.equal(clearPositionCalls.length, 1, '重置位置 calls clearRoomPositions');
+
+  // Mods tab: transform editor, saved list, resource packs, OBS green screen and panel look.
+  dash.showTab('mods');
+  await flush();
+  await flush();
+  assert.equal(dash.currentTab(), 'mods');
+  assert.equal(doc.body.findAll(n => n.tagName === 'BUTTON' && n._text === '检查并同步官方图鉴').length, 0, 'mods tab must not duplicate 检查并同步官方图鉴');
+  const xformCard = cardWithTitle('挂饰位置 / 大小 / 角度');
+  assert.ok(xformCard, '挂饰位置 / 大小 / 角度 card exists');
+  assert.equal(xformCard.findAll(n => n.tagName === 'INPUT' && n.type === 'range').length, 4, 'four transform sliders exist');
+  const packsCard = cardWithTitle('已安装的资源包');
+  assert.ok(packsCard, '已安装的资源包 card exists');
+  assert.equal(packsCard.findAll(n => n.tagName === 'BUTTON' && n._text === '导入 Mod ZIP').length, 1, 'resource pack import button exists');
+  const obsCard = cardWithTitle('OBS 桌宠绿幕');
+  assert.ok(obsCard, 'OBS 桌宠绿幕 card lives on mods');
+  assert.deepEqual(obsCard.findAll(n => n.tagName === 'BUTTON').map(n => n._text), ['关闭', '开启绿幕'], 'OBS card only offers off/green');
+  assert.ok(!obsCard.findAll(n => n.tagName === 'BUTTON').some(n => n._text.includes('透明')), 'OBS card no longer offers 透明');
+  const lookCard = cardWithTitle('面板外观');
+  assert.ok(lookCard, '面板外观 card exists');
+  assert.notEqual(lookCard, obsCard, '面板外观 is a separate card');
+  assert.equal(lookCard.findAll(n => n.tagName === 'BUTTON' && n._text === '清除背景图').length, 1, '面板外观 card offers 清除背景图');
+  const accessoryLabel = doc.body.findAll(n => n.tagName === 'P' && n.textContent.includes('当前挂饰：'))[0];
+  assert.ok(accessoryLabel, 'current accessory label exists');
+  assert.ok(accessoryLabel.textContent.includes('当前挂饰：official_hat.png'), accessoryLabel.textContent);
+  const savedSection = doc.body.findAll(n => n.className === 'wt-notes' && n.textContent.includes('已保存的挂饰微调'))[0];
+  assert.ok(savedSection, '已保存的挂饰微调 section exists');
+  const savedRows = () => savedSection.findAll(n => n.className === 'wt-version');
+  assert.equal(savedRows().length, 2, 'saved accessory transform list has two entries');
+  assert.ok(savedSection.textContent.includes('official_hat.png') && savedSection.textContent.includes('local_star.png'), 'saved list shows both accessories');
+  const editTransformBtn = savedSection.findAll(n => n.tagName === 'BUTTON' && n._text === '加载编辑')[0];
+  assert.ok(editTransformBtn, '加载编辑 button exists');
+  await editTransformBtn.onclick();
+  assert.ok(accessoryLabel.textContent.includes('编辑中：'), accessoryLabel.textContent);
+  assert.ok(accessoryLabel.textContent.includes('official_hat.png'), accessoryLabel.textContent);
+  const deleteTransformBtn = savedSection.findAll(n => n.tagName === 'BUTTON' && n._text === '删除')[0];
+  assert.ok(deleteTransformBtn, '删除 button exists');
+  await deleteTransformBtn.onclick();
+  assert.ok(transformCalls.some(call => call.delete === true && String(call.id) === '88'), 'deleting calls deleteAccessoryTransform(88)');
+  assert.equal(savedRows().length, 1, 'deleted accessory transform is removed from the list');
+  assert.equal(savedSection.textContent.includes('official_hat.png'), false, 'deleted entry disappears from the saved list');
+
   dash.close();
 }
 
@@ -386,7 +700,6 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(platform) {
     auto_emote_random: true,
     auto_emote_slots: 31,
     threshold: 1000,
-    remember_monitor: false,
   };
   const atlas = {
     enabled: { value: false },
@@ -515,6 +828,56 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(platform) {
     );
   }
 
+  // 7. Global Alt+1~5 hotkeys trigger without DOM focus, support both Windows (Digit2) and macOS ('3'), and dedup with DOM keydown.
+  settings.emote_hotkeys = false;
+  await stepDue();
+  const beforeDisabledHotkey = sentEmotes.length;
+  assert.equal(assistant.onGlobalKey('AltLeft', true), false);
+  assert.equal(assistant.onGlobalKey('Digit2', true), false);
+  assistant.onGlobalKey('Digit2', false);
+  assistant.onGlobalKey('AltLeft', false);
+  assert.equal(sentEmotes.length, beforeDisabledHotkey, 'global hotkeys respect emote_hotkeys = false');
+
+  settings.emote_hotkeys = true;
+  await stepDue();
+  assert.equal(assistant.onGlobalKey('Digit2', true), false, 'pressing Digit2 without Alt held does not fire');
+  assert.equal(assistant.onGlobalKey('AltLeft', true), false);
+  assert.equal(assistant.onGlobalKey('Digit2', true), true, 'global AltLeft+Digit2 triggers slot 2 without window focus');
+  assert.equal(sentEmotes.at(-1).id, 102);
+  let prevented = false;
+  listeners.get('keydown')?.({
+    code: 'Digit2',
+    altKey: true,
+    repeat: false,
+    preventDefault() { prevented = true; },
+    stopPropagation() {},
+  });
+  assert.equal(prevented, false, 'immediate DOM keydown within 120ms is deduplicated');
+  assert.equal(sentEmotes.length, beforeDisabledHotkey + 1, 'no duplicate emote sent');
+  assistant.onGlobalKey('Digit2', false);
+  assistant.onGlobalKey('AltLeft', false);
+
+  now += 200;
+  assistant.onGlobalKey('AltRight', true);
+  assert.equal(assistant.onGlobalKey('3', true), true, 'macOS style global AltRight+3 triggers slot 3');
+  assert.equal(sentEmotes.at(-1).id, 103);
+  assistant.onGlobalKey('3', false);
+  assistant.onGlobalKey('AltRight', false);
+
+  now += 200;
+  assistant.onGlobalKey('Alt', true);
+  assert.equal(assistant.onGlobalKey('Num1', true), true, 'Windows rdev Alt+Num1 triggers slot 1');
+  assert.equal(sentEmotes.at(-1).id, 101);
+  assistant.onGlobalKey('Num1', false);
+  assistant.onGlobalKey('Alt', false);
+
+  now += 200;
+  assistant.onGlobalKey('AltGr', true);
+  assert.equal(assistant.onGlobalKey('Kp3', true), true, 'Windows rdev AltGr+Kp3 triggers slot 3');
+  assert.equal(sentEmotes.at(-1).id, 103);
+  assistant.onGlobalKey('Kp3', false);
+  assistant.onGlobalKey('AltGr', false);
+
   await stepDue();
   const lastTick = requests.filter(r => r.route === '/assistant/tick').at(-1);
   assert.deepEqual([...lastTick.body.emote.slots], ['slot1', 'slot2', 'slot3', '', '']);
@@ -522,12 +885,234 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(platform) {
   assert.equal(clickListener, null, 'click watcher cleaned up on pagehide');
 }
 
+async function testDriverBalanceHybridAndSoftUpdate(platform) {
+  const source = renderFrontend('desktop_assistant.js', platform);
+  let now = 500000;
+  const tasks = [];
+  const intervals = [];
+  const requests = [];
+  const storage = new Map();
+  const listeners = new Map();
+  let f24Presses = 0;
+  let roomListener = null;
+
+  function makeNode(tag) {
+    return {
+      tagName: String(tag).toUpperCase(),
+      type: '',
+      className: '',
+      style: {},
+      children: [],
+      parentNode: null,
+      _text: '',
+      get textContent() {
+        return this.children.length ? this.children.map(c => c.textContent).join('') : this._text;
+      },
+      set textContent(v) {
+        this._text = String(v ?? '');
+        this.children = [];
+      },
+      append(...items) {
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          item.parentNode = this;
+          this.children.push(item);
+        }
+      },
+      remove() {
+        if (!this.parentNode) return;
+        this.parentNode.children = this.parentNode.children.filter(c => c !== this);
+        this.parentNode = null;
+      },
+      setAttribute() {},
+      getAttribute() { return null; },
+      findAll(predicate, out = []) {
+        if (predicate(this)) out.push(this);
+        for (const child of this.children) child.findAll(predicate, out);
+        return out;
+      },
+      querySelector(selector) {
+        if (selector.startsWith('.') && !selector.includes(' ')) {
+          return this.findAll(n => n.className.split(/\s+/).includes(selector.slice(1)))[0] || null;
+        }
+        return null;
+      },
+    };
+  }
+
+  const body = makeNode('body');
+  const doc = {
+    body,
+    createElement: makeNode,
+    querySelector: selector => body.querySelector(selector),
+  };
+
+  const win = {
+    document: doc,
+    localStorage: {
+      getItem: key => (storage.has(key) ? storage.get(key) : null),
+      setItem: (key, value) => { storage.set(key, String(value)); },
+      removeItem: key => { storage.delete(key); },
+    },
+    addEventListener(name, fn) { listeners.set(name, fn); },
+    removeEventListener(name) { listeners.delete(name); },
+    setTimeout(fn, ms) {
+      const task = { id: tasks.length + 1, at: now + ms, fn };
+      tasks.push(task);
+      return task.id;
+    },
+    clearTimeout(id) {
+      const idx = tasks.findIndex(t => t.id === id);
+      if (idx !== -1) tasks.splice(idx, 1);
+    },
+    setInterval(fn, ms) {
+      const id = intervals.length + 1;
+      intervals.push({ id, fn, ms });
+      return id;
+    },
+    clearInterval(id) {
+      const idx = intervals.findIndex(t => t.id === id);
+      if (idx !== -1) intervals.splice(idx, 1);
+    },
+  };
+
+  let allowed = true;
+  let balanceValue = 3000;
+  const settings = {
+    enabled: true,
+    auto_click_balance: true,
+    auto_click_below: 1000,
+    auto_click_above: 2000,
+    auto_chest: false,
+    auto_emote: false,
+    auto_emote_interval: 25,
+    auto_emote_random: true,
+    auto_emote_slots: 31,
+    threshold: 1000,
+    emote_hotkeys: false,
+  };
+  const atlas = {
+    enabled: { value: false },
+    ready: Promise.resolve(),
+    async request(route, payload) {
+      requests.push({ route, body: payload });
+      if (route === '/assistant/state') return { settings: { ...settings }, runtime: {}, update_required: false };
+      if (route === '/assistant/renderer-start') return { settings: { ...settings } };
+      if (route === '/assistant/tick') return { allowed, quiet: true, settings: { ...settings } };
+      if (route === '/assistant/configure') { Object.assign(settings, payload.settings); return { settings: { ...settings } }; }
+      if (route === '/community/update-check') return { updateAvailable: true, latest: '9.9.9', current: '1.4.0-beta.2' };
+      if (route === '/update/status') return { required: false };
+      return { settings: { ...settings }, session: 0, confirmed: 0, rooms: [], rewards: [] };
+    },
+  };
+
+  const FakeDate = class extends Date { static now() { return now; } };
+  const ctx = vm.createContext({ window: win, Date: FakeDate, Math, Map, Number, Promise, Array, String, JSON, console });
+  vm.runInContext(source + ';globalThis.make = createDesktopAssistant;', ctx);
+  const assistant = ctx.make({ window: win, ref: value => ({ value }), atlas });
+
+  const startNow = now;
+  await assistant.startMain({
+    total: () => 0,
+    balance: () => balanceValue,
+    account: () => 'acc',
+    loggedIn: () => true,
+    blocked: () => false,
+    press(key) {
+      assert.equal(key, 'F24');
+      f24Presses++;
+    },
+    release() {},
+    chestCost: 1000,
+    emotes: () => [],
+    sendEmote() {},
+    currentMonitor: async () => null,
+    listenClicks: () => () => {},
+    listenRoom: cb => { roomListener = cb; },
+    listenJoin: async () => {},
+  });
+
+  async function stepDue() {
+    tasks.sort((a, b) => a.at - b.at);
+    const task = tasks.shift();
+    assert.ok(task, 'expected scheduled task');
+    now = Math.max(now, task.at);
+    await task.fn();
+  }
+
+  // (a) Hysteresis: above the upper bound pauses virtual F24 without touching the enabled switch.
+  await stepDue();
+  let tick = requests.filter(r => r.route === '/assistant/tick').at(-1);
+  assert.equal(tick.body.balance_paused, true, 'balance_paused is reported once balance exceeds the upper bound');
+  assert.equal(f24Presses, 0, 'virtual F24 pauses while balance is above the upper bound');
+  assert.equal(
+    requests.some(r => r.route === '/assistant/configure' && r.body?.settings?.enabled === false),
+    false,
+    'auto-pause must not disable the enabled master switch through /assistant/configure',
+  );
+
+  balanceValue = 1500;
+  await stepDue();
+  tick = requests.filter(r => r.route === '/assistant/tick').at(-1);
+  assert.equal(tick.body.balance_paused, true, 'the middle band preserves the paused state (hysteresis)');
+  assert.equal(f24Presses, 0, 'virtual F24 stays paused inside the hysteresis band');
+
+  balanceValue = 500;
+  await stepDue();
+  tick = requests.filter(r => r.route === '/assistant/tick').at(-1);
+  assert.equal(tick.body.balance_paused, false, 'balance_paused clears below the lower bound');
+  assert.equal(f24Presses, 1, 'virtual F24 resumes after balance drops below auto_click_below');
+
+  // (b) Hybrid mode records room history through /assistant/room.
+  atlas.enabled.value = true;
+  assert.ok(roomListener, 'room listener registered');
+  await roomListener('654321', 'Host');
+  let roomReq = requests.filter(r => r.route === '/assistant/room').at(-1);
+  assert.ok(roomReq, 'hybrid mode records the room');
+  assert.equal(roomReq.body.code, '654321');
+  assert.equal(roomReq.body.host, 'Host');
+  assert.equal(roomReq.body.new_visit, true, 'first visit is marked new');
+  await roomListener('654321', 'Host');
+  roomReq = requests.filter(r => r.route === '/assistant/room').at(-1);
+  assert.equal(roomReq.body.new_visit, false, 're-entering the same room is not a new visit');
+
+  // (c) Periodic non-forced update check shows a dismissible soft banner.
+  settings.enabled = false;
+  allowed = false;
+  const kickoff = tasks.find(t => t.at === startNow + 15000 && t.fn.name === 'checkCommunityUpdate');
+  assert.ok(kickoff, 'the first update check is scheduled 15s after start');
+  const updateInterval = intervals.find(i => i.ms === 8 * 3600 * 1000 && i.fn.name === 'checkCommunityUpdate');
+  assert.ok(updateInterval, 'the update check repeats every 8h');
+  await kickoff.fn();
+
+  const updateCheck = requests.filter(r => r.route === '/community/update-check').at(-1);
+  assert.ok(updateCheck, 'periodic check calls /community/update-check');
+  assert.equal(updateCheck.body.force, false, 'the periodic update check is not forced');
+  assert.equal(assistant.updateRequired.value, false, 'the soft banner never forces the required-update gate');
+  const banner = () => body.querySelector('.wt-soft-update');
+  assert.ok(banner(), '.wt-soft-update banner is shown');
+  assert.ok(banner().textContent.includes('9.9.9'), banner().textContent);
+
+  const dismiss = banner().findAll(n => n.tagName === 'BUTTON' && n._text === '忽略此版本')[0];
+  assert.ok(dismiss, '忽略此版本 button exists');
+  dismiss.onclick();
+  assert.equal(storage.get('wuwatappo-dismissed-update-v1'), '9.9.9', 'dismissed version is stored in localStorage');
+  assert.equal(banner(), null, 'banner is removed after dismissing');
+
+  await updateInterval.fn();
+  assert.equal(banner(), null, 'the same dismissed version is not shown again');
+  assert.equal(assistant.updateRequired.value, false);
+
+  listeners.get('pagehide')?.();
+}
+
 (async () => {
   for (const platform of ['mac', 'win']) {
     await testDashboard(platform);
     await testClickDrivenAutoEmoteAndAutoClickAvoidance(platform);
+    await testDriverBalanceHybridAndSoftUpdate(platform);
   }
-  console.log('dashboard and emote regression passed (macOS + Windows): 7 tabs, interval + 1-5 slot picker, no accessibility prompt, click-driven emote & F24 yield');
+  console.log('dashboard and emote regression passed (macOS + Windows): Mod tab rename, update action order, settings cards/decoupling, balance hysteresis, hybrid room history + soft update dismissal');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;

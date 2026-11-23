@@ -18,8 +18,8 @@ use std::{
 };
 
 use crate::{
-    append_diagnostic, custom_resources, release_installer, release_updates, resource_cache,
-    AssistantCore,
+    append_diagnostic, append_synth_log, custom_resources, read_recent_synth_logs,
+    release_installer, release_updates, resource_cache, AssistantCore,
 };
 
 pub const COMMUNITY_RELEASES_URL: &str =
@@ -135,7 +135,7 @@ pub struct FullAtlasService {
     client_version: String,
     expected_asset_count: Mutex<Option<u64>>,
     inner: Mutex<AssistantInner>,
-    catalog: Mutex<Option<Value>>,
+    catalog: Mutex<Option<Box<str>>>,
     custom_error: Mutex<Option<String>>,
     sync: Mutex<Value>,
     updates: release_updates::UpdateTracker,
@@ -330,7 +330,7 @@ impl FullAtlasService {
         obj.insert("ready".into(), json!(self.cache_ready()));
         obj.insert("enabled".into(), json!(self.enabled()));
         obj.insert("mode_verified".into(), json!(true));
-        obj.insert("network_policy".into(), json!("rooms-only"));
+        obj.insert("network_policy".into(), json!("hybrid"));
         obj.insert("sync".into(), self.sync_status());
         obj.insert("cache".into(), self.cache_summary());
         if let Some(extra) = extra_fields {
@@ -436,8 +436,9 @@ impl FullAtlasService {
             .catalog
             .lock()
             .map_err(|_| ServiceError::internal("图鉴缓存锁失败"))?;
-        let mut bundle = if let Some(cached) = memo.as_ref() {
-            cached.clone()
+        let mut bundle = if let Some(cached) = memo.as_deref() {
+            serde_json::from_str(cached)
+                .map_err(|e| ServiceError::internal(format!("图鉴缓存解析失败：{e}")))?
         } else {
             let cache = self.cache_dir();
             let catalog = read_json_value(&cache.join("offline_catalog.json"))
@@ -462,7 +463,9 @@ impl FullAtlasService {
             if let Ok(mut slot) = self.custom_error.lock() {
                 *slot = custom_err;
             }
-            *memo = Some(merged.clone());
+            if let Ok(compact) = serde_json::to_string(&merged) {
+                *memo = Some(compact.into_boxed_str());
+            }
             merged
         };
         if let Some(base) = custom_asset_base {
@@ -706,6 +709,16 @@ impl FullAtlasService {
         json!({ "ok": true })
     }
 
+    pub fn log_synth(&self, body: &Value) -> Value {
+        append_synth_log(&self.root, body);
+        json!({ "ok": true })
+    }
+
+    pub fn list_synth_logs(&self, limit: usize) -> Value {
+        let entries = read_recent_synth_logs(&self.root, limit);
+        json!({ "entries": entries })
+    }
+
     pub fn assistant(
         &self,
         action: &str,
@@ -764,6 +777,11 @@ impl FullAtlasService {
             }
             "update/healthy" => Some(Ok(self.update_healthy())),
             "diagnostic" => Some(Ok(self.diagnostic(body))),
+            "diagnostic/synth" => Some(Ok(self.log_synth(body))),
+            "diagnostic/synth/list" => {
+                let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+                Some(Ok(self.list_synth_logs(limit)))
+            }
             name if name.starts_with("assistant/") => {
                 let sub = name.trim_start_matches("assistant/");
                 Some(self.assistant(sub, body, quiet))

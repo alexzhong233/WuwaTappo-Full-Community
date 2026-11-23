@@ -81,11 +81,12 @@ test('官方版本探测只在任一区域变化时请求编译', () => {
   assert.equal(cnOnly.global_version, '1.0.4');
 });
 
-test('canonical lock 包含官方安装包指纹且不包含 Windows 主程序硬锁', () => {
+test('canonical lock 同时包含官方安装包与 Windows 主程序指纹', () => {
   for (const region of ['cn', 'global']) {
     const lock = JSON.parse(readFileSync(path.join(repoRoot, `shared/upstream/${region}.json`), 'utf8'));
     assert.equal(lock.schemaVersion, 2);
     assert.ok(lock.installer?.sha256);
-    assert.equal(lock.platforms, undefined);
+    assert.match(lock.platforms?.windows?.executable?.sha256 || '', /^[0-9a-f]{64}$/);
+    assert.ok(lock.platforms?.windows?.executable?.size > 0);
   }
 });

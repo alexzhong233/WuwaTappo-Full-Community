@@ -43,6 +43,7 @@ impl FullAtlasState {
         self.service.ensure_initial_sync();
     }
 
+    #[cfg(test)]
     pub fn enabled(&self) -> bool {
         self.service.enabled()
     }
@@ -146,9 +147,6 @@ impl FullAtlasState {
                     .service
                     .set_mode(enabled, false)
                     .map_err(|e| e.message)?;
-                if enabled {
-                    crate::socket::shutdown(app);
-                }
                 app.emit("fullatlas-mode-changed", enabled)
                     .map_err(|e| e.to_string())?;
                 Ok(response)

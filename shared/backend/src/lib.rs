@@ -5,7 +5,7 @@ use std::{
     cmp::Reverse,
     fs::{self, OpenOptions},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -32,12 +32,12 @@ pub struct AssistantSettings {
     pub auto_click_balance: bool,
     pub auto_click_below: u64,
     pub auto_click_above: u64,
-    pub remember_monitor: bool,
     pub prerelease_updates: bool,
     pub auto_emote: bool,
     pub auto_emote_interval: u32,
     pub auto_emote_random: bool,
     pub auto_emote_slots: u32,
+    pub emote_hotkeys: bool,
 }
 
 impl Default for AssistantSettings {
@@ -51,9 +51,9 @@ impl Default for AssistantSettings {
             auto_click_balance: values["auto_click_balance"].as_bool().unwrap(),
             auto_click_below: values["auto_click_below"].as_u64().unwrap(),
             auto_click_above: values["auto_click_above"].as_u64().unwrap(),
-            remember_monitor: values["remember_monitor"].as_bool().unwrap(),
             prerelease_updates: values["prerelease_updates"].as_bool().unwrap(),
             auto_emote: values["auto_emote"].as_bool().unwrap(),
+            emote_hotkeys: values["emote_hotkeys"].as_bool().unwrap(),
             auto_emote_interval: values["auto_emote_interval"].as_u64().unwrap() as u32,
             auto_emote_random: values["auto_emote_random"].as_bool().unwrap(),
             auto_emote_slots: values["auto_emote_slots"].as_u64().unwrap() as u32,
@@ -333,6 +333,7 @@ impl AssistantCore {
             "tick" | "observe" => {
                 let sent = body.get("sent").and_then(Value::as_u64).unwrap_or(0);
                 let confirmed = body.get("confirmed").and_then(Value::as_u64).unwrap_or(0);
+                let balance_paused = body.get("balance_paused") == Some(&Value::Bool(true));
                 if sent > 1 || confirmed > sent {
                     return Err("点击确认值无效".into());
                 }
@@ -388,10 +389,12 @@ impl AssistantCore {
                     }
                     self.runtime["emote"] = emote.clone();
                 }
+                self.runtime["balance_paused"] = json!(balance_paused);
                 if action == "tick" {
                     let allowed = !update_required
                         && settings["enabled"] == true
                         && quiet
+                        && !balance_paused
                         && now >= self.next_tick;
                     if allowed {
                         let speed = settings["speed"].as_f64().unwrap_or(5.0);
@@ -400,7 +403,7 @@ impl AssistantCore {
                     let open = std::mem::replace(&mut self.open_settings, Value::Bool(false));
                     let quit = std::mem::replace(&mut self.quit_requested, false);
                     return Ok(
-                        json!({"allowed":allowed,"quiet":quiet,"open_settings":open,"quit":quit,"flush_generation":if self.flush_generation>self.flush_done{self.flush_generation}else{0},"settings":settings,"session":self.state["session"],"confirmed":self.state["confirmed"],"update_required":update_required}),
+                        json!({"allowed":allowed,"quiet":quiet,"open_settings":open,"quit":quit,"flush_generation":if self.flush_generation>self.flush_done{self.flush_generation}else{0},"settings":settings,"session":self.state["session"],"confirmed":self.state["confirmed"],"update_required":update_required,"balance_paused":balance_paused}),
                     );
                 }
             }
@@ -465,9 +468,6 @@ impl AssistantCore {
                 }
             }
             "room" => {
-                if offline {
-                    return Err("本地模式不能进入联机".into());
-                }
                 let code = room_code(body.get("code")).ok_or("房间号无效")?;
                 let new_visit = body.get("new_visit") == Some(&Value::Bool(true));
                 if self.state["deleted_rooms"]
@@ -543,6 +543,9 @@ impl AssistantCore {
 }
 
 const MAX_DIAGNOSTIC_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SYNTH_LOG_BYTES: u64 = 16 * 1024 * 1024;
+const SYNTH_LOG_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+const REDACTED: &str = "[REDACTED]";
 const DEFAULT_HOST_PORT: u64 = 38472;
 
 fn unix_time_secs() -> u64 {
@@ -603,6 +606,44 @@ pub fn random_token_hex() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// 敏感凭据键名片段（小写比较），命中的值一律替换为 `[REDACTED]`。
+const SENSITIVE_KEY_PARTS: [&str; 7] = [
+    "token",
+    "cookie",
+    "authorization",
+    "password",
+    "secret",
+    "x-local-token",
+    "kuro_infotoken",
+];
+
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    SENSITIVE_KEY_PARTS
+        .iter()
+        .any(|part| lower.contains(part))
+}
+
+/// 递归脱敏 JSON 中的凭据字段，供诊断与合成日志落盘前调用。
+pub fn sanitize_diagnostic_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut result = Map::with_capacity(map.len());
+            for (key, inner) in map {
+                let next = if is_sensitive_key(key) {
+                    Value::String(REDACTED.into())
+                } else {
+                    sanitize_diagnostic_value(inner)
+                };
+                result.insert(key.clone(), next);
+            }
+            Value::Object(result)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sanitize_diagnostic_value).collect()),
+        other => other.clone(),
+    }
+}
+
 /// 追加一条客户端诊断事件，超过 8 MiB 自动轮转为 `.jsonl.1`。
 pub fn append_diagnostic(root: &Path, body: &Value) {
     append_diagnostic_with_limit(root, body, MAX_DIAGNOSTIC_BYTES);
@@ -621,11 +662,98 @@ fn append_diagnostic_with_limit(root: &Path, body: &Value, max_bytes: u64) {
     };
     let line = json!({
         "time": unix_time_secs(),
-        "event": body,
+        "event": sanitize_diagnostic_value(body),
     });
     if let Ok(text) = serde_json::to_string(&line) {
         let _ = file.write_all(format!("{text}\n").as_bytes());
     }
+}
+
+/// 追加一条合成日志，按天分文件并做体积与时间轮转。
+pub fn append_synth_log(root: &Path, body: &Value) {
+    append_synth_log_with_limit(root, body, MAX_SYNTH_LOG_BYTES);
+}
+
+fn synth_log_dir(root: &Path) -> PathBuf {
+    root.join("logs")
+}
+
+/// 列出 `logs/synth-*.jsonl*`，按修改时间升序返回（同日 `.1` 视为更早）。
+fn synth_log_files(dir: &Path) -> Vec<(SystemTime, String, PathBuf)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("synth-") || !name.contains(".jsonl") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .unwrap_or(UNIX_EPOCH);
+        files.push((modified, name.to_string(), path));
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+    files
+}
+
+fn prune_synth_logs(dir: &Path) {
+    for (modified, _, path) in synth_log_files(dir) {
+        let age = SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default();
+        if age.as_secs() > SYNTH_LOG_RETENTION_SECS {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn append_synth_log_with_limit(root: &Path, body: &Value, max_bytes: u64) {
+    let dir = synth_log_dir(root);
+    let _ = fs::create_dir_all(&dir);
+    prune_synth_logs(&dir);
+    let name = format!("synth-{}.jsonl", Local::now().format("%Y-%m-%d"));
+    let path = dir.join(&name);
+    if fs::metadata(&path).is_ok_and(|meta| meta.len() >= max_bytes) {
+        let rotated = dir.join(format!("{name}.1"));
+        let _ = fs::remove_file(&rotated);
+        let _ = fs::rename(&path, &rotated);
+    }
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    let line = json!({
+        "time": unix_time_secs(),
+        "entry": sanitize_diagnostic_value(body),
+    });
+    if let Ok(text) = serde_json::to_string(&line) {
+        let _ = file.write_all(format!("{text}\n").as_bytes());
+    }
+}
+
+/// 读取最近的合成日志，最新条目在前，最多返回 `limit.clamp(1, 200)` 条。
+pub fn read_recent_synth_logs(root: &Path, limit: usize) -> Vec<Value> {
+    let limit = limit.clamp(1, 200);
+    let dir = synth_log_dir(root);
+    let mut entries = Vec::new();
+    for (_, _, path) in synth_log_files(&dir) {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                entries.push(value);
+            }
+        }
+    }
+    entries.reverse();
+    entries.truncate(limit);
+    entries
 }
 
 fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
@@ -955,5 +1083,163 @@ mod tests {
                 false,
             )
             .is_err());
+    }
+
+    #[test]
+    fn balance_pause_pauses_ticks_without_disabling_master_switch() {
+        let mut core = AssistantCore::new(None);
+        core.handle(
+            "configure",
+            &json!({"settings": {"enabled": true, "speed": 10}}),
+            1.0,
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        let paused = core
+            .handle(
+                "tick",
+                &json!({"balance_paused": true}),
+                1.0,
+                true,
+                false,
+                false,
+            )
+            .unwrap();
+        assert_eq!(paused["allowed"], false);
+        assert_eq!(paused["balance_paused"], true);
+        assert_eq!(paused["settings"]["enabled"], true);
+        assert_eq!(core.snapshot(2.0, false)["runtime"]["balance_paused"], true);
+        assert_eq!(core.snapshot(2.0, false)["settings"]["enabled"], true);
+
+        core.handle(
+            "observe",
+            &json!({"balance_paused": true}),
+            3.0,
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(core.snapshot(4.0, false)["runtime"]["balance_paused"], true);
+
+        let resumed = core
+            .handle(
+                "tick",
+                &json!({"balance_paused": false}),
+                1.0,
+                true,
+                false,
+                false,
+            )
+            .unwrap();
+        assert_eq!(resumed["allowed"], true);
+        assert_eq!(resumed["balance_paused"], false);
+        assert_eq!(
+            core.snapshot(2.0, false)["runtime"]["balance_paused"],
+            false
+        );
+        assert_eq!(core.snapshot(2.0, false)["settings"]["enabled"], true);
+    }
+
+    #[test]
+    fn offline_mode_allows_room_history_recording() {
+        let mut core = AssistantCore::new(None);
+        let value = core
+            .handle(
+                "room",
+                &json!({"code": "abc123", "host": "tester"}),
+                10.0,
+                true,
+                true,
+                false,
+            )
+            .unwrap();
+        let rooms = value["rooms"].as_array().unwrap();
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0]["code"], "abc123");
+        assert_eq!(rooms[0]["host"], "tester");
+        assert_eq!(rooms[0]["visited"], 10);
+    }
+
+    #[test]
+    fn sanitize_diagnostic_value_redacts_nested_credentials() {
+        let value = json!({
+            "token": "abc",
+            "Cookie": "session=1",
+            "headers": {"Authorization": "Bearer secret-value", "Accept": "json"},
+            "nested": [{"password": "p"}, {"x-local-token": "x"}, {"kuro_infotoken": "k"}],
+            "keep": "value"
+        });
+        let sanitized = sanitize_diagnostic_value(&value);
+        assert_eq!(sanitized["token"], REDACTED);
+        assert_eq!(sanitized["Cookie"], REDACTED);
+        assert_eq!(sanitized["headers"]["Authorization"], REDACTED);
+        assert_eq!(sanitized["headers"]["Accept"], "json");
+        assert_eq!(sanitized["nested"][0]["password"], REDACTED);
+        assert_eq!(sanitized["nested"][1]["x-local-token"], REDACTED);
+        assert_eq!(sanitized["nested"][2]["kuro_infotoken"], REDACTED);
+        assert_eq!(sanitized["keep"], "value");
+        assert!(!sanitized.to_string().contains("Bearer secret-value"));
+    }
+
+    #[test]
+    fn diagnostic_log_never_writes_unredacted_credentials() {
+        let root = temp_root("diag-redact");
+        append_diagnostic(&root, &json!({"token": "leaked-token", "note": "ok"}));
+        let text = fs::read_to_string(root.join("client_diagnostics.jsonl")).unwrap();
+        assert!(!text.contains("leaked-token"));
+        assert!(text.contains(REDACTED));
+        assert!(text.contains("\"note\":\"ok\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn synth_log_round_trips_sanitized_entries_newest_first() {
+        let root = temp_root("synth");
+        append_synth_log(&root, &json!({"step": "first", "token": "leaked-token"}));
+        append_synth_log(&root, &json!({"step": "second"}));
+
+        let dir = root.join("logs");
+        let files = synth_log_files(&dir);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].1.starts_with("synth-") && files[0].1.ends_with(".jsonl"));
+        let text = fs::read_to_string(&files[0].2).unwrap();
+        assert!(!text.contains("leaked-token"));
+        assert_eq!(text.lines().count(), 2);
+
+        let entries = read_recent_synth_logs(&root, 10);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["entry"]["step"], "second");
+        assert_eq!(entries[1]["entry"]["step"], "first");
+        assert_eq!(entries[1]["entry"]["token"], REDACTED);
+        assert!(entries[0]["time"].as_u64().is_some());
+        assert_eq!(read_recent_synth_logs(&root, 1).len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn synth_log_rotates_to_dot_one_at_size_limit() {
+        let root = temp_root("synth-rotate");
+        append_synth_log_with_limit(&root, &json!({"step": "first"}), 32);
+        append_synth_log_with_limit(&root, &json!({"step": "second"}), 32);
+
+        let dir = root.join("logs");
+        let name = format!("synth-{}.jsonl", Local::now().format("%Y-%m-%d"));
+        let active = fs::read_to_string(dir.join(&name)).unwrap();
+        let rotated = fs::read_to_string(dir.join(format!("{name}.1"))).unwrap();
+        assert!(rotated.contains("\"first\""));
+        assert!(active.contains("\"second\""));
+        assert_eq!(active.lines().count(), 1);
+        let parsed: Value = serde_json::from_str(active.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["entry"]["step"], "second");
+        assert!(parsed["time"].as_u64().is_some());
+
+        let entries = read_recent_synth_logs(&root, 5);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["entry"]["step"], "second");
+        assert_eq!(entries[1]["entry"]["step"], "first");
+        let _ = fs::remove_dir_all(root);
     }
 }

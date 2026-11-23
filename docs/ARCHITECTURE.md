@@ -17,6 +17,7 @@ This repository shares feature behavior and keeps operating-system integration i
 | Official upstream locks | `shared/upstream/cn.json`, `shared/upstream/global.json` | Canonical installer pins shared across macOS and Windows |
 | Windows update package paths and whitelist | `shared/contracts/windows-update.json` | Read by Rust `release_installer` (both update creation & apply) and PowerShell `payload.ps1`, including protected paths and Windows reserved names |
 | Windows update staging, archive build, and file transaction | `shared/backend/src/release_installer.rs` | Linked by LocalGalleryHost (`--make-update` & `--apply-update`); OS process/file operations stay Windows-only |
+| Hybrid local/official appearance | `shared/frontend/local_atlas_controller.js` | Shared by both injected renderers; source labels, local overrides, cloud-preset eligibility and synthesis policy stay identical |
 | Published artifact names and checksum filename | `shared/contracts/release-assets.json` | Read by Node release tooling, PowerShell packaging, and Rust release/archive builders |
 | Cross-platform upstream sync, NSIS extraction, official Windows fetch, and mirror tooling | `scripts/` (`extract-assets.mjs`, `fetch-official-win.mjs`, `sync-upstream.mjs`, `installer-*.mjs`, `upstream-*.mjs`, `regions.mjs`, `build-platform.mjs`, `bump-version.mjs`, `sync-frontend.mjs`) | Shared CLI entrypoints called by `package.json`, `.github/workflows/`, `macos/`, and `windows/` |
 | Frontend regression fixtures | `shared/tests/` | Run as part of `npm test` (checks both Windows and macOS Rust hosts in `host-routes.cjs`) |
@@ -39,7 +40,7 @@ The two clients do not share an application shell. macOS uses Rust/Tauri and sys
 
 | Domain | Shared today | Platform shell boundary | Recommended boundary |
 | --- | --- | --- | --- |
-| Assistant UI, context menu, typing-emote trigger, chest scheduling, reward outbox, monitor workflow | `shared/frontend/{desktop_assistant,assistant_dashboard,desktop_context_menu}.js`, `shared/backend/src/lib.rs` | Native focus detection and monitor/input access | Keep decisions, state, validation and scheduling in shared sources; keep focus probes and native events behind adapters |
+| Assistant UI, context menu, typing-emote trigger, chest scheduling, reward outbox, OBS backdrop / update checks | `shared/frontend/{desktop_assistant,assistant_dashboard,desktop_context_menu}.js`, `shared/backend/src/lib.rs` | Native focus detection and monitor/input access | Keep decisions, state, validation and scheduling in shared sources; keep focus probes and native events behind adapters |
 | Balance-threshold auto-click | Shared JS policy, defaults and boundary contract test | Persistence and click throttle only | Keep the policy single-sourced in shared JS |
 | Local atlas, Mod selection and official cache sync | `shared/frontend/local_atlas_controller.js`, `shared/backend/src/{service,resource_cache}.rs` | Tauri IPC + `mod_assets.rs` vs `tiny_http` in `local_gallery_host.rs` | Keep `FullAtlasService` & cache validation shared; keep transport and filesystem paths platform-owned |
 | Assistant settings, daily counters, rooms, rewards and snapshots | `shared/backend/src/lib.rs` | Persistence locations, clocks and physical input are adapter-owned | Keep the Rust domain core authoritative |

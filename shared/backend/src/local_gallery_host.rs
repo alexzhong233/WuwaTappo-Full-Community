@@ -366,6 +366,12 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         };
     }
 
+    if path == "/assistant/state" {
+        return send_service_result(
+            request,
+            app.service.assistant("state", &body, false),
+        );
+    }
     let action = path.trim_start_matches('/');
     let quiet = if action == "assistant/tick" {
         physical_quiet()

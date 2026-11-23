@@ -8,5 +8,14 @@
     "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSSnV4aU5ob1MxTFVGcktGM05WeDVReExOaEdEdVZKWjNJUXRPa0gzSjV0bW9rUTNTRGdsL3Yvb2JBZUtqMnkzajhpSzNycEROc0xTT3BkazNYNjFkYTNLWjV6NDFzN0FBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDg2NzM2CWZpbGU6V3V3YVRhcHBvLWNuXzEuMC41X3g2NC1zZXR1cC5leGUKdVVzQUwxbTBmMm5YZ1VHOU9tUWNjUzZEa2J4SldxUk9xQ1I5Q0pqdTZJK1ZKcnY4UU93QVJid201TnFtb1UySExBRzAvNFdzS3FGTmFSUXo1NWRiQVE9PQo=",
     "sha256": "28b6591fc085a49876a6f9a5b9e80bb4652ea4f8c62e734ac09198b4b6cb64e6",
     "size": 201966304
+  },
+  "platforms": {
+    "windows": {
+      "executable": {
+        "sha256": "06a7222645e5da3a86baeaea3bb61a1f63c0408df1e21d5b985a9eb01054b7ae",
+        "size": 79170272
+      },
+      "adapterNotes": "国服 1.0.5 注入锚点已命中，混合外观与挂饰旋转补丁构建通过。"
+    }
   }
 }

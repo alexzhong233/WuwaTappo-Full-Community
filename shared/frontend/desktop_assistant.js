@@ -7,12 +7,13 @@ function resolveBalanceAutoClick(settings,balance) {
 }
 
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
-  const VERSION='1.3.2', updateRequired=ref(false);
+  const VERSION='1.4.0-beta.3', updateRequired=ref(false);
+  const DISMISSED_UPDATE_KEY='wuwatappo-dismissed-update-v1',COMMUNITY_CHECK_INTERVAL_MS=8*3600*1000;
   const state=ref({settings:__WUWA_ASSISTANT_DEFAULTS__});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
   const ready=atlas.ready.then(()=>request('state')).then(v=>{state.value=v;updateRequired.value=!!v.update_required;});
-  let started=false,disposed=false,timer=null,mainDependencies=null,sent=0,confirmed=0,lastObserve=0;
-  let dashboard=null,updateDialog=null,autoSide=null,autoUntil=0,flushing=null;
+  let started=false,disposed=false,timer=null,mainDependencies=null,sent=0,confirmed=0,lastObserve=0,balancePaused=false;
+  let dashboard=null,updateDialog=null,autoSide=null,autoUntil=0,flushing=null,globalKeyHandler=null;
   const readyButtons=new Map(),retryAfter=new Map();
   // 打字/点击自动表情：跟随桌宠真实的 localClickCount 递增计数触发（可选±40%随机或固定间隔），
   // 不探测其他应用的焦点，不申请辅助功能权限；自动点击（F24）同步屏蔽且发完表情后短暂停避。
@@ -45,6 +46,14 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   function currentEmoteSnapshot(){
     emoteStats.slots=slotLabels();
     return {...emoteStats,slots:[...emoteStats.slots]};
+  }
+  function sendEmoteSlot(index){
+    const item=(mainDependencies?.emotes?.()||[])[Number(index)];
+    if(!item?.id||!item?.src)return false;
+    if(mainDependencies?.blocked?.())return false;
+    emoteYieldUntil=Date.now()+350;
+    mainDependencies.sendEmote(item);emoteStats.sent++;emoteStats.reason='hotkey';
+    return true;
   }
   function userClick(step=1){
     if(virtualClicking||!started||disposed)return;
@@ -99,7 +108,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     }catch(error){console.warn('[assistant] reward history pending',error);}
   }
   function observation(d){return {total:Number(d.total()),balance:Number(d.balance()),account:d.account(),
-    logged_in:!!d.loggedIn(),chests:d.chests?.()||{},emote:currentEmoteSnapshot()};}
+    logged_in:!!d.loggedIn(),chests:d.chests?.()||{},emote:currentEmoteSnapshot(),balance_paused:balancePaused};}
   async function flush(){
     if(!mainDependencies)return;
     if(flushing)return flushing;
@@ -146,15 +155,48 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     if(started)return;started=true;mainDependencies=d;
     await ready;state.value=await request('renderer-start');
     syncEmoteTarget();
+    const heldAlt=new Set();
+    let lastHotkeyAt=0,lastHotkeySlot=-1;
+    function fireHotkeySlot(slot){
+      const now=Date.now();
+      if(slot===lastHotkeySlot&&now-lastHotkeyAt<120)return false;
+      if(!sendEmoteSlot(slot))return false;
+      lastHotkeySlot=slot;lastHotkeyAt=now;
+      return true;
+    }
+    const isAltKey=key=>key==='AltLeft'||key==='AltRight'||key==='Alt'||key==='AltGr';
+    globalKeyHandler=(key,pressed)=>{
+      const k=String(key||'');
+      if(isAltKey(k)){
+        if(pressed)heldAlt.add(k);else heldAlt.delete(k);
+        return false;
+      }
+      if(!pressed||disposed||!state.value.settings?.emote_hotkeys||!heldAlt.size)return false;
+      const match=/^(?:Digit|Numpad|Num|Kp)?([1-5])$/.exec(k);
+      if(!match)return false;
+      return fireHotkeySlot(Number(match[1])-1);
+    };
+    const onEmoteHotkey=event=>{
+      if(!event.altKey)heldAlt.clear();
+      if(!state.value.settings?.emote_hotkeys||event.repeat||!event.altKey)return;
+      const match=/^(?:Digit|Numpad)([1-5])$/.exec(String(event.code||''));
+      if(!match)return;
+      if(fireHotkeySlot(Number(match[1])-1)){event.preventDefault();event.stopPropagation();}
+    };
+    window.addEventListener('keydown',onEmoteHotkey,true);
     const stopClickWatch=d.listenClicks?.(n=>userClick(n));
     async function loop(){
       if(disposed)return;
       let delay=1000;
       try{
-        const autoClick=resolveBalanceAutoClick(state.value.settings,Number(d.balance()));
-        if(autoClick!==null&&autoClick!==state.value.settings.enabled)
-          state.value=await request('configure',{settings:{enabled:autoClick}});
-        const now=Date.now(),body={sent,confirmed,emote:currentEmoteSnapshot()};sent=confirmed=0;
+        const settings=state.value.settings||{};
+        if(!settings.enabled||!settings.auto_click_balance)balancePaused=false;
+        else{
+          const nextSignal=resolveBalanceAutoClick(settings,Number(d.balance()));
+          if(nextSignal===false)balancePaused=true;
+          else if(nextSignal===true)balancePaused=false;
+        }
+        const now=Date.now(),body={sent,confirmed,emote:currentEmoteSnapshot(),balance_paused:balancePaused};sent=confirmed=0;
         if(now-lastObserve>=1000){Object.assign(body,observation(d));lastObserve=now;await drainRewards();}
         const result=await request('tick',body);state.value={...state.value,...result};
         syncEmoteTarget();
@@ -163,8 +205,8 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
         if(result.quit){await flush();await d.quit();return;}
         if(typeof result.open_settings==='string')await d.openView?.(result.open_settings);
         else if(result.open_settings)await d.openSettings?.();
-        if(result.settings.enabled&&!updateRequired.value)delay=50;
-        if(result.allowed&&!updateRequired.value&&!d.blocked()&&Date.now()>=emoteYieldUntil){
+        if(result.settings?.enabled&&!balancePaused&&!updateRequired.value)delay=50;
+        if(result.allowed&&!balancePaused&&!updateRequired.value&&!d.blocked()&&Date.now()>=emoteYieldUntil){
           const before=Number(d.total());
           virtualClicking=true;
           try{d.press('F24');}finally{try{d.release('F24');}finally{virtualClicking=false;}}
@@ -175,26 +217,56 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       timer=window.setTimeout(loop,delay);
     }
     timer=window.setTimeout(loop,1000);
-    const saved=state.value.monitor;
-    if(state.value.settings.remember_monitor&&saved?.name){
-      try{const monitors=await d.monitors();if(monitors.filter(m=>m.name===saved.name).length===1)await d.restoreMonitor(saved.name);}
-      catch(error){state.value={...state.value,error:'屏幕恢复：'+error.message};}
+    const readDismissedUpdate=()=>{try{return window.localStorage?.getItem(DISMISSED_UPDATE_KEY)||'';}catch{return '';}};
+    function removeSoftUpdate(){
+      try{window.document?.querySelector?.('.wt-soft-update')?.remove();}catch{}
     }
-    let monitorName=saved?.name;
-    async function rememberMonitor(){
-      if(!state.value.settings.remember_monitor)return;
-      try{const m=await d.currentMonitor();if(m?.name&&m.name!==monitorName){await request('monitor',{monitor:{name:m.name,position:m.position,size:m.size}});monitorName=m.name;}}catch{}
+    function showSoftUpdateNotice(result){
+      const doc=window.document;
+      if(!doc?.createElement||!doc?.body)return;
+      removeSoftUpdate();
+      const latest=String(result?.latest||''),current=String(result?.current||VERSION),notice=doc.createElement('div');
+      notice.className='wt-soft-update';
+      notice.style.cssText='position:fixed;right:16px;bottom:16px;z-index:2147483647;max-width:320px;padding:12px 14px;border-radius:12px;background:#1f232b;color:#f3f4f6;box-shadow:0 8px 28px rgba(0,0,0,.45);font:13px/1.5 system-ui,sans-serif;display:flex;flex-direction:column;gap:8px;';
+      const text=doc.createElement('div');
+      text.textContent=latest?(`发现新版本：当前 ${current} → 最新 ${latest}`):'发现新版本';
+      const actions=doc.createElement('div');
+      actions.style.cssText='display:flex;gap:8px;justify-content:flex-end;';
+      const makeButton=(label,onClick)=>{
+        const button=doc.createElement('button');
+        button.type='button';button.textContent=label;
+        button.style.cssText='padding:4px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.22);background:transparent;color:inherit;cursor:pointer;font:inherit;';
+        button.onclick=onClick;
+        actions.append(button);
+      };
+      makeButton('查看更新',()=>{removeSoftUpdate();Promise.resolve(openPanel('update')).catch(()=>{});});
+      makeButton('忽略此版本',()=>{try{window.localStorage?.setItem(DISMISSED_UPDATE_KEY,latest);}catch{}removeSoftUpdate();});
+      makeButton('稍后',()=>{removeSoftUpdate();});
+      notice.append(text,actions);doc.body.append(notice);
     }
-    await rememberMonitor();window.setInterval(rememberMonitor,30000);
+    async function checkCommunityUpdate(){
+      if(disposed||updateRequired.value)return;
+      try{
+        const r=await atlas.request('/community/update-check',{force:false});
+        if(disposed||updateRequired.value||!r?.updateAvailable||!r.latest)return;
+        if(readDismissedUpdate()===String(r.latest))return;
+        showSoftUpdateNotice(r);
+      }catch{}
+    }
+    const updateKickoff=window.setTimeout(checkCommunityUpdate,15000);
+    const updateTimer=window.setInterval(checkCommunityUpdate,COMMUNITY_CHECK_INTERVAL_MS);
     await atlas.request('/update/healthy',{version:VERSION});
     let observedRoom=null;
-    d.listenRoom(async(code,host)=>{const new_visit=String(code||'')!==observedRoom;observedRoom=String(code||'');if(!atlas.enabled.value&&code)await request('room',{code,host,new_visit});});
-    await d.listenJoin(async code=>{if(atlas.enabled.value){d.toast('本地全图鉴开启时无法进入联机');return;}if(!updateRequired.value)await d.join(code);});
-    window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);if(typeof stopClickWatch==='function')stopClickWatch();});
+    d.listenRoom(async(code,host)=>{const new_visit=String(code||'')!==observedRoom;observedRoom=String(code||'');if(code)await request('room',{code,host,new_visit});});
+    await d.listenJoin(async code=>{if(!updateRequired.value)await d.join(code);});
+    window.addEventListener('pagehide',()=>{disposed=true;heldAlt.clear();globalKeyHandler=null;window.clearTimeout(timer);window.clearTimeout(updateKickoff);window.clearInterval(updateTimer);removeSoftUpdate();window.removeEventListener?.('keydown',onEmoteHotkey,true);if(typeof stopClickWatch==='function')stopClickWatch();});
   }
-  let requestedTab='overview',lastTab='overview';
-  // 关面板时记下停在哪一页：右键「控制台」再打开时回到那一页，而不是永远回概览。
-  function closePanel(){if(dashboard)lastTab=dashboard.currentTab?.()||lastTab;dashboard?.close();dashboard=null;}
+  const CONSOLE_TAB_KEY='wuwatappo-console-tab-v1';
+  const readLastTab=()=>{try{return window.localStorage?.getItem(CONSOLE_TAB_KEY)||'overview';}catch{return 'overview';}};
+  const writeLastTab=next=>{try{if(next)window.localStorage?.setItem(CONSOLE_TAB_KEY,String(next));}catch{}};
+  let lastTab=readLastTab(),requestedTab=lastTab;
+  // 关面板时记下停在哪一页：右键「控制台」或重建面板窗口再打开时回到那一页，而不是永远回概览。
+  function closePanel(){if(dashboard){const current=dashboard.currentTab?.();if(current){lastTab=current;requestedTab=current;writeLastTab(current);}}dashboard?.close();dashboard=null;}
   async function deleteRoom(code){await ready;return (await request('delete-room',{code})).rooms||[];}
   // 「控制台」在支持面板页签的壳里是面板的一页（联机下方、设置上方）；
   // 壳没提供就退回桌宠窗口内的浮层，两种都拿到同一套界面。
@@ -208,7 +280,10 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     }
     // 先关再取：面板正开着时，「当前页」比「上次关面板那页」更准。
     closePanel();
+    const savedTab=readLastTab();
+    if(savedTab)lastTab=savedTab;
     requestedTab=initialTab=initialTab||lastTab;
+    writeLastTab(requestedTab);
     try { await ready; }
     catch (error) { console.warn('[console] 本地服务未就绪', error); }
     const openTab=window.__WUWA_OPEN_PANEL_TAB__;
@@ -224,7 +299,8 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       getState:async()=>{const v=await request('state');state.value=v;return v;},
       configure:async changes=>{state.value=await request('configure',{settings:changes});syncEmoteTarget();return state.value;},
       reset:()=>request('reset'),join:code=>window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'local-assistant-join',payload:code}),
-      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,onClose:()=>{dashboard=null;}});
+      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,
+      onTabChange:next=>{lastTab=next;requestedTab=next;writeLastTab(next);},onClose:()=>{dashboard=null;}});
   }
   // 面板「控制台」页挂载点：把同一套界面内嵌进去，不再叠一层浮层。
   async function mountConsole(mount){
@@ -236,11 +312,13 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     // 表现为卡 loading，而且不会自己恢复。挂载点还连着 DOM，就说明用户仍在这一页。
     if (!mount?.isConnected) return;
     dashboard?.close();
-    dashboard=createAssistantDashboard({window,version:VERSION,atlas,mount,initialTab:requestedTab,
+    const initialTab=requestedTab||readLastTab();
+    dashboard=createAssistantDashboard({window,version:VERSION,atlas,mount,initialTab,
       getState:async()=>{const v=await request('state');state.value=v;return v;},
       configure:async changes=>{state.value=await request('configure',{settings:changes});syncEmoteTarget();return state.value;},
       reset:()=>request('reset'),join:code=>window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'local-assistant-join',payload:code}),
-      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,onClose:()=>{dashboard=null;}});
+      favorite:(code,favorite)=>request('favorite',{code,favorite}),deleteRoom,
+      onTabChange:next=>{lastTab=next;requestedTab=next;writeLastTab(next);},onClose:()=>{dashboard=null;}});
   }
   async function pollPolicy(){
     if(disposed)return;
@@ -250,5 +328,5 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   ready.then(pollPolicy).catch(()=>{});
   window.addEventListener('pagehide',()=>{disposed=true;closePanel();});
   return {ready,state,updateRequired,startMain,openPanel,mountConsole,closePanel,flush,flushBeforeSwitch,beginChest,chestSucceeded,
-    userClick,emoteStats};
+    userClick,sendEmoteSlot,onGlobalKey:(key,pressed)=>globalKeyHandler?.(key,pressed)||false,emoteStats};
 }

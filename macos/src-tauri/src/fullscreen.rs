@@ -16,6 +16,10 @@ struct WindowMetadata {
 
 pub fn foreground_application_fullscreen() -> Result<bool, String> {
     let mtm = MainThreadMarker::new().ok_or("Screen state must be read on the main thread")?;
+    objc2::rc::autoreleasepool(|_| foreground_application_fullscreen_inner(mtm))
+}
+
+fn foreground_application_fullscreen_inner(mtm: MainThreadMarker) -> Result<bool, String> {
     let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
         return Ok(false);
     };

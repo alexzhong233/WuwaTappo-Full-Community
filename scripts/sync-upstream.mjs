@@ -385,6 +385,9 @@ export async function syncUpstream(options = {}, projectRoot = root) {
     catch (error) { if (hadFrontend) await rename(backup, frontend); throw error; }
     if (options.updateLock) {
       target.schemaVersion = 2;
+      // Same-version reruns keep the verified Windows executable fingerprint;
+      // a new version clears it so release cannot ship an unverified PE.
+      if (!comparison.changed && current.platforms) target.platforms = current.platforms;
       await writeFile(lockPath, `${JSON.stringify(target, null, 2)}\n`);
     }
     await writeFile(path.join(work, profile.id === 'cn' ? 'upstream-extraction.json' : `upstream-${profile.id}-extraction.json`), result.stdout);

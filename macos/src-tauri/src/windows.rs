@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, RwLock,
     },
     time::Duration,
@@ -67,8 +67,11 @@ pub struct WindowState {
     update: Mutex<Value>,
     maintenance: Mutex<Option<Value>>,
     panel_collapsed: Mutex<bool>,
+    panel_open: AtomicBool,
     pending_login: Mutex<Option<Value>>,
     login_ready: AtomicBool,
+    login_open: AtomicBool,
+    toast_generation: AtomicU64,
     auxiliary: RwLock<BTreeMap<String, HitRegion>>,
     main_geometry: RwLock<MainGeometry>,
     stop: AtomicBool,
@@ -221,6 +224,9 @@ fn build_window(
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 crate::socket::close_window(&app, &label);
+                if label != "main" {
+                    cleanup_closed_aux(&app, &label);
+                }
             }
             if matches!(
                 event,
@@ -241,24 +247,15 @@ fn build_window(
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                if let Ok(mut windows) = app.state::<WindowState>().auxiliary.write() {
-                    windows.remove(&label);
-                }
-                if let Some(w) = app.get_webview_window(&label) {
-                    if let Err(error) = w.hide() {
-                        eprintln!("Could not hide {label}: {error}");
+                if label == "main" {
+                    api.prevent_close();
+                    if let Some(w) = app.get_webview_window(&label) {
+                        if let Err(error) = w.hide() {
+                            eprintln!("Could not hide {label}: {error}");
+                        }
                     }
-                }
-                if label == "panel" {
-                    if let Err(error) = app.emit("cat-panel-window-closed", ()) {
-                        eprintln!("Panel close event failed: {error}");
-                    }
-                }
-                if label == "login" {
-                    if let Err(error) = app.emit("cat-login-overlay", json!({"open":false})) {
-                        eprintln!("Login close event failed: {error}");
-                    }
+                } else {
+                    cleanup_closed_aux(&app, &label);
                 }
             }
         }
@@ -315,6 +312,7 @@ fn fullscreen_shell(app: &AppHandle) -> Result<(), String> {
         .ok_or("No display is available")?;
     w.set_position(*monitor.position()).map_err(err)?;
     w.set_size(*monitor.size()).map_err(err)?;
+    let _ = refresh_geometry(app, "main");
     Ok(())
 }
 
@@ -364,21 +362,37 @@ fn number(args: &Value, name: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("Invalid {name}"))
 }
 
-fn close(app: &AppHandle, label: &str) -> Result<Value, String> {
-    app.state::<WindowState>()
-        .auxiliary
-        .write()
-        .map_err(err)?
-        .remove(label);
-    if let Some(w) = app.get_webview_window(label) {
-        w.hide().map_err(err)?;
+fn cleanup_closed_aux(app: &AppHandle, label: &str) {
+    let state = app.state::<WindowState>();
+    if let Ok(mut windows) = state.auxiliary.write() {
+        windows.remove(label);
     }
+    let _ = crate::shortcuts::release_capture(app, label);
+    crate::socket::close_window(app, label);
     if label == "panel" {
-        app.emit("cat-panel-window-closed", ()).map_err(err)?;
+        if let Ok(mut collapsed) = state.panel_collapsed.lock() {
+            *collapsed = false;
+        }
+        if state.panel_open.swap(false, Ordering::AcqRel) {
+            if let Err(error) = app.emit("cat-panel-window-closed", ()) {
+                eprintln!("Panel close event failed: {error}");
+            }
+        }
     }
     if label == "login" {
-        app.emit("cat-login-overlay", json!({"open": false}))
-            .map_err(err)?;
+        state.login_ready.store(false, Ordering::Release);
+        if state.login_open.swap(false, Ordering::AcqRel) {
+            if let Err(error) = app.emit("cat-login-overlay", json!({"open": false})) {
+                eprintln!("Login close event failed: {error}");
+            }
+        }
+    }
+}
+
+fn close(app: &AppHandle, label: &str) -> Result<Value, String> {
+    cleanup_closed_aux(app, label);
+    if let Some(w) = app.get_webview_window(label) {
+        w.destroy().map_err(err)?;
     }
     Ok(Value::Null)
 }
@@ -413,6 +427,7 @@ pub fn dispatch(
             }
             *state.pending_login.lock().map_err(err)? =
                 Some(json!({"intent":intent,"compact":args.get("compact")}));
+            state.login_open.store(true, Ordering::Release);
             let (w, _) = show_aux(app, "login", "/login", (600., 660.))?;
             app.emit("cat-login-overlay", json!({"open": true}))
                 .map_err(err)?;
@@ -442,6 +457,7 @@ pub fn dispatch(
             if !["bag", "atlas", "exchange", "room", "console", "setting"].contains(&tab) {
                 return Err("Unknown panel tab".into());
             }
+            state.panel_open.store(true, Ordering::Release);
             let (w, existed) = show_aux(app, "panel", &format!("/panel?tab={tab}"), (1100., 760.))?;
             if existed {
                 w.emit("panel-open-tab", tab).map_err(err)?;
@@ -600,6 +616,7 @@ pub fn dispatch(
                 .map_err(err)?;
             w.set_size(LogicalSize::new(width / scale, height / scale))
                 .map_err(err)?;
+            let _ = refresh_geometry(app, "main");
         }
         "finish_main_window_monitor_switch" => {
             state.hit.write().map_err(err)?.force_ignore = false;
@@ -668,6 +685,7 @@ pub fn dispatch(
             main_window(app)?.set_skip_taskbar(skip).map_err(err)?;
         }
         "show_toast_overlay" => {
+            state.toast_generation.fetch_add(1, Ordering::AcqRel);
             let w = if let Some(w) = app.get_webview_window("toast") {
                 w
             } else {
@@ -681,6 +699,23 @@ pub fn dispatch(
             if let Some(w) = app.get_webview_window("toast") {
                 w.hide().map_err(err)?;
             }
+            let gen = state.toast_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                let cleanup = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    let state = cleanup.state::<WindowState>();
+                    if state.stop.load(Ordering::Acquire)
+                        || state.toast_generation.load(Ordering::Acquire) != gen
+                    {
+                        return;
+                    }
+                    if let Some(w) = cleanup.get_webview_window("toast") {
+                        let _ = w.destroy();
+                    }
+                });
+            });
         }
         "sync_native_menu" => return crate::menu::sync(app, args),
         "popup_main_dock_context_menu" => {
@@ -759,33 +794,81 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
                 if app.state::<WindowState>().stop.load(Ordering::Acquire) {
                     break;
                 }
-                if let Some(w) = app.get_webview_window("main") {
+                let mut sleep_ms = 32;
+                let keep_going = objc2::rc::autoreleasepool(|_| {
+                    let Some(w) = app.get_webview_window("main") else {
+                        return false;
+                    };
                     let result = (|| -> Result<(), String> {
-                        let scale = w.scale_factor().map_err(err)?;
-                        let origin = w.inner_position().map_err(err)?;
-                        let cursor = w.cursor_position().map_err(err)?;
-                        let primary_scale = w
-                            .primary_monitor()
-                            .map_err(err)?
-                            .ok_or("No primary display")?
-                            .scale_factor();
-                        let x = cursor.x / primary_scale - origin.x as f64 / scale;
-                        let y = cursor.y / primary_scale - origin.y as f64 / scale;
                         let state = app.state::<WindowState>();
-                        let h = state.hit.read().map_err(err)?;
-                        let ignored = if h.swallow {
-                            false
-                        } else if h.force_ignore {
-                            true
-                        } else {
-                            let regions = if h.window_passthrough {
-                                &h.input_regions
+                        let (ignored, force_ignore) = {
+                            let h = state.hit.read().map_err(err)?;
+                            if h.swallow {
+                                (Some(false), false)
+                            } else if h.force_ignore {
+                                (Some(true), true)
                             } else {
-                                &h.regions
-                            };
-                            !regions.iter().any(|r| r.contains(x, y))
+                                let regions = if h.window_passthrough {
+                                    &h.input_regions
+                                } else {
+                                    &h.regions
+                                };
+                                if regions.is_empty() {
+                                    (Some(true), false)
+                                } else {
+                                    (None, false)
+                                }
+                            }
                         };
-                        drop(h);
+                        let ignored = match ignored {
+                            Some(value) => value,
+                            None => {
+                                let (left, top) = {
+                                    let geom = state.main_geometry.read().map_err(err)?;
+                                    if geom.scale > 0.0 {
+                                        (geom.left, geom.top)
+                                    } else {
+                                        let scale = w.scale_factor().map_err(err)?;
+                                        let origin = w.inner_position().map_err(err)?;
+                                        (origin.x as f64 / scale, origin.y as f64 / scale)
+                                    }
+                                };
+                                let (cursor_x, cursor_y) = match crate::input::current_logical_cursor() {
+                                    Some(point) => point,
+                                    None => {
+                                        let cursor = w.cursor_position().map_err(err)?;
+                                        let primary_scale = w
+                                            .primary_monitor()
+                                            .map_err(err)?
+                                            .ok_or("No primary display")?
+                                            .scale_factor();
+                                        (cursor.x / primary_scale, cursor.y / primary_scale)
+                                    }
+                                };
+                                let x = cursor_x - left;
+                                let y = cursor_y - top;
+                                let h = state.hit.read().map_err(err)?;
+                                if h.swallow {
+                                    false
+                                } else if h.force_ignore {
+                                    true
+                                } else {
+                                    let regions = if h.window_passthrough {
+                                        &h.input_regions
+                                    } else {
+                                        &h.regions
+                                    };
+                                    !regions.iter().any(|r| r.contains(x, y))
+                                }
+                            }
+                        };
+                        sleep_ms = if force_ignore {
+                            50
+                        } else if ignored {
+                            32
+                        } else {
+                            16
+                        };
                         if previous != Some(ignored) {
                             w.set_ignore_cursor_events(ignored).map_err(err)?;
                             previous = Some(ignored);
@@ -794,12 +877,14 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
                     })();
                     if let Err(error) = result {
                         eprintln!("Hit region update stopped: {error}");
-                        break;
+                        return false;
                     }
-                } else {
+                    true
+                });
+                if !keep_going {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(16));
+                std::thread::sleep(Duration::from_millis(sleep_ms));
             }
         }
     });

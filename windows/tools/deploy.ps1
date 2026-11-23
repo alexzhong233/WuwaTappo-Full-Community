@@ -114,9 +114,25 @@ if ($appIcon) {
 
 # 同步到 app\（不清理多余文件，保留账号与运行状态）
 if (-not (Test-Path -LiteralPath $App)) { New-Item -ItemType Directory -Path $App | Out-Null }
+$appPrefix = [IO.Path]::GetFullPath($App).TrimEnd('\') + '\'
+$staleProcs = @(Get-Process -Name 'WuwaTappo.Local', 'LocalGalleryHost', 'WuwaTappoLauncher' -ErrorAction SilentlyContinue |
+  Where-Object { $_.Path -and $_.Path.StartsWith($appPrefix, [System.StringComparison]::OrdinalIgnoreCase) })
+if ($staleProcs.Count -gt 0) {
+  $staleIds = @($staleProcs | ForEach-Object { $_.Id })
+  $staleNames = ($staleProcs | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join ', '
+  foreach ($proc in $staleProcs) {
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+  }
+  Wait-Process -Id $staleIds -Timeout 3 -ErrorAction SilentlyContinue
+  "已停止占用目标目录的旧进程：$staleNames"
+}
 # 运行期状态一律不覆盖：token 变了会让已部署实例的前端鉴权失败
-robocopy $Payload $App /E /NFL /NDL /NJH /NJS /R:1 /W:1 /XF local_config.json offline_state.json assistant_state.json | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "同步到 app\ 失败，robocopy 退出码 $LASTEXITCODE" }
+$copyOutput = robocopy $Payload $App /E /NFL /NDL /NJH /NJS /R:2 /W:1 /XF local_config.json offline_state.json assistant_state.json 2>&1
+if ($LASTEXITCODE -ge 8) {
+  $copyLines = @($copyOutput | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })
+  if ($copyLines.Count -gt 0) { $copyLines | ForEach-Object { Write-Host $_ } }
+  throw "同步到 app\ 失败，robocopy 退出码 $LASTEXITCODE（请确认目标目录中的桌宠或服务进程已关闭）"
+}
 
 # 全新目录没有运行期配置，这里补一份
 if (-not (Test-Path -LiteralPath (Join-Path $App 'local_config.json'))) {

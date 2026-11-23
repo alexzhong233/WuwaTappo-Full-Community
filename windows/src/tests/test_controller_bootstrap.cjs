@@ -76,6 +76,6 @@ const controller = context.factory({
   await intervals[0]();
   record('同步完成后自动变为可用', () => assert.equal(controller.cacheReady.value, true));
   await controller.setEnabled(true);
-  record('就绪后可以开启本地模式', () => assert.ok(controller.enabled.value && modeCalls === 1 && applied > 0));
+  record('就绪后可以开启本地能力且不替换官方目录', () => assert.ok(controller.enabled.value && modeCalls >= 1 && controller.mergeAtlas([]).length === 1 && applied === 0));
   console.log(checks.map(name => 'ok - ' + name).join('\n'));
 })().catch(error => { console.error(error); process.exit(1); });

@@ -100,16 +100,18 @@ for (const platform of ['macos', 'windows']) {
     const app = harness(), first = app.open();
     await first.controller.ready;
     const officialUser = { character: { id: 1 }, accessory: null, emote: [] }, bag = [{ asset_id: 1 }];
+    await first.controller.setEnabled(false);
     assert.equal(first.controller.inventory(officialAtlas, bag), bag);
     await first.controller.importCustomResources('/tmp/mod.zip');
-    assert.equal(first.controller.enabled.value, false, 'import preserves official mode');
+    assert.equal(first.controller.enabled.value, false, 'import preserves the explicit official view');
     await first.controller.setEnabled(true);
-    assert.equal(first.controller.inventory([], bag).length, 4);
+    assert.equal(first.controller.inventory([], bag), bag);
+    assert.equal(first.controller.mergeAtlas([]).length, 4, 'local cache augments the official atlas with missing entries');
     // 两端都走宿主本机 HTTP 路由：asset:// 在 Mac 的 WebView 里取不到图。
     const expectedURL = assetBase + reference.split('/').map(encodeURIComponent).join('/');
-    assert.equal(first.catalog().character_skin[1000000001].url, expectedURL);
+    assert.equal(first.controller.assetUrl(reference), expectedURL);
     assert.equal(first.win.document.documentElement.hasAttribute('data-wuwa-mod'), true, '本地模式下才挂 Mod 标记');
-    assert.equal(first.catalog().character_skin[1000000001].body1.url, expectedURL);
+    assert.equal(first.controller.assetUrl(reference), expectedURL);
     // 背包「我的预设」左边的预览按名字拼地址（character/<名字>.png），
     // Mod 名字必须能落到本机路由，否则官方 CDN 那边只会回一个「？」。
     const modAssetPath = first.win.__WUWA_MOD_ASSET_PATH__;
@@ -118,19 +120,22 @@ for (const platform of ['macos', 'windows']) {
     assert.equal(modAssetPath('accessory/My Mod accessory'), expectedURL);
     assert.equal(modAssetPath('character_atlas/My Mod emote'), expectedURL, '缩略图目录走 atlas 地址');
     assert.equal(modAssetPath('character/官方角色.png'), '', '官方名字不能被改写到本机');
-    assert.equal(first.catalog().character_skin[1].url, account.character_skin[1].url);
+    assert.equal(first.catalog().character_skin[1].url, account.character_skin[1].url, 'official catalog is never replaced');
     assert.equal(first.controller.offlineData.value.catalog.character_skin[1000000001].url, reference, 'runtime conversion leaves raw data intact');
     first.controller.select({ asset_type: 'character_skin', asset_id: 1000000001, asset_name: 'Hero' }, officialUser, 8);
     first.controller.select({ asset_type: 'accessory', asset_id: 1000000003, asset_name: 'Ears' }, officialUser, 8);
     first.controller.select({ asset_type: 'emote', asset_id: 1000000005, asset_name: 'Happy' }, officialUser, 8);
+    assert.equal(first.controller.viewUser(officialUser).character.id, 1000000001);
     const restarted = app.open();
     await restarted.controller.ready;
+    await restarted.controller.startOverlay();
     assert.equal(restarted.controller.viewUser(officialUser).character.id, 1000000001);
     await first.controller.removeCustomResource('mod-example');
     await new Promise(resolve => setImmediate(resolve));
     for (const current of [first, restarted]) {
       assert.equal(current.controller.enabled.value, true, 'removing final Mod keeps full atlas enabled');
-      assert.equal(current.controller.inventory([], bag).length, 1);
+      assert.equal(current.controller.inventory([], bag), bag);
+      assert.equal(current.controller.mergeAtlas([]).length, officialAtlas.length);
       const user = current.controller.viewUser(officialUser);
       assert.equal(user.character.id, 1);
       assert.equal(user.accessory, null);
@@ -153,7 +158,7 @@ for (const platform of ['macos', 'windows']) {
     await assert.rejects(controller.importCustomResources('/tmp/bad.zip'), /Invalid ZIP/);
     assert.equal(controller.enabled.value, true);
     assert.equal(JSON.stringify(controller.offlineData.value), before);
-    assert.equal(controller.inventory([], []).length, officialAtlas.length);
+    assert.equal(controller.mergeAtlas([]).length, officialAtlas.length);
     controller.dispose();
   });
 
@@ -189,7 +194,7 @@ for (const platform of ['macos', 'windows']) {
     assert.throws(() => controller.applyLocalPreset(row.preset_id), /不存在/);
     // 官方模式下这些接口一律拒绝，不能把本机预设当账号预设用。
     await controller.setEnabled(false);
-    assert.throws(() => controller.presetList && controller.createLocalPreset(officialUser), /尚未开启/);
+    assert.throws(() => controller.presetList && controller.createLocalPreset(officialUser), /尚未就绪/);
     controller.dispose(); restarted.controller.dispose();
   });
 
@@ -215,7 +220,6 @@ for (const platform of ['macos', 'windows']) {
     app.backend.installed = true;
     await opened.controller.setEnabled(true);
     assert.equal(opened.controller.assetUrl(reference), '', '缺省实现只能放弃这张图，不能猜地址');
-    assert.equal(opened.catalog().character_skin[1000000001].url, '', 'catalog 同样不能带坏地址');
     opened.controller.dispose();
   });
 }
