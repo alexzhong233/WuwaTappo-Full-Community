@@ -7,13 +7,13 @@ function resolveBalanceAutoClick(settings,balance) {
 }
 
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
-  const VERSION='1.4.0-beta.2', updateRequired=ref(false);
+  const VERSION='1.4.0-beta.3', updateRequired=ref(false);
   const DISMISSED_UPDATE_KEY='wuwatappo-dismissed-update-v1',COMMUNITY_CHECK_INTERVAL_MS=8*3600*1000;
   const state=ref({settings:__WUWA_ASSISTANT_DEFAULTS__});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
   const ready=atlas.ready.then(()=>request('state')).then(v=>{state.value=v;updateRequired.value=!!v.update_required;});
   let started=false,disposed=false,timer=null,mainDependencies=null,sent=0,confirmed=0,lastObserve=0,balancePaused=false;
-  let dashboard=null,updateDialog=null,autoSide=null,autoUntil=0,flushing=null;
+  let dashboard=null,updateDialog=null,autoSide=null,autoUntil=0,flushing=null,globalKeyHandler=null;
   const readyButtons=new Map(),retryAfter=new Map();
   // 打字/点击自动表情：跟随桌宠真实的 localClickCount 递增计数触发（可选±40%随机或固定间隔），
   // 不探测其他应用的焦点，不申请辅助功能权限；自动点击（F24）同步屏蔽且发完表情后短暂停避。
@@ -51,6 +51,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     const item=(mainDependencies?.emotes?.()||[])[Number(index)];
     if(!item?.id||!item?.src)return false;
     if(mainDependencies?.blocked?.())return false;
+    emoteYieldUntil=Date.now()+350;
     mainDependencies.sendEmote(item);emoteStats.sent++;emoteStats.reason='hotkey';
     return true;
   }
@@ -154,11 +155,33 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     if(started)return;started=true;mainDependencies=d;
     await ready;state.value=await request('renderer-start');
     syncEmoteTarget();
+    const heldAlt=new Set();
+    let lastHotkeyAt=0,lastHotkeySlot=-1;
+    function fireHotkeySlot(slot){
+      const now=Date.now();
+      if(slot===lastHotkeySlot&&now-lastHotkeyAt<120)return false;
+      if(!sendEmoteSlot(slot))return false;
+      lastHotkeySlot=slot;lastHotkeyAt=now;
+      return true;
+    }
+    const isAltKey=key=>key==='AltLeft'||key==='AltRight'||key==='Alt'||key==='AltGr';
+    globalKeyHandler=(key,pressed)=>{
+      const k=String(key||'');
+      if(isAltKey(k)){
+        if(pressed)heldAlt.add(k);else heldAlt.delete(k);
+        return false;
+      }
+      if(!pressed||disposed||!state.value.settings?.emote_hotkeys||!heldAlt.size)return false;
+      const match=/^(?:Digit|Numpad|Num|Kp)?([1-5])$/.exec(k);
+      if(!match)return false;
+      return fireHotkeySlot(Number(match[1])-1);
+    };
     const onEmoteHotkey=event=>{
+      if(!event.altKey)heldAlt.clear();
       if(!state.value.settings?.emote_hotkeys||event.repeat||!event.altKey)return;
-      const match=/^Digit([1-5])$/.exec(String(event.code||''));
+      const match=/^(?:Digit|Numpad)([1-5])$/.exec(String(event.code||''));
       if(!match)return;
-      if(sendEmoteSlot(Number(match[1])-1)){event.preventDefault();event.stopPropagation();}
+      if(fireHotkeySlot(Number(match[1])-1)){event.preventDefault();event.stopPropagation();}
     };
     window.addEventListener('keydown',onEmoteHotkey,true);
     const stopClickWatch=d.listenClicks?.(n=>userClick(n));
@@ -236,7 +259,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     let observedRoom=null;
     d.listenRoom(async(code,host)=>{const new_visit=String(code||'')!==observedRoom;observedRoom=String(code||'');if(code)await request('room',{code,host,new_visit});});
     await d.listenJoin(async code=>{if(!updateRequired.value)await d.join(code);});
-    window.addEventListener('pagehide',()=>{disposed=true;window.clearTimeout(timer);window.clearTimeout(updateKickoff);window.clearInterval(updateTimer);removeSoftUpdate();window.removeEventListener?.('keydown',onEmoteHotkey,true);if(typeof stopClickWatch==='function')stopClickWatch();});
+    window.addEventListener('pagehide',()=>{disposed=true;heldAlt.clear();globalKeyHandler=null;window.clearTimeout(timer);window.clearTimeout(updateKickoff);window.clearInterval(updateTimer);removeSoftUpdate();window.removeEventListener?.('keydown',onEmoteHotkey,true);if(typeof stopClickWatch==='function')stopClickWatch();});
   }
   const CONSOLE_TAB_KEY='wuwatappo-console-tab-v1';
   const readLastTab=()=>{try{return window.localStorage?.getItem(CONSOLE_TAB_KEY)||'overview';}catch{return 'overview';}};
@@ -305,5 +328,5 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   ready.then(pollPolicy).catch(()=>{});
   window.addEventListener('pagehide',()=>{disposed=true;closePanel();});
   return {ready,state,updateRequired,startMain,openPanel,mountConsole,closePanel,flush,flushBeforeSwitch,beginChest,chestSucceeded,
-    userClick,sendEmoteSlot,emoteStats};
+    userClick,sendEmoteSlot,onGlobalKey:(key,pressed)=>globalKeyHandler?.(key,pressed)||false,emoteStats};
 }

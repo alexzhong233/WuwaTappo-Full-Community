@@ -270,20 +270,51 @@ async function testDashboard(platform) {
 
   await flush();
   await flush();
-  for (const key of ['rewards', 'daily', 'rooms', 'mods', 'update', 'settings', 'overview']) {
-    dash.showTab(key);
-    await flush();
+  const cardWithTitle = title => doc.body.findAll(n =>
+    n.className.split(/\s+/).includes('wt-card') &&
+    n.findAll(h => h.tagName === 'H3' && h._text === title).length > 0,
+  )[0];
+
+  // Six-tab console: top nav labels are the new canonical set.
+  const nav = doc.body.findAll(n => n.tagName === 'NAV')[0];
+  assert.ok(nav, 'console nav exists');
+  assert.deepEqual(
+    nav.findAll(n => n.tagName === 'BUTTON').map(n => n._text),
+    ['概览', '自动助手', '统计与记录', '联机房间', '外观与 Mod', '系统与更新'],
+    'top nav exposes the six reorganized tabs',
+  );
+
+  // Legacy tab keys keep working through the alias router.
+  for (const [alias, canonical] of [
+    ['rewards', 'records'], ['daily', 'records'], ['settings', 'automation'], ['update', 'system'],
+  ]) {
+    dash.showTab(alias);
+    assert.equal(dash.currentTab(), canonical, alias + ' resolves to ' + canonical);
   }
 
-  // Mods tab is renamed and no longer duplicates the official-atlas sync button.
-  assert.equal(doc.body.findAll(n => n.tagName === 'BUTTON' && n._text === 'Mod 与挂饰').length, 1, 'mods tab label is Mod 与挂饰');
-  dash.showTab('mods');
+  // Overview: live status pills and KPI/progress/recent cards, but no speed picker.
+  dash.showTab('overview');
   await flush();
-  await flush();
-  assert.equal(doc.body.findAll(n => n.tagName === 'BUTTON' && n._text === '检查并同步官方图鉴').length, 0, 'mods tab must not duplicate 检查并同步官方图鉴');
+  const statCards = doc.body.findAll(n => n.className.split(/\s+/).includes('wt-stat'));
+  assert.equal(statCards.length, 4, 'overview shows four KPI stat cards');
+  assert.deepEqual(
+    statCards.map(c => c.findAll(n => n.className === 'wt-label')[0]?._text),
+    ['可用点数', '累计点数', '本次发送', '本次开箱'],
+    'overview KPI labels',
+  );
+  const chestProgressCard = cardWithTitle('宝箱进度');
+  assert.ok(chestProgressCard && chestProgressCard.textContent.includes('宝箱1') && chestProgressCard.textContent.includes('宝箱2'), '宝箱进度 card lists both chests');
+  assert.ok(cardWithTitle('最近获得'), '最近获得 card exists on overview');
+  const pills = doc.body.findAll(n => n.className.split(/\s+/).includes('wt-pill'));
+  assert.equal(pills.length, 3, 'overview shows three live status pills');
+  assert.ok(pills.some(p => p.textContent.includes('点击速度')), 'speed status pill exists');
+  assert.ok(pills.some(p => p.textContent.includes('自动开箱')), 'chest status pill exists');
+  assert.ok(pills.some(p => p.textContent.includes('打字表情')), 'emote status pill exists');
+  assert.equal(doc.body.querySelector('.wt-speeds'), null, 'overview must not host the speed picker');
 
-  // Test `update` tab: no ReferenceError on fields, no stuck 检查更新 button, prerelease toggle re-checks
+  // System tab (`update` alias): version/update behavior plus perf rendering and local assets.
   dash.showTab('update');
+  assert.equal(dash.currentTab(), 'system');
   await flush();
   await flush();
   const checkBtn = doc.body.findAll(n => n.tagName === 'BUTTON' && n._text === '检查更新')[0];
@@ -356,11 +387,53 @@ async function testDashboard(platform) {
   assert.equal(installFallbackBtn.parentNode.hidden, false, 'manual GitHub fallback shown on update tab when background install fails');
   installStatusOverride = null;
 
-  // Test `settings` tab: no Accessibility button, frequency input, 1-5 slot picker, live emote hint
+  // Perf card: FPS presets and render toggles go through atlas.setPerf.
+  const perfCard = cardWithTitle('性能与省内存渲染');
+  assert.ok(perfCard, '性能与省内存渲染 card lives on the system tab');
+  const perfCheckboxes = doc.body.findAll(n => n.tagName === 'INPUT' && n.type === 'checkbox' && n.getAttribute('data-perf-setting') === 'true');
+  assert.equal(perfCheckboxes.length, 3, 'system tab exposes exactly three render toggles');
+  assert.deepEqual(
+    perfCheckboxes.map(n => n.getAttribute('aria-label')),
+    ['空闲停帧', '精简动画效果', '停止渲染桌面主角'],
+    'perf toggles are idle pause, reduced motion and hide main pet',
+  );
+  const fps30 = perfCard.findAll(n => n.tagName === 'BUTTON' && n._text === '30 FPS（省电）')[0];
+  assert.ok(fps30, '30 FPS preset exists');
+  await fps30.onclick();
+  assert.deepEqual({ ...perfCalls.at(-1) }, { fpsCap: 30 }, '30 FPS preset calls setPerf with fpsCap 30');
+  assert.ok(fps30.className.includes('wt-primary'), '30 FPS preset becomes primary after selection');
+  assert.equal(atlas.perf.value.fpsCap, 30, 'atlas.perf reflects the selected FPS cap');
+  const perfBox = label => perfCard.findAll(n => n.tagName === 'INPUT' && n.getAttribute('data-perf-setting') === 'true' && n.getAttribute('aria-label') === label)[0];
+  const idlePauseBox = perfBox('空闲停帧');
+  const hidePetBox = perfBox('停止渲染桌面主角');
+  assert.ok(idlePauseBox && hidePetBox, 'perf checkbox toggles exist');
+  idlePauseBox.checked = false;
+  await idlePauseBox.onchange();
+  assert.deepEqual({ ...perfCalls.at(-1) }, { idlePause: false }, '空闲停帧 toggle calls setPerf with idlePause false');
+  assert.equal(atlas.perf.value.idlePause, false, 'atlas.perf reflects idlePause off');
+  hidePetBox.checked = true;
+  await hidePetBox.onchange();
+  assert.deepEqual({ ...perfCalls.at(-1) }, { hideMainPet: true }, '停止渲染桌面主角 toggle calls setPerf with hideMainPet true');
+  assert.equal(atlas.perf.value.hideMainPet, true, 'atlas.perf reflects hideMainPet on');
+
+  const assetsCard = cardWithTitle('本机素材资源');
+  assert.ok(assetsCard, '本机素材资源 card lives on the system tab');
+  assert.equal(assetsCard.findAll(n => n.tagName === 'BUTTON' && n._text === '检查并同步素材缓存').length, 1, '本机素材资源 offers the cache-sync button');
+
+  // Automation tab (`settings` alias): emote triggers, balance policy and batch synthesis.
   dash.showTab('settings');
   await flush();
+  assert.equal(dash.currentTab(), 'automation');
   assert.equal(doc.body.querySelector('[data-accessibility-btn]'), null, 'Accessibility permission button must be removed');
   assert.equal(requests.some(r => r.route === '/accessibility/request'), false);
+
+  const speedGrid = doc.body.querySelector('.wt-speeds');
+  assert.ok(speedGrid, 'speed presets live on automation, not overview');
+  assert.deepEqual(
+    speedGrid.findAll(n => n.tagName === 'BUTTON').map(b => b.findAll(s => s.tagName === 'STRONG')[0]?._text),
+    ['轻缓 · 1 次/秒', '标准 · 5 次/秒', '快速 · 10 次/秒'],
+    'three speed presets are listed with their labels',
+  );
 
   const freqInput = doc.body.querySelector('[aria-label="自动表情平均间隔"]');
   assert.ok(freqInput, 'auto_emote_interval input exists');
@@ -424,19 +497,16 @@ async function testDashboard(platform) {
   assert.ok(nextHint.textContent.includes('已触发 4 次'), nextHint.textContent);
   assert.ok(nextHint.textContent.includes('8 次'), nextHint.textContent);
 
-  // Settings structural regressions: removed toggles, decoupled balance policy,
-  // paused badge, batch synthesis, OBS capture card and standalone appearance card.
+  // Automation exposes exactly the five supported toggles; perf toggles now live on system.
   const settingCheckboxes = doc.body.findAll(n => n.tagName === 'INPUT' && n.type === 'checkbox');
-  const perfToggles = settingCheckboxes.filter(n => n.getAttribute('data-perf-setting') === 'true');
   const settingToggles = settingCheckboxes.filter(n => n.getAttribute('data-perf-setting') !== 'true');
-  assert.equal(perfToggles.length, 3, 'perf card exposes exactly three render toggles');
-  assert.deepEqual(
-    perfToggles.map(n => n.getAttribute('aria-label')),
-    ['空闲停帧', '精简动画效果', '停止渲染桌面主角'],
-    'perf toggles are idle pause, reduced motion and hide main pet',
-  );
   const toggleLabels = settingToggles.map(n => String(n.getAttribute('aria-label') || ''));
-  assert.equal(settingToggles.length, 5, 'settings page exposes only the supported toggles');
+  assert.equal(settingToggles.length, 5, 'automation page exposes only the five automation toggles');
+  assert.deepEqual(
+    toggleLabels,
+    ['后台自动点击', '按可用点数自动启停', '自动开宝箱', '打字自动表情', 'Alt+1～5 快捷表情'],
+    'automation toggles are enabled / balance / chest / emote / hotkeys',
+  );
   assert.ok(
     !toggleLabels.some(label => /游戏模式|显示器|记住/.test(label)),
     'auto_game_mode / remember_monitor toggles must be removed',
@@ -465,8 +535,6 @@ async function testDashboard(platform) {
   state.settings.enabled = false;
   state.runtime.balance_paused = false;
 
-  const cards = doc.body.findAll(n => n.className.split(/\s+/).includes('wt-card'));
-  const cardWithTitle = title => cards.find(c => c.findAll(n => n.tagName === 'H3' && n._text === title).length > 0);
   const synthCard = cardWithTitle('背包批量合成');
   assert.ok(synthCard, '背包批量合成 card exists');
   const sameLevelBtn = synthCard.findAll(n => n.tagName === 'BUTTON' && n._text === '批量同阶合成（5 合 1）')[0];
@@ -476,67 +544,30 @@ async function testDashboard(platform) {
   await upgradeBtn.onclick();
   assert.deepEqual(synthKinds, ['same-level', 'upgrade'], 'batch synthesis buttons call the right modes');
 
-  const obsCard = cardWithTitle('OBS 桌宠绿幕');
-  assert.ok(obsCard, 'OBS 桌宠绿幕 card exists');
-  assert.deepEqual(obsCard.findAll(n => n.tagName === 'BUTTON').map(n => n._text), ['关闭', '开启绿幕'], 'OBS card only offers off/green');
-  assert.ok(!obsCard.findAll(n => n.tagName === 'BUTTON').some(n => n._text.includes('透明')), 'OBS card no longer offers 透明');
-
-  const lookCard = cardWithTitle('面板外观');
-  assert.ok(lookCard, '面板外观 card exists');
-  assert.notEqual(lookCard, obsCard, '面板外观 is a separate card');
-  assert.equal(lookCard.findAll(n => n.tagName === 'BUTTON' && n._text === '清除背景图').length, 1, '面板外观 card offers 清除背景图');
-
-  // Settings search: filtering keeps the shortcut card, hides unrelated rows, shows the empty hint and clears.
+  // Automation search: filters setting rows and the 背包批量合成 card.
   const searchInput = doc.body.querySelector('[data-settings-search="true"]');
   assert.ok(searchInput, 'settings search input exists');
-  const shortcutCard = cardWithTitle('快捷键速览');
-  assert.ok(shortcutCard, '快捷键速览 card exists');
-  assert.ok(shortcutCard.textContent.includes('Alt+1～5'), 'shortcut card explains Alt+1～5');
-  for (const key of ['F7', 'F8', 'F9']) {
-    assert.ok(shortcutCard.textContent.includes(key), 'shortcut card explains ' + key);
-  }
+  assert.equal(cardWithTitle('快捷键速览'), undefined, '快捷键速览 card removed');
   const automationRow = doc.body.findAll(n => n.className === 'wt-setting' && n.textContent.includes('后台自动点击'))[0];
   assert.ok(automationRow, '后台自动点击 setting row exists');
   const clearSearchBtn = doc.body.findAll(n => n.tagName === 'BUTTON' && n._text === '清空')[0];
   assert.ok(clearSearchBtn, 'search clear button exists');
   assert.equal(clearSearchBtn.disabled, true, 'clear button starts disabled while the search box is empty');
-  searchInput.value = 'F7';
+  searchInput.value = '合成';
   await searchInput.oninput();
-  assert.equal(shortcutCard.hidden, false, 'shortcut card stays visible when searching F7');
-  assert.equal(automationRow.hidden, true, 'unrelated setting rows hide when searching F7');
+  assert.equal(synthCard.hidden, false, '背包批量合成 stays visible when searching 合成');
+  assert.equal(automationRow.hidden, true, 'unrelated setting rows hide when searching 合成');
   searchInput.value = '不存在关键字xyz';
   await searchInput.oninput();
   const searchEmpty = doc.body.findAll(n => n.className === 'wt-empty' && n.textContent.includes('未找到匹配'))[0];
   assert.ok(searchEmpty, 'empty search hint exists');
   assert.equal(searchEmpty.hidden, false, 'empty search hint is shown when nothing matches');
-  assert.equal(shortcutCard.hidden, true, 'shortcut card hides when nothing matches');
+  assert.equal(synthCard.hidden, true, '背包批量合成 hides when nothing matches');
   await clearSearchBtn.onclick();
-  assert.equal(shortcutCard.hidden, false, 'clearing the search restores the shortcut card');
+  assert.equal(synthCard.hidden, false, 'clearing the search restores the synth card');
   assert.equal(automationRow.hidden, false, 'clearing the search restores setting rows');
   assert.equal(searchEmpty.hidden, true, 'clearing the search hides the empty hint');
   assert.equal(clearSearchBtn.disabled, true, 'clear button is disabled again after clearing');
-
-  // Perf card: FPS presets and render toggles go through atlas.setPerf.
-  const perfCard = cardWithTitle('性能与省内存渲染');
-  assert.ok(perfCard, '性能与省内存渲染 card exists');
-  const fps30 = perfCard.findAll(n => n.tagName === 'BUTTON' && n._text === '30 FPS（省电）')[0];
-  assert.ok(fps30, '30 FPS preset exists');
-  await fps30.onclick();
-  assert.deepEqual({ ...perfCalls.at(-1) }, { fpsCap: 30 }, '30 FPS preset calls setPerf with fpsCap 30');
-  assert.ok(fps30.className.includes('wt-primary'), '30 FPS preset becomes primary after selection');
-  assert.equal(atlas.perf.value.fpsCap, 30, 'atlas.perf reflects the selected FPS cap');
-  const perfBox = label => perfCard.findAll(n => n.tagName === 'INPUT' && n.getAttribute('data-perf-setting') === 'true' && n.getAttribute('aria-label') === label)[0];
-  const idlePauseBox = perfBox('空闲停帧');
-  const hidePetBox = perfBox('停止渲染桌面主角');
-  assert.ok(idlePauseBox && hidePetBox, 'perf checkbox toggles exist');
-  idlePauseBox.checked = false;
-  await idlePauseBox.onchange();
-  assert.deepEqual({ ...perfCalls.at(-1) }, { idlePause: false }, '空闲停帧 toggle calls setPerf with idlePause false');
-  assert.equal(atlas.perf.value.idlePause, false, 'atlas.perf reflects idlePause off');
-  hidePetBox.checked = true;
-  await hidePetBox.onchange();
-  assert.deepEqual({ ...perfCalls.at(-1) }, { hideMainPet: true }, '停止渲染桌面主角 toggle calls setPerf with hideMainPet true');
-  assert.equal(atlas.perf.value.hideMainPet, true, 'atlas.perf reflects hideMainPet on');
 
   // Synth log: first click loads /diagnostic/synth/list and renders entries, second click collapses it.
   const synthLogBtn = doc.body.querySelector('[data-synth-log-btn="true"]');
@@ -552,6 +583,13 @@ async function testDashboard(platform) {
   assert.ok(synthLog.textContent.includes('消耗 5 个'), synthLog.textContent);
   await synthLogBtn.onclick();
   assert.equal(synthLog.hidden, true, 'second click collapses the synth log');
+
+  // Records tab: 7-day statistics and the real chest reward log.
+  dash.showTab('records');
+  await flush();
+  assert.equal(dash.currentTab(), 'records');
+  assert.ok(cardWithTitle('最近 7 天统计'), 'records tab has the 最近 7 天统计 card');
+  assert.ok(cardWithTitle('真实开箱获得记录'), 'records tab has the 真实开箱获得记录 card');
 
   // Rooms tab: member layout card, hiding members and layout sliders/arrange buttons.
   dash.showTab('rooms');
@@ -583,10 +621,26 @@ async function testDashboard(platform) {
   assert.deepEqual(arrangeCalls, ['horizontal', 'vertical'], 'arrange buttons request horizontal and vertical layouts');
   assert.equal(clearPositionCalls.length, 1, '重置位置 calls clearRoomPositions');
 
-  // Mods tab: current accessory falls back to the official user, saved transforms load and delete.
+  // Mods tab: transform editor, saved list, resource packs, OBS green screen and panel look.
   dash.showTab('mods');
   await flush();
   await flush();
+  assert.equal(dash.currentTab(), 'mods');
+  assert.equal(doc.body.findAll(n => n.tagName === 'BUTTON' && n._text === '检查并同步官方图鉴').length, 0, 'mods tab must not duplicate 检查并同步官方图鉴');
+  const xformCard = cardWithTitle('挂饰位置 / 大小 / 角度');
+  assert.ok(xformCard, '挂饰位置 / 大小 / 角度 card exists');
+  assert.equal(xformCard.findAll(n => n.tagName === 'INPUT' && n.type === 'range').length, 4, 'four transform sliders exist');
+  const packsCard = cardWithTitle('已安装的资源包');
+  assert.ok(packsCard, '已安装的资源包 card exists');
+  assert.equal(packsCard.findAll(n => n.tagName === 'BUTTON' && n._text === '导入 Mod ZIP').length, 1, 'resource pack import button exists');
+  const obsCard = cardWithTitle('OBS 桌宠绿幕');
+  assert.ok(obsCard, 'OBS 桌宠绿幕 card lives on mods');
+  assert.deepEqual(obsCard.findAll(n => n.tagName === 'BUTTON').map(n => n._text), ['关闭', '开启绿幕'], 'OBS card only offers off/green');
+  assert.ok(!obsCard.findAll(n => n.tagName === 'BUTTON').some(n => n._text.includes('透明')), 'OBS card no longer offers 透明');
+  const lookCard = cardWithTitle('面板外观');
+  assert.ok(lookCard, '面板外观 card exists');
+  assert.notEqual(lookCard, obsCard, '面板外观 is a separate card');
+  assert.equal(lookCard.findAll(n => n.tagName === 'BUTTON' && n._text === '清除背景图').length, 1, '面板外观 card offers 清除背景图');
   const accessoryLabel = doc.body.findAll(n => n.tagName === 'P' && n.textContent.includes('当前挂饰：'))[0];
   assert.ok(accessoryLabel, 'current accessory label exists');
   assert.ok(accessoryLabel.textContent.includes('当前挂饰：official_hat.png'), accessoryLabel.textContent);
@@ -773,6 +827,56 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(platform) {
       `fixed interval=5 should fire at clicks 5 and 10 (click ${c})`,
     );
   }
+
+  // 7. Global Alt+1~5 hotkeys trigger without DOM focus, support both Windows (Digit2) and macOS ('3'), and dedup with DOM keydown.
+  settings.emote_hotkeys = false;
+  await stepDue();
+  const beforeDisabledHotkey = sentEmotes.length;
+  assert.equal(assistant.onGlobalKey('AltLeft', true), false);
+  assert.equal(assistant.onGlobalKey('Digit2', true), false);
+  assistant.onGlobalKey('Digit2', false);
+  assistant.onGlobalKey('AltLeft', false);
+  assert.equal(sentEmotes.length, beforeDisabledHotkey, 'global hotkeys respect emote_hotkeys = false');
+
+  settings.emote_hotkeys = true;
+  await stepDue();
+  assert.equal(assistant.onGlobalKey('Digit2', true), false, 'pressing Digit2 without Alt held does not fire');
+  assert.equal(assistant.onGlobalKey('AltLeft', true), false);
+  assert.equal(assistant.onGlobalKey('Digit2', true), true, 'global AltLeft+Digit2 triggers slot 2 without window focus');
+  assert.equal(sentEmotes.at(-1).id, 102);
+  let prevented = false;
+  listeners.get('keydown')?.({
+    code: 'Digit2',
+    altKey: true,
+    repeat: false,
+    preventDefault() { prevented = true; },
+    stopPropagation() {},
+  });
+  assert.equal(prevented, false, 'immediate DOM keydown within 120ms is deduplicated');
+  assert.equal(sentEmotes.length, beforeDisabledHotkey + 1, 'no duplicate emote sent');
+  assistant.onGlobalKey('Digit2', false);
+  assistant.onGlobalKey('AltLeft', false);
+
+  now += 200;
+  assistant.onGlobalKey('AltRight', true);
+  assert.equal(assistant.onGlobalKey('3', true), true, 'macOS style global AltRight+3 triggers slot 3');
+  assert.equal(sentEmotes.at(-1).id, 103);
+  assistant.onGlobalKey('3', false);
+  assistant.onGlobalKey('AltRight', false);
+
+  now += 200;
+  assistant.onGlobalKey('Alt', true);
+  assert.equal(assistant.onGlobalKey('Num1', true), true, 'Windows rdev Alt+Num1 triggers slot 1');
+  assert.equal(sentEmotes.at(-1).id, 101);
+  assistant.onGlobalKey('Num1', false);
+  assistant.onGlobalKey('Alt', false);
+
+  now += 200;
+  assistant.onGlobalKey('AltGr', true);
+  assert.equal(assistant.onGlobalKey('Kp3', true), true, 'Windows rdev AltGr+Kp3 triggers slot 3');
+  assert.equal(sentEmotes.at(-1).id, 103);
+  assistant.onGlobalKey('Kp3', false);
+  assistant.onGlobalKey('AltGr', false);
 
   await stepDue();
   const lastTick = requests.filter(r => r.route === '/assistant/tick').at(-1);

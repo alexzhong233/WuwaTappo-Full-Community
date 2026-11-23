@@ -1150,6 +1150,7 @@ pub fn integrate_build(
     let appear_catalog_sym = require_import(&mi, "appearanceAssetCatalog")?;
     let getchar_sym = require_import(&mi, "getUserCharacterAssetName")?;
     let getaccess_sym = require_import(&mi, "getUserAccessoryAssetName")?;
+    let getaccess_id_sym = require_import(&mi, "getUserAccessoryAssetId")?;
     let getemotes_sym = require_import(&mi, "getUserEmoteAssets")?;
     let role = req_field("selectedRoleId")?;
     let accessory = req_field("selectedPartId")?;
@@ -1228,32 +1229,69 @@ pub fn integrate_build(
         &mut edits,
         select_name,
         format!(
-            "if(__lg.enabled.value && !__skipLocalSelectChoice){{
- if({select_param}?.__wuwaReorder){{
-  const __ids=Array.isArray({select_param}.emoteAssetIds)?{select_param}.emoteAssetIds:[];
-  if({select_param}.__wuwaTarget==='official'){{
-   __skipLocalReorder=true;__officialApplyDepth++;
-   Promise.resolve({reorder_name}(__ids)).finally(()=>{{__officialApplyDepth--;__skipLocalReorder=false;__localRefresh();}}).catch(err=>console.error('[reorder-official]',err));
-  }}else{{
-   __lg.reorder(__ids,{store}.userInfo);__localRefresh();
-  }}
-  return;
- }}
- if(__lg.beginSelect({select_param},{store}.userInfo,{max_emotes},async ()=>{{
+            "if(!__skipLocalSelectChoice){{
+ const __applyOfficialItem=async __item=>{{
   __skipLocalSelectChoice=true;
   __officialApplyDepth++;
   try{{
    const __off={store}.userInfo;
-   const __offChar={getchar_sym}(__off);
-   {role}=__offChar?__offChar.replace(/\\.png$/i,''):'';
-   {accessory}={getaccess_sym}(__off)||null;
-   return await {select_name}({select_param});
+   let __req=__item&&typeof __item==='object'?{{...__item}}:__item;
+   if(__off){{
+    const __offChar={getchar_sym}(__off);
+    {role}=__offChar?__offChar.replace(/\\.png$/i,''):'';
+    {accessory}={getaccess_sym}(__off)||null;
+   }}
+   if(__req?.__wuwaRemove&&__req.__wuwaTarget==='official'){{
+    if(__req.asset_type==='accessory'){{
+     const __offAccId=__off?({getaccess_id_sym}(__off)||Number(__off?.accessory?.id)||0):0;
+     const __offAccName=__off?({getaccess_sym}(__off)||__off?.accessory?.name||''):({accessory}||'');
+     __req.asset_id=Number(__req.asset_id)||__offAccId;
+     __req.asset_name=__req.asset_name||__offAccName||(__req.asset_id?'accessory_'+__req.asset_id:'');
+     if(__req.asset_name){accessory}=__req.asset_name;
+    }}else if(__req.asset_type==='emote'){{
+     const __list=__off?{getemotes_sym}(__off):{emotes};
+     const __idx=Number(__req.__wuwaSlotIndex);
+     const __hit=(Array.isArray(__list)?__list:[]).find(x=>Number(x?.id)===Number(__req.asset_id))||(Number.isInteger(__idx)&&Array.isArray(__list)?__list[__idx]:null);
+     if(__hit?.id){{__req.asset_id=Number(__hit.id);__req.asset_name=__req.asset_name||__hit.name||('emote_'+__hit.id);}}
+    }}
+   }}
+   return await {select_name}(__req);
   }}finally{{
    __skipLocalSelectChoice=false;
    __officialApplyDepth--;
    __localRefresh();
   }}
- }}))return;
+ }};
+ if({select_param}?.wuwa_choice){{
+  const __choice={select_param}.wuwa_choice;
+  if(__choice==='local'){{
+   try{{
+    if(!__lg.enabled.value)await (__lg.activateLocalIfReady?.()||__lg.startOverlay?.());
+    __lg.select({select_param},{store}.userInfo,{max_emotes});
+    __localRefresh();
+   }}catch(error){{{show_toast_sym}(error.message);}}
+   return;
+  }}
+  await __applyOfficialItem({select_param});
+  __lg.setMark({select_param}.asset_id,{select_param}.asset_type,'official',true);
+  return;
+ }}
+ if(__lg.enabled.value || {select_param}?.__wuwaReorder || {select_param}?.__wuwaTarget){{
+  if({select_param}?.__wuwaReorder){{
+   const __ids=Array.isArray({select_param}.emoteAssetIds)?{select_param}.emoteAssetIds:[];
+   if({select_param}.__wuwaTarget==='official'){{
+    __skipLocalReorder=true;__officialApplyDepth++;
+    Promise.resolve({reorder_name}(__ids)).finally(()=>{{__officialApplyDepth--;__skipLocalReorder=false;__localRefresh();}}).catch(err=>console.error('[reorder-official]',err));
+   }}else{{
+    __lg.reorder(__ids,{store}.userInfo);__localRefresh();
+   }}
+   return;
+  }}
+  if(__lg.beginSelect({select_param},{store}.userInfo,{max_emotes},()=>__applyOfficialItem({select_param}),{{noDialog:true}})){{
+   __localRefresh();
+   return;
+  }}
+ }}
 }}"
         ),
     )?;
@@ -1369,7 +1407,9 @@ pub fn integrate_build(
     snap_text = rec.replace(
         &snap_text,
         &format!("userInfo: {user_info_field}"),
-        &format!("userInfo: {rewritten_user_info},\n          officialUserInfo: {user_info_field}"),
+        &format!(
+            "userInfo: {rewritten_user_info},\n          officialUserInfo: {user_info_field},\n          localSelection: __lg.selection.value"
+        ),
     )?;
     snap_text = snap_text.replace(
         &format!("selectedEmoteAssetIds: {selected_emotes_field}"),
@@ -1593,7 +1633,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         module_component.start + cc_span.start(),
         module_component.start + cc_span.end(),
         format!(
-            "if ({cc_var}.asset_type === \"character_skin\" && {cc_var}.__wuwaTarget !== \"local\" && !{cc_var}.__wuwaRemove) {{"
+            "if ({cc_var}.asset_type === \"character_skin\" && {cc_var}.__wuwaTarget !== \"local\" && {cc_var}.wuwa_choice !== \"local\" && !{cc_var}.__wuwaRemove) {{"
         ),
     ));
     let preset_confirm_re = Regex::new(
@@ -1709,8 +1749,21 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     panel_edits.push(Edit::new(
         atlas_component.start + ao_span.start(),
         atlas_component.start + ao_span.end(),
-        format!("if ((!<v>.owned && !__lg.enabled.value) || !<v>.asset_id) return null;").replace("<v>", ao_var),
+        format!("if ((!<v>.owned && !__lg.enabled.value && !window.__WUWA_PENDING_CHOICE__) || !<v>.asset_id) return null;").replace("<v>", ao_var),
     ));
+    let atlas_sanitize_re = Regex::new(
+        r"(?s)(star_level:\s*([A-Za-z0-9_$]+)\.star_level)(\s*\}\s*:\s*null)",
+    )
+    .unwrap();
+    if let Some(caps) = atlas_sanitize_re.captures(atlas_text) {
+        let field_end = caps.get(1).unwrap().end();
+        let src_var = &caps[2];
+        panel_edits.push(Edit::new(
+            atlas_component.start + field_end,
+            atlas_component.start + field_end,
+            format!(", wuwa_choice: {src_var}.wuwa_choice || window.__WUWA_PENDING_CHOICE__"),
+        ));
+    }
     let atlas_click_re = Regex::new(&format!(
         r#"([A-Za-z0-9_$]+) && ([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\) && {}\("select-appearance", ([A-Za-z0-9_$]+)\)"#,
         regex::escape(&atlas_emit)
@@ -1725,7 +1778,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         atlas_component.start + ac_span.start(),
         atlas_component.start + ac_span.end(),
         format!(
-            "{w} && (__lg.enabled.value ? __lg.canSelect({arg}) : {h_fn}({arg})) && {atlas_emit}(\"select-appearance\", {w})",
+            "{w} && (window.__WUWA_PENDING_CHOICE__ === \"local\" ? Boolean({arg}?.asset_id) : (__lg.enabled.value ? __lg.canSelect({arg}) : {h_fn}({arg}))) && {atlas_emit}(\"select-appearance\", {w})",
             w = &atlas_click_m[1],
             h_fn = &atlas_click_m[2],
             arg = &atlas_click_m[3],
@@ -1766,9 +1819,9 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         atlas_return,
         atlas_return,
         format!(
-            "const __atlasProgress={computed_p}(()=>__lg.collectionProgress({category_rows}.value,{atlas_loading_var}.value)),__atlasProgressTitle={computed_p}(()=>['全图鉴收集进度','全角色收集进度','全配件收集进度','全表情收集进度'][{category_index}.value]||'全图鉴收集进度'),__atlasEquipEl={ref_p}(null);\n\
+            "const __atlasProgress={computed_p}(()=>__lg.collectionProgress({category_rows}.value,{atlas_loading_var}.value)),__atlasProgressTitle={computed_p}(()=>['全图鉴收集进度','全角色收集进度','全配件收集进度','全表情收集进度'][{category_index}.value]||'全图鉴收集进度');\n\
              let __disposeAtlasEquip=null;\n\
-             {on_mounted_p}(()=>{{__disposeAtlasEquip=__lg.mountEquipmentBar?.(__atlasEquipEl.value,{{page:'atlas',emitSelect:x=>{atlas_emit}('select-appearance',x)}})||null;}});\n\
+             {on_mounted_p}(()=>{{__disposeAtlasEquip=__lg.mountEquipmentBar?.(document.body,{{page:'atlas',floating:true,emitSelect:x=>{atlas_emit}('select-appearance',x)}})||null;}});\n\
              {on_unmounted_p}(()=>{{__disposeAtlasEquip?.();__disposeAtlasEquip=null;}});\n"
         ),
     ));
@@ -1782,8 +1835,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
  {h}('span',null,__atlasProgressTitle.value),{h}('strong',{{style:{{fontVariantNumeric:'tabular-nums',color:'#996644'}}}},\n\
  !{global_store_p}.isLoggedIn?'登录后查看':{atlas_loading_var}.value?'正在读取…':__atlasProgress.value.collected+'/'+__atlasProgress.value.total+' · '+__atlasProgress.value.percent.toFixed(1)+'%')]),\n\
  {h}('div',{{role:'progressbar','aria-label':'真实账号'+__atlasProgressTitle.value,'aria-valuemin':0,'aria-valuemax':__atlasProgress.value.total,'aria-valuenow':__atlasProgress.value.collected,'aria-busy':{atlas_loading_var}.value,style:{{height:'9px',width:'100%',background:'#ecddc4',borderRadius:'20px',overflow:'hidden'}}}},[\n\
- {h}('span',{{style:{{display:'block',height:'100%',width:({global_store_p}.isLoggedIn?__atlasProgress.value.percent:0)+'%',background:'linear-gradient(90deg,#e4b56f,#c58b51)',borderRadius:'inherit',transition:'width .25s ease'}}}})])],-2)),\n\
- ({open_block_p}(),{create_elem_block_p}('div',{{ref_key:'__atlasEquipRef',ref:__atlasEquipEl,class:'wuwa-equip-mount'}},null,512)),"
+ {h}('span',{{style:{{display:'block',height:'100%',width:({global_store_p}.isLoggedIn?__atlasProgress.value.percent:0)+'%',background:'linear-gradient(90deg,#e4b56f,#c58b51)',borderRadius:'inherit',transition:'width .25s ease'}}}})])],-2)),"
     );
     let progress_at = atlas_component.start + atlas_text.find(tab_anchor).unwrap() + tab_anchor.len();
     panel_edits.push(Edit::new(progress_at, progress_at, progress_ui));
@@ -1817,7 +1869,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
             m.start(),
             m.end(),
             format!(
-                "\"is-item-clickable\": (__c => window.__WUWA_LOCAL_ATLAS__?.enabled.value ? window.__WUWA_LOCAL_ATLAS__.canSelect(__c) : {name}(__c))"
+                "\"is-item-clickable\": (__c => window.__WUWA_LOCAL_ATLAS__ ? Boolean(__c?.asset_id) : {name}(__c))"
             ),
         ));
     }
@@ -1840,6 +1892,28 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
 
     let bag_component = find_component(p_raw, "MainPanelBagTab")?;
     let bag_text = &panel_orig[bag_component.start..bag_component.end];
+    let panel_select_re = Regex::new(r"onSelectItem\s*:\s*([A-Za-z0-9_$]+)\s*,").unwrap();
+    let mut wrapped_panel_select = 0usize;
+    for (range, force_official) in [
+        (atlas_component.start..atlas_component.end, false),
+        (bag_component.start..bag_component.end, true),
+    ] {
+        for caps in panel_select_re.captures_iter(&panel_orig[range.clone()]) {
+            let m = caps.get(0).unwrap();
+            let handler = &caps[1];
+            wrapped_panel_select += 1;
+            panel_edits.push(Edit::new(
+                range.start + m.start(),
+                range.start + m.end(),
+                format!(
+                    "onSelectItem: (__c => {{ const __lg=window.__WUWA_LOCAL_ATLAS__; if(__lg?.beginPanelSelect) return __lg.beginPanelSelect(__c, __next=>{{ window.__WUWA_PENDING_CHOICE__=__next.wuwa_choice; try{{return {handler}(__next);}}finally{{window.__WUWA_PENDING_CHOICE__=null;}} }}, {force_official}); return {handler}(__c); }}),"
+                ),
+            ));
+        }
+    }
+    if wrapped_panel_select != 2 {
+        return Err(format!("MainPanelAtlasTab/BagTab onSelectItem anchor count changed: {wrapped_panel_select}"));
+    }
     let bag_emit = Regex::new(r#"([A-Za-z0-9_$]+)\("select-appearance","#)
         .unwrap()
         .captures(bag_text)
@@ -1859,7 +1933,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         bag_component.start + bc_span.start(),
         bag_component.start + bc_span.end(),
         format!(
-            "(__lg.enabled.value ? __lg.canSelect({arg}) : {chk}({arg})) && {bag_emit}(\"select-appearance\", {arg})",
+            "(window.__WUWA_PENDING_CHOICE__ === \"local\" ? Boolean({arg}?.asset_id) : (__lg.enabled.value ? __lg.canSelect({arg}) : {chk}({arg}))) && {bag_emit}(\"select-appearance\", {arg})",
             chk = &bag_click_m[1],
             arg = &bag_click_m[2],
         ),
@@ -1925,21 +1999,9 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         bag_return,
         bag_return,
         format!(
-            "const __bagEquipEl={ref_p}(null);let __disposeBagEquip=null;\n\
-             {on_mounted_p}(()=>{{__disposeBagEquip=__lg.mountEquipmentBar?.(__bagEquipEl.value,{{page:'bag',emitSelect:x=>{bag_emit}('select-appearance',x)}})||null;}});\n\
+            "let __disposeBagEquip=null;\n\
+             {on_mounted_p}(()=>{{__disposeBagEquip=__lg.mountEquipmentBar?.(document.body,{{page:'bag',floating:true,emitSelect:x=>{bag_emit}('select-appearance',x)}})||null;}});\n\
              {on_unmounted_p}(()=>{{__disposeBagEquip?.();__disposeBagEquip=null;}});\n"
-        ),
-    ));
-    let bag_tab_anchor = "\"track-kind\": \"backpack\"\n      }, null, 8, [\"modelValue\"]),";
-    if bag_text.match_indices(bag_tab_anchor).count() != 1 {
-        return Err("MainPanelBagTab tab header changed".into());
-    }
-    let bag_equip_at = bag_component.start + bag_text.find(bag_tab_anchor).unwrap() + bag_tab_anchor.len();
-    panel_edits.push(Edit::new(
-        bag_equip_at,
-        bag_equip_at,
-        format!(
-            " ({open_block_p}(),{create_elem_block_p}('div',{{ref_key:'__bagEquipRef',ref:__bagEquipEl,class:'wuwa-equip-mount'}},null,512)),"
         ),
     ));
 
@@ -2089,17 +2151,27 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         .ok_or("按键守卫缺少 held_guard")?
         .as_str()
         .to_owned();
+    let press_param = param_of(&handlers[0])?.unwrap_or_else(|| "e".into());
+    let release_param = param_of(&handlers[1])?.unwrap_or_else(|| "e".into());
     main = rec.replace(
         &main,
-        &format!("function {}(e) {{", handlers[0]),
-        &format!("function {}(e,__assistantVirtual=false) {{", handlers[0]),
+        &format!("function {}({press_param}) {{", handlers[0]),
+        &format!("function {}({press_param},__assistantVirtual=false) {{", handlers[0]),
     )?;
     main = rec.replace(
         &main,
         &first_guard_caps[0],
         &format!(
-            "if (__assistantVirtual ? {held_guard} : ({})) return;",
+            "if (__assistantVirtual ? {held_guard} : ({})) return;\n        if (!__assistantVirtual) __lg.assistant?.onGlobalKey?.({press_param}, true);",
             &first_guard_caps[1]
+        ),
+    )?;
+    main = rec.replace(
+        &main,
+        &format!("function {}({release_param}) {{", handlers[1]),
+        &format!(
+            "function {}({release_param}) {{\n        __lg.assistant?.onGlobalKey?.({release_param}, false);",
+            handlers[1]
         ),
     )?;
 

@@ -134,7 +134,7 @@ function createLocalAtlasController(d) {
   let accountBag = null;
   let choiceNode = null;
   const equipmentBars = new Set();
-  const notifyEquipmentBars = () => { for (const bar of equipmentBars) bar?.refresh?.(); };
+  const notifyEquipmentBars = () => { for (const bar of equipmentBars) bar?.sync ? bar.sync() : bar?.refresh?.(); };
   let refreshSourceBadges = null;
   let badgeObserver = null;
   const isPanelHash = () => String(d.window.location?.hash || '').startsWith('#/panel');
@@ -264,6 +264,9 @@ function createLocalAtlasController(d) {
       const info = snap.officialUserInfo;
       officialUser.value = info && typeof info === 'object' ? info : null;
     }
+    if (Object.hasOwn(snap, 'localSelection') && snap.localSelection && typeof snap.localSelection === 'object' && !Array.isArray(snap.localSelection)) {
+      selection.value = snap.localSelection;
+    }
     revision.value++;
     refreshSourceBadges?.();
     notifyEquipmentBars();
@@ -351,15 +354,16 @@ function createLocalAtlasController(d) {
     }
     schedule();
   }
-  function showAssetChoice(item, official, maxEmotes, applyOfficial) {
+  function showAssetChoice(item, official, maxEmotes, applyOfficial, choose = null, forceOfficial = false) {
     const doc = d.window.document;
-    if (!doc || typeof doc.createElement !== 'function' || !doc.body || !enabled.value) return;
+    if (!doc || typeof doc.createElement !== 'function' || !doc.body || (!choose && !enabled.value)) return false;
     choiceNode?.remove();
     const type = normalizedType(item.asset_type);
-    const owned = officialOwned(item.asset_id, type);
+    const isMod = Boolean(item?.wuwa_local_only || item?.custom_pack_id || String(item?.rarity || '').toLowerCase() === 'mod');
+    const owned = !isMod && (forceOfficial || item?.owned === true || officialOwned(item.asset_id, type));
     const compat = owned && type === 'emote' ? onlineEmoteCompatibility(item, officialUser.value || official) : null;
     const node = doc.createElement('section');
-    if (typeof node.querySelector !== 'function' || !node.append) return;
+    if (typeof node.querySelector !== 'function' || !node.append) return false;
     node.className = 'wt-source-choice';
     const description = owned
       ? '可以只在本机使用，也可以设为官方联机外观；两个标签可以同时存在。'
@@ -369,6 +373,7 @@ function createLocalAtlasController(d) {
     const row = node.querySelector('.row');
     const local = doc.createElement('button'); local.className='primary'; local.textContent='设为本地';
     local.onclick = () => {
+      if (choose) { choose('local'); node.remove(); choiceNode=null; return; }
       try { select(item, official, maxEmotes, {quiet:true}); setMark(item.asset_id, type, 'local', true); }
       catch (error) { node.querySelector('p').textContent = error.message; return; }
       node.remove(); choiceNode=null;
@@ -384,6 +389,7 @@ function createLocalAtlasController(d) {
       }
       officialButton.onclick = async () => {
         if (compat && !compat.compatible) return;
+        if (choose) { choose('official'); node.remove(); choiceNode=null; return; }
         if (typeof applyOfficial !== 'function') { node.querySelector('p').textContent='当前官方界面不支持设置外观'; return; }
         officialButton.disabled = true;
         try { await applyOfficial(); setMark(item.asset_id, type, 'official', true); }
@@ -394,9 +400,9 @@ function createLocalAtlasController(d) {
     }
     row.append(close);
     doc.body.append(node); choiceNode=node;
+    return true;
   }
-  function beginSelect(item, official, maxEmotes, applyOfficial) {
-    if (!enabled.value) return false;
+  function beginSelect(item, official, maxEmotes, applyOfficial, options = {}) {
     const type = normalizedType(item?.asset_type || item?.__wuwaAssetType || item?.__wuwaType || '');
     const id = Number(item?.asset_id) || 0;
     // 装备栏/官方 × 按钮：直接卸载目标那一路，绝不弹「官方已有外观」选择窗。
@@ -414,7 +420,15 @@ function createLocalAtlasController(d) {
         const currentList = Array.isArray(s.emote)
           ? s.emote
           : (Array.isArray(official?.emote) ? official.emote : (officialUser.value?.emote || []));
-        s.emote = currentList.filter(entry => !removeIds.has(Number(entry?.id)));
+        let nextList = id > 0
+          ? currentList.filter(entry => !removeIds.has(Number(entry?.id ?? entry?.asset_id)))
+          : currentList.slice();
+        if (nextList.length === currentList.length && Number.isInteger(item.__wuwaSlotIndex)
+          && item.__wuwaSlotIndex >= 0 && item.__wuwaSlotIndex < currentList.length) {
+          nextList = currentList.slice();
+          nextList.splice(item.__wuwaSlotIndex, 1);
+        }
+        s.emote = nextList;
       }
       else return true;
       selection.value = s;
@@ -424,6 +438,7 @@ function createLocalAtlasController(d) {
       notifyEquipmentBars();
       return true;
     }
+    if (!enabled.value) return false;
     // 拖拽/装备栏投放：直达目标，不弹选择窗。
     if (item?.__wuwaTarget === 'local') {
       try {
@@ -439,8 +454,16 @@ function createLocalAtlasController(d) {
       applyOfficial();
       return true;
     }
+    if (options?.noDialog === true) return false;
     showAssetChoice(item, official, maxEmotes, applyOfficial);
     return true;
+  }
+  function beginPanelSelect(item, emit, forceOfficial = false) {
+    const opened = showAssetChoice(item, null, 8, null, choice => {
+      emit({...item, wuwa_choice: choice});
+    }, forceOfficial);
+    if (!opened) emit(item);
+    return opened;
   }
   const capture = d.ref((() => { try { const v=JSON.parse(d.storage.getItem(CAPTURE_KEY)||'{}'); return v&&typeof v==='object'?v:{mode:'off',panelOpacity:0.96}; } catch { return {mode:'off',panelOpacity:0.96}; } })());
   function applyCaptureStyle() {
@@ -1067,7 +1090,7 @@ function createLocalAtlasController(d) {
     return Boolean(enabled.value && item?.asset_id);
   }
   function select(item, official, maxEmotes, options={}) {
-    if (!enabled.value) throw new Error('本地外观尚未就绪');
+    if (!enabled.value && !options.allowDisabled) throw new Error(cacheReady.value ? '本地外观尚未就绪' : cacheProgressMessage());
     const user = viewUser(official), s = {...selection.value};
     const type = normalizedType(item.asset_type);
     const id = resolveItemId(item.asset_id);
@@ -1328,9 +1351,76 @@ function createLocalAtlasController(d) {
     await refreshCustomResources();
     return result;
   }
+  const EQUIP_WING_PX = 472;
+  let sessionEquipDockOpen = false;
+  let appliedWingPx = 0;
+  let wingQueue = Promise.resolve();
+  let wingCollapseTimer = null;
+  function clearWingStyle(root) {
+    root?.removeAttribute?.('data-wuwa-equip-wing');
+    if (typeof root?.style?.removeProperty === 'function') root.style.removeProperty('--wuwa-equip-wing');
+    else root?.style?.setProperty?.('--wuwa-equip-wing', '0px');
+  }
+  function applyPanelWing(targetPx) {
+    wingQueue = wingQueue.catch(() => {}).then(async () => {
+      if (disposed && targetPx > 0) targetPx = 0;
+      if (targetPx === appliedWingPx) return;
+      const doc = d.window.document;
+      const root = doc?.documentElement;
+      const invoke = d.window.__TAURI_INTERNALS__?.invoke;
+      const label = d.window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label || 'panel';
+      if (typeof invoke !== 'function') {
+        appliedWingPx = 0;
+        clearWingStyle(root);
+        return;
+      }
+      const delta = targetPx - appliedWingPx;
+      try {
+        const [phys, scale] = await Promise.all([
+          invoke('plugin:window|inner_size', {label}),
+          invoke('plugin:window|scale_factor', {label}),
+        ]);
+        const sf = Number(scale) > 0 ? Number(scale) : 1;
+        const physW = Number(phys?.Physical?.width ?? phys?.width) || 0;
+        const physH = Number(phys?.Physical?.height ?? phys?.height) || 0;
+        const curW = physW / sf;
+        const curH = Math.round(physH / sf);
+        if (curW <= 0 || curH <= 0) return;
+        const nextW = Math.max(600, Math.round(curW + delta));
+        if (targetPx > 0) {
+          root?.style?.setProperty?.('--wuwa-equip-wing', targetPx + 'px');
+          root?.setAttribute?.('data-wuwa-equip-wing', '1');
+          await invoke('plugin:window|set_size', {label, value: {Logical: {width: nextW, height: curH}}});
+          appliedWingPx = targetPx;
+        } else {
+          await invoke('plugin:window|set_size', {label, value: {Logical: {width: nextW, height: curH}}});
+          appliedWingPx = 0;
+          clearWingStyle(root);
+        }
+      } catch {
+        if (appliedWingPx === 0) clearWingStyle(root);
+      }
+    });
+    return wingQueue;
+  }
+  function setPanelWing(wantOpen) {
+    if (wingCollapseTimer !== null) {
+      d.window.clearTimeout?.(wingCollapseTimer);
+      wingCollapseTimer = null;
+    }
+    return applyPanelWing(wantOpen ? EQUIP_WING_PX : 0);
+  }
+  d.window.addEventListener?.('pagehide', () => {
+    if (wingCollapseTimer !== null) {
+      d.window.clearTimeout?.(wingCollapseTimer);
+      wingCollapseTimer = null;
+    }
+    if (appliedWingPx > 0) applyPanelWing(0);
+  });
   /**
    * 图鉴/背包内的「本地 vs 线上」装备管理栏。
    * 本地一栏直接改 selection（仅本机可见）；线上栏只负责发起官方外观操作。
+   * 悬浮模式挂到窗口外层（document.body），不插入或挤压官方内容区。
    * 拖拽用 Pointer Events + 8px 阈值，避免把普通点击误判成拖动。
    */
   function mountEquipmentBar(mount, options = {}) {
@@ -1338,6 +1428,14 @@ function createLocalAtlasController(d) {
     const host = typeof mount === 'string' ? doc?.querySelector?.(mount) : mount;
     if (!doc || !host || typeof doc.createElement !== 'function' || !host.append) return () => {};
     if (host.__wuwaEquipBar && typeof host.__wuwaEquipBar.destroy === 'function') host.__wuwaEquipBar.destroy();
+    const isFloating = options.floating === true;
+    if (isFloating && wingCollapseTimer !== null) {
+      d.window.clearTimeout?.(wingCollapseTimer);
+      wingCollapseTimer = null;
+    }
+    let dockOpen = isFloating ? sessionEquipDockOpen : true;
+    let dragAutoOpen = false;
+    let autoCloseTimer = null;
     const emit = payload => {
       if (typeof options.emitSelect !== 'function') return undefined;
       try { return options.emitSelect(payload); }
@@ -1352,27 +1450,36 @@ function createLocalAtlasController(d) {
       const style = doc.createElement('style');
       style.id = 'wuwa-equip-bar-style';
       style.textContent = `
-        .wuwa-equip-bar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px;padding:8px 10px;margin:6px 0;border-radius:12px;background:#fffdf8cc;border:1px solid #e4d9c7;color:#3d352d;font:11px/1.3 -apple-system,"Segoe UI",sans-serif;flex-shrink:0}
-        .wuwa-equip-status{grid-column:1/-1;min-height:14px;font-size:11px;color:#7d7163}
+        html[data-wuwa-equip-wing] .panel-window-root{width:calc(100% - var(--wuwa-equip-wing,0px))!important}
+        html[data-wuwa-equip-wing] .wt-source-choice{right:calc(var(--wuwa-equip-wing,0px) + 22px)}
+        .wuwa-equip-dock{position:fixed;right:6px;top:50%;transform:translateY(-50%);z-index:2147483640;max-height:calc(100vh - 28px);display:flex;flex-direction:row;align-items:center;gap:8px;pointer-events:none}
+        html[data-wuwa-equip-wing] .wuwa-equip-dock{left:calc(100% - var(--wuwa-equip-wing,472px) + 8px);right:8px;width:auto}
+        .wuwa-equip-toggle{pointer-events:auto;flex-shrink:0;writing-mode:vertical-rl;text-orientation:mixed;letter-spacing:2px;border:1px solid #d9c8aa;background:#fffdf8f5;color:#7d5329;border-radius:12px;padding:14px 8px;font:700 13px/1.2 -apple-system,"Segoe UI",sans-serif;cursor:pointer;box-shadow:0 6px 20px #2c1f1229;backdrop-filter:blur(6px)}
+        .wuwa-equip-toggle:hover{background:#fff6e5;border-color:#c9a66b}
+        .wuwa-equip-dock .wuwa-equip-bar{pointer-events:auto;margin:0;width:min(416px,calc(100vw - 56px));max-height:calc(100vh - 32px);overflow-y:auto;padding:16px;border-radius:16px;box-shadow:0 16px 40px #2c1f123d;background:#fffdf8fa;backdrop-filter:blur(10px);display:flex;flex-direction:column;gap:12px}
+        .wuwa-equip-bar{display:flex;flex-direction:column;gap:12px;padding:16px;margin:6px 0;border-radius:16px;background:#fffdf8cc;border:1px solid #e4d9c7;color:#3d352d;font:13px/1.35 -apple-system,"Segoe UI",sans-serif;flex-shrink:0;box-sizing:border-box}
+        .wuwa-equip-status{min-height:18px;font-size:12px;color:#7d7163}
         .wuwa-equip-status:empty{display:none}
         .wuwa-equip-status.is-error{color:#b5443a}
-        .wuwa-equip-bar h4{margin:0 0 4px;font-size:11px;letter-spacing:.3px;color:#7d7163}
+        .wuwa-equip-grid{display:flex;flex-direction:column;gap:14px}
+        .wuwa-equip-bar h4{margin:0 0 10px;font-size:13px;font-weight:700;letter-spacing:.3px;color:#65513d}
         .wuwa-equip-row{min-width:0}
-        .wuwa-equip-row:first-of-type{border-right:1px dashed #e4d9c7;padding-right:8px}
-        .wuwa-equip-slots{display:flex;gap:5px;flex-wrap:wrap;align-items:stretch}
-        .wuwa-equip-slot{position:relative;width:46px;min-height:48px;border-radius:9px;border:1px dashed #d9c8aa;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:3px;box-sizing:border-box;overflow:hidden}
+        .wuwa-equip-row:first-of-type{border-bottom:1px dashed #e4d9c7;padding-bottom:14px}
+        .wuwa-equip-slots{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+        .wuwa-equip-slot{position:relative;min-width:0;min-height:106px;border-radius:12px;border:1px dashed #d9c8aa;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:8px 6px;box-sizing:border-box;overflow:hidden}
         .wuwa-equip-slot.is-filled{border-style:solid;border-color:#dfbf83}
         .wuwa-equip-slot.is-follow{opacity:.72}
-        .wuwa-equip-slot .wuwa-equip-thumb{max-width:100%;max-height:28px;border-radius:5px;object-fit:contain}
-        .wuwa-equip-slot .wuwa-equip-initial{font:700 15px/1 -apple-system,"Segoe UI",sans-serif;color:#8a6d3b}
-        .wuwa-equip-slot .wuwa-equip-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;color:#7d7163}
-        .wuwa-equip-slot .wuwa-equip-remove{position:absolute;right:1px;top:1px;width:14px;height:14px;line-height:12px;border-radius:50%;border:1px solid #e0c9a6;background:#fffdf8;color:#8a5a2b;font:700 9px/1 -apple-system,"Segoe UI",sans-serif;cursor:pointer;padding:0}
-        .wuwa-equip-slot .wuwa-equip-follow{position:absolute;left:1px;bottom:1px;border:1px solid #d9c8aa;background:#fff;border-radius:5px;font-size:8px;padding:0 2px;cursor:pointer;color:#7d7163}
-        .wuwa-equip-slot .wuwa-equip-compat{position:absolute;left:1px;top:1px;border-radius:4px;padding:0 3px;font-size:8px;color:#fff;background:#534ab7}
+        .wuwa-equip-slot .wuwa-equip-thumb{max-width:100%;max-height:58px;border-radius:7px;object-fit:contain}
+        .wuwa-equip-slot .wuwa-equip-initial{font:700 22px/1 -apple-system,"Segoe UI",sans-serif;color:#8a6d3b}
+        .wuwa-equip-slot .wuwa-equip-name{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:1.25;color:#5c5145}
+        .wuwa-equip-slot .wuwa-equip-remove{position:absolute;right:3px;top:3px;z-index:4;width:22px;height:22px;display:flex;align-items:center;justify-content:center;line-height:1;border-radius:50%;border:1px solid #e0c9a6;background:#fffdf8;color:#8a5a2b;font:700 14px/1 -apple-system,"Segoe UI",sans-serif;cursor:pointer;padding:0}
+        .wuwa-equip-slot .wuwa-equip-remove:hover{background:#f8e8d2;border-color:#c9a66b}
+        .wuwa-equip-slot .wuwa-equip-follow{position:absolute;left:3px;bottom:3px;z-index:4;border:1px solid #d9c8aa;background:#fff;border-radius:6px;font-size:10px;padding:1px 5px;cursor:pointer;color:#7d7163}
+        .wuwa-equip-slot .wuwa-equip-compat{position:absolute;left:3px;top:3px;z-index:2;border-radius:5px;padding:1px 5px;font-size:10px;color:#fff;background:#534ab7}
         .wuwa-equip-slot .wuwa-equip-compat.is-bad{background:#b5443a}
         .wuwa-equip-slot.wuwa-drop-hover{outline:2px solid #534ab7;outline-offset:1px}
         .wuwa-equip-slot.wuwa-drop-bad{outline:2px solid #b5443a;outline-offset:1px}
-        .wuwa-drag-ghost{position:fixed;z-index:2147483647;pointer-events:none;width:48px;height:48px;border-radius:10px;background:#fffdf8cc;border:1px solid #dfbf83;box-shadow:0 8px 24px #2c1f1240;display:flex;align-items:center;justify-content:center;font:700 16px/1 -apple-system,"Segoe UI",sans-serif;color:#8a6d3b;transform:translate(-50%,-50%)}
+        .wuwa-drag-ghost{position:fixed;z-index:2147483647;pointer-events:none;width:56px;height:56px;border-radius:12px;background:#fffdf8dd;border:1px solid #dfbf83;box-shadow:0 8px 24px #2c1f1240;display:flex;align-items:center;justify-content:center;font:700 18px/1 -apple-system,"Segoe UI",sans-serif;color:#8a6d3b;transform:translate(-50%,-50%)}
         .wuwa-drag-ghost .wuwa-equip-thumb{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
       `;
       (doc.head || doc.documentElement)?.append?.(style);
@@ -1385,6 +1492,40 @@ function createLocalAtlasController(d) {
     const statusNode = doc.createElement('div');
     statusNode.className = 'wuwa-equip-status';
     statusNode.setAttribute?.('role', 'status');
+    const slotsWrap = doc.createElement('div');
+    slotsWrap.className = 'wuwa-equip-grid';
+    node.append(statusNode, slotsWrap);
+
+    let dock = null, toggleBtn = null;
+    const syncDock = () => {
+      if (!isFloating) return;
+      const expanded = dockOpen || dragAutoOpen;
+      node.hidden = !expanded;
+      if (node.style) node.style.display = expanded ? 'flex' : 'none';
+      if (toggleBtn) {
+        toggleBtn.textContent = expanded ? '收起 ◂' : '装备栏 ▸';
+        toggleBtn.setAttribute?.('aria-expanded', expanded ? 'true' : 'false');
+      }
+      setPanelWing(expanded);
+    };
+    if (isFloating) {
+      dock = doc.createElement('section');
+      dock.className = 'wuwa-equip-dock';
+      dock.setAttribute?.('data-wuwa-equip-dock', '');
+      toggleBtn = doc.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'wuwa-equip-toggle';
+      toggleBtn.onclick = () => {
+        if (autoCloseTimer !== null) { d.window.clearTimeout?.(autoCloseTimer); autoCloseTimer = null; }
+        dragAutoOpen = false;
+        dockOpen = !dockOpen;
+        sessionEquipDockOpen = dockOpen;
+        syncDock();
+      };
+      dock.append(toggleBtn, node);
+      syncDock();
+    }
+
     function status(message, tone) {
       if (!statusNode) return;
       statusNode.textContent = message || '';
@@ -1465,33 +1606,35 @@ function createLocalAtlasController(d) {
         slot.setAttribute?.('data-wuwa-emote-id', String(thumb.id));
         if (thumb.assetName) slot.setAttribute?.('data-wuwa-emote-name', thumb.assetName);
       }
-      if (asset && (!flags.follow || type !== 'character_skin') && !(side === 'official' && type === 'character_skin')) {
+      if (asset && type !== 'character_skin') {
         const remove = doc.createElement('button');
         remove.type = 'button';
         remove.className = 'wuwa-equip-remove';
         remove.textContent = '×';
         remove.title = '卸下' + typeLabel(type);
+        remove.onmousedown = event => event?.stopPropagation?.();
         remove.onclick = event => {
           event?.stopPropagation?.();
           event?.preventDefault?.();
           emit({asset_id: thumb.id, asset_type: type, asset_name: thumb.assetName, __wuwaRemove: true, __wuwaTarget: side, __wuwaSlotIndex: index});
           status(side === 'official' ? '已请求卸下线上' + typeLabel(type) : '已卸下本地' + typeLabel(type));
-          scheduleRender();
+          scheduleRender(true);
         };
         slot.append(remove);
       }
-      if (side === 'local' && type === 'character_skin') {
+      if (side === 'local' && type === 'character_skin' && !flags.follow) {
         const follow = doc.createElement('button');
         follow.type = 'button';
         follow.className = 'wuwa-equip-follow';
         follow.textContent = '跟随线上';
         follow.title = '恢复跟随线上角色';
+        follow.onmousedown = event => event?.stopPropagation?.();
         follow.onclick = event => {
           event?.stopPropagation?.();
           event?.preventDefault?.();
           emit({asset_id: thumb.id || 0, asset_type: 'character_skin', asset_name: thumb.assetName, __wuwaRemove: true, __wuwaTarget: 'local'});
           status('已恢复跟随线上角色');
-          scheduleRender();
+          scheduleRender(true);
         };
         slot.append(follow);
       }
@@ -1525,6 +1668,7 @@ function createLocalAtlasController(d) {
 
     function render() {
       if (disposed) return;
+      observedSignature = signature();
       const rows = [];
       const localRow = doc.createElement('div');
       localRow.className = 'wuwa-equip-row';
@@ -1539,15 +1683,23 @@ function createLocalAtlasController(d) {
       for (const slot of slotList('official')) officialSlots.append(slot);
       officialRow.append(officialTitle, officialSlots);
       rows.push(localRow, officialRow);
-      node.textContent = '';
-      node.append(statusNode, ...rows);
+      slotsWrap.textContent = '';
+      slotsWrap.append(...rows);
     }
 
-    let renderScheduled = false;
-    function scheduleRender() {
-      if (renderScheduled || disposed) return;
+    let renderScheduled = false, renderForced = false;
+    function scheduleRender(force = false) {
+      if (disposed) return;
+      if (force) renderForced = true;
+      if (renderScheduled) return;
       renderScheduled = true;
-      const run = () => { renderScheduled = false; render(); };
+      const run = () => {
+        renderScheduled = false;
+        const doForce = renderForced;
+        renderForced = false;
+        if (!doForce && signature() === observedSignature) return;
+        render();
+      };
       if (typeof d.window.setTimeout === 'function') d.window.setTimeout(run, 0); else run();
     }
 
@@ -1675,13 +1827,17 @@ function createLocalAtlasController(d) {
     const onPointerDown = event => {
       if (disposed || !event || event.button > 0) return;
       const target = event.target;
-      if (target?.closest?.('.wuwa-equip-remove,.wuwa-equip-follow,.atlas-collect')) return;
+      if (target?.closest?.('.wuwa-equip-remove,.wuwa-equip-follow,.wuwa-equip-toggle,.atlas-collect')) return;
       const emoteSource = target?.closest?.('[data-wuwa-emote-source]');
       const atlasItem = target?.closest?.('.atlas-item[data-wuwa-asset-id]');
       const source = emoteSource || atlasItem;
       if (!source) return;
       const panel = host.closest?.('.panel-content');
       if (panel && source !== emoteSource && !panel.contains?.(source)) return;
+      if (source !== emoteSource && atlasItem?.closest?.('.panel-content') === null && typeof atlasItem.closest === 'function') {
+        // Ignore items outside panel content only if inside another unrelated container with .panel-content present.
+        if (doc.querySelector?.('.panel-content')) return;
+      }
       if (emoteSource) {
         const id = Number(emoteSource.getAttribute?.('data-wuwa-emote-id')) || 0;
         if (!id) return;
@@ -1712,6 +1868,11 @@ function createLocalAtlasController(d) {
         if (Math.sqrt(dx * dx + dy * dy) < threshold) return;
         drag.active = true;
         makeGhost(drag.item);
+        if (isFloating && !dockOpen) {
+          if (autoCloseTimer !== null) { d.window.clearTimeout?.(autoCloseTimer); autoCloseTimer = null; }
+          dragAutoOpen = true;
+          syncDock();
+        }
       }
       event.preventDefault?.();
       moveGhost(event.clientX, event.clientY);
@@ -1727,6 +1888,16 @@ function createLocalAtlasController(d) {
       drag.hoverDrop = dropNode || null;
     };
 
+    const scheduleAutoCollapse = (ms = 1400) => {
+      if (!isFloating || !dragAutoOpen) return;
+      if (autoCloseTimer !== null) d.window.clearTimeout?.(autoCloseTimer);
+      autoCloseTimer = d.window.setTimeout?.(() => {
+        autoCloseTimer = null;
+        dragAutoOpen = false;
+        syncDock();
+      }, ms) ?? null;
+    };
+
     const finishDrag = event => {
       if (!drag) return;
       const current = drag;
@@ -1737,7 +1908,11 @@ function createLocalAtlasController(d) {
       suppressClickUntil = Date.now() + 500;
       const dropNode = current.hoverDrop || hitDropNode(event);
       const target = dropNode ? parseDrop(dropNode.getAttribute?.('data-wuwa-drop')) : null;
-      if (!target) { status('拖到本地或线上槽位才能放置', 'error'); return; }
+      if (!target) {
+        status('拖到本地或线上槽位才能放置', 'error');
+        scheduleAutoCollapse(900);
+        return;
+      }
       if (current.slot && target.type === 'emote' && target.side === current.slot.side) {
         if (target.side === 'local') {
           if (reorderLocalEmotes(current.slot.index, target.index)) status('已调整本地表情顺序');
@@ -1746,13 +1921,15 @@ function createLocalAtlasController(d) {
           if (reorderOfficialEmotes(current.slot.index, target.index)) status('已请求调整线上表情顺序');
           else status('表情排序未变化');
         }
+        scheduleAutoCollapse(1400);
         return;
       }
       dropItem(current.item, target);
+      scheduleAutoCollapse(1400);
     };
 
     const onPointerUp = event => finishDrag(event);
-    const onPointerCancel = () => { if (drag) { drag = null; clearHighlights(); removeGhost(); } };
+    const onPointerCancel = () => { if (drag) { drag = null; clearHighlights(); removeGhost(); scheduleAutoCollapse(0); } };
     // 成功拖放后浏览器还会补一个 click，用捕获阶段吞掉，避免又弹一次选择窗。
     const onClickCapture = event => {
       if (Date.now() >= suppressClickUntil) return;
@@ -1773,7 +1950,7 @@ function createLocalAtlasController(d) {
       const sel = selection.value || {}, off = liveOfficial() || {};
       return JSON.stringify([
         sel.character?.id || 0, sel.accessory?.id || 0, Object.hasOwn(sel, 'accessory'),
-        (sel.emote || []).map(item => item?.id || 0),
+        Array.isArray(sel.emote), (sel.emote || []).map(item => item?.id || 0),
         off.character?.id || 0, off.accessory?.id || 0, (off.emote || []).map(item => item?.id || 0),
       ]);
     };
@@ -1785,7 +1962,7 @@ function createLocalAtlasController(d) {
       render();
     };
     const timer = d.window.setInterval?.(tick, 1200) ?? null;
-    host.append(node);
+    host.append(dock || node);
     observedSignature = signature();
     render();
 
@@ -1795,7 +1972,9 @@ function createLocalAtlasController(d) {
       destroyed = true;
       if (timer !== null) d.window.clearInterval?.(timer);
       if (statusTimer !== null) d.window.clearTimeout?.(statusTimer);
+      if (autoCloseTimer !== null) d.window.clearTimeout?.(autoCloseTimer);
       statusTimer = null;
+      autoCloseTimer = null;
       doc.removeEventListener?.('pointerdown', onPointerDown, true);
       doc.removeEventListener?.('pointermove', onPointerMove, true);
       doc.removeEventListener?.('pointerup', onPointerUp, true);
@@ -1803,11 +1982,21 @@ function createLocalAtlasController(d) {
       doc.removeEventListener?.('click', onClickCapture, true);
       d.window.removeEventListener?.('storage', refreshHandler);
       removeGhost();
-      node.remove?.();
+      (dock || node).remove?.();
       equipmentBars.delete(api);
+      if (isFloating && equipmentBars.size === 0) {
+        if (typeof d.window.setTimeout === 'function') {
+          wingCollapseTimer = d.window.setTimeout(() => {
+            wingCollapseTimer = null;
+            if (equipmentBars.size === 0) applyPanelWing(0);
+          }, 120);
+        } else {
+          applyPanelWing(0);
+        }
+      }
       if (host.__wuwaEquipBar === api) host.__wuwaEquipBar = null;
     };
-    const api = {element: node, refresh: scheduleRender, destroy};
+    const api = {element: dock || node, bar: node, sync: () => scheduleRender(false), refresh: () => scheduleRender(true), destroy};
     host.__wuwaEquipBar = api;
     equipmentBars.add(api);
     return destroy;
@@ -1857,6 +2046,7 @@ function createLocalAtlasController(d) {
       return;
     }
     if (event.key === PERF_KEY) { perf.value = readPerf(); applyPerfStyle(); revision.value++; return; }
+    if (event.key === MARKS_KEY) { marks.value = readMarks(); revision.value++; refreshSourceBadges?.(); return; }
     if (event.key !== KEY) return;
     const state = read();
     if (state.marks && typeof state.marks === 'object' && !Array.isArray(state.marks)) marks.value = state.marks;
@@ -1946,14 +2136,14 @@ function createLocalAtlasController(d) {
       finally { checkingStatus = false; }
     }, d.catalogConsumer===false?15000:1500);
   }
-  function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);for(const bar of [...equipmentBars])bar?.destroy?.();equipmentBars.clear();badgeObserver?.disconnect();badgeObserver=null;choiceNode?.remove();}
+  function dispose(){disposed=true;if(statusTimer!==null)d.window.clearInterval?.(statusTimer);for(const bar of [...equipmentBars])bar?.destroy?.();equipmentBars.clear();if(wingCollapseTimer!==null){d.window.clearTimeout?.(wingCollapseTimer);wingCollapseTimer=null;}if(appliedWingPx>0)applyPanelWing(0);badgeObserver?.disconnect();badgeObserver=null;choiceNode?.remove();}
   return {enabled, busy, selection, favorites, marks, revision, ready, cacheReady, setEnabled, inventory, viewUser, select, mergeAtlas, mergeBag, canSelect,
     favorite, reorder, prepare, offlineData, get assetsHost() { return resolveAssetsHost(); }, offlineError, checkInvoke, syncStatus, syncCache, importCustomResources, removeCustomResource, assetUrl, request: localRequest, dispose,
     presetList, createLocalPreset, deleteLocalPreset, applyLocalPreset, collectionProgress,
     mergePresets, applyPreset,
     ownedBag, accessoryTransform, setAccessoryTransform, resetAccessoryTransform,
     listAccessoryTransforms, deleteAccessoryTransform, activateLocalIfReady, startOverlay,
-    officialOwned, sourceFor, markFor, setMark, beginSelect, afterOfficialSelect, clearLocal, shouldCreateLocalPreset,
+    officialOwned, sourceFor, markFor, setMark, beginSelect, beginPanelSelect, afterOfficialSelect, clearLocal, shouldCreateLocalPreset,
     officialUser, panelState, syncPanelState, onlineEmoteCompatibility, mountEquipmentBar,
     synthesizeDuplicates, capture, setCapture, applyCaptureStyle,
     roomLayout, setRoomLayout, saveRoomMemberPosition, savedRoomMemberPosition, toggleRoomMemberHidden,

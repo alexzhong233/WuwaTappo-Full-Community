@@ -939,3 +939,223 @@ test('synthesizeDuplicates rethrows a failed synthesis and still reports the dia
   assert.equal(payload.results[0].error, 'network busy');
   instance.dispose();
 });
+
+test('beginPanelSelect resolves source choices inside panel and main noDialog never spawns pet popup', async () => {
+  const { doc, body } = fakeDocument();
+  const { instance } = controller({ document: doc });
+  await instance.ready;
+  instance.enabled.value = true;
+
+  const picked = [];
+  assert.equal(
+    instance.beginPanelSelect({ asset_id: 1, asset_type: 'character_skin', asset_name: 'Hero' }, item => picked.push(item), true),
+    true,
+    'bag card opens choice popup inside panel',
+  );
+  let choice = body.children.at(-1);
+  assert.equal(choice.className, 'wt-source-choice');
+  assert.equal(choice.row.children.length, 3, 'forceOfficial bag card offers local, official and close');
+  choice.row.children[1].onclick();
+  assert.equal(picked.length, 1);
+  assert.equal(picked[0].wuwa_choice, 'official');
+
+  // Mod items in bag must never offer official even when forceOfficial = true.
+  picked.length = 0;
+  instance.beginPanelSelect(
+    { asset_id: 99, asset_type: 'character_skin', asset_name: 'ModHero', rarity: 'mod', wuwa_local_only: true },
+    item => picked.push(item),
+    true,
+  );
+  choice = body.children.at(-1);
+  assert.equal(choice.row.children.length, 2, 'mod card offers only local and close');
+  choice.row.children[0].onclick();
+  assert.equal(picked[0].wuwa_choice, 'local');
+
+  // Main renderer passes { noDialog: true }, so clicking must never render .wt-source-choice on the pet window.
+  const before = body.children.length;
+  assert.equal(
+    instance.beginSelect({ asset_id: 1, asset_type: 'character_skin', asset_name: 'Hero' }, null, 8, () => {}, { noDialog: true }),
+    false,
+  );
+  assert.equal(body.children.length, before, 'main renderer must not open .wt-source-choice overlay');
+  instance.dispose();
+});
+
+test('floating equipment dock mounts externally, auto-expands on drag, and removes local & official slots cleanly', async () => {
+  const appearance = id => {
+    if (id === 1) return { asset_id: 1, asset_type: 'character_skin', game_role_id: '1001', asset_name: 'Hero' };
+    if (id === 2) return { asset_id: 2, asset_type: 'accessory', game_role_id: '1001', asset_name: 'Hat' };
+    return { asset_id: id, asset_type: 'emote', game_role_id: '0', asset_name: `Emote-${id}` };
+  };
+  const { doc, body } = richDocument();
+  const { instance } = controller({ document: doc, appearance });
+  await instance.ready;
+  instance.enabled.value = true;
+  instance.selection.value = {
+    character: { id: 1, name: 'Hero' },
+    accessory: { id: 2, name: 'Hat' },
+    emote: [{ id: 31, name: 'Emote-31' }, { id: 32, name: 'Emote-32' }],
+  };
+  instance.syncPanelState({
+    officialUserInfo: { role_id: '1001', character: { id: 1 }, accessory: { id: 2 }, emote: [{ id: 31 }] },
+  });
+
+  const panelContent = doc.createElement('div');
+  panelContent.className = 'panel-content';
+  const card = doc.createElement('div');
+  card.className = 'atlas-item';
+  card.setAttribute('data-wuwa-asset-id', '33');
+  card.setAttribute('data-wuwa-asset-type', 'emote');
+  card.setAttribute('data-wuwa-asset-name', 'Emote-33');
+  panelContent.append(card);
+  body.append(panelContent);
+
+  const emitted = [];
+  const destroy = instance.mountEquipmentBar(body, {
+    floating: true,
+    emitSelect: payload => {
+      emitted.push(payload);
+      return instance.beginSelect(payload, instance.officialUser.value, 5, () => {}, { noDialog: true });
+    },
+  });
+
+  const dock = body.querySelector('.wuwa-equip-dock');
+  const toggle = dock.querySelector('.wuwa-equip-toggle');
+  const bar = dock.querySelector('.wuwa-equip-bar');
+  const equipStyle = doc.getElementById('wuwa-equip-bar-style');
+  assert.ok(dock, 'floating equipment dock mounts to body outside .panel-content');
+  assert.ok(equipStyle, 'equipment dock CSS is injected once');
+  assert.match(equipStyle.textContent, /right:6px/);
+  assert.match(equipStyle.textContent, /html\[data-wuwa-equip-wing\]/);
+  assert.match(equipStyle.textContent, /min-height:106px/);
+  assert.match(equipStyle.textContent, /max-height:58px/);
+  assert.equal(panelContent.querySelector('.wuwa-equip-dock'), null, 'panelContent stays clean');
+  assert.equal(bar.hidden, true, 'floating bar starts collapsed by default');
+  assert.equal(toggle.textContent, '装备栏 ▸', 'collapsed toggle invites opening');
+
+  // Dragging an item auto-expands the floating dock before pointerup.
+  doc.fire('pointerdown', { button: 0, clientX: 50, clientY: 50, target: card });
+  doc.fire('pointermove', { clientX: 65, clientY: 50, target: body });
+  assert.equal(bar.hidden, false, 'dragging a panel card auto-expands the floating dock');
+  doc.fire('pointerup', { clientX: 65, clientY: 50, target: body });
+
+  toggle.onclick();
+  assert.equal(bar.hidden, false, 'clicking toggle opens the floating dock persistently');
+  assert.equal(toggle.textContent, '收起 ◂', 'opened toggle invites collapsing');
+
+  // Remove local accessory via × button.
+  const localAccSlot = bar.querySelector('[data-wuwa-drop="local:accessory"]');
+  // An unchanged equipment snapshot with a bumped localClickCount must not re-render the bar
+  // mid-click (the WebView2 "× click swallowed" regression).
+  const accRemoveBefore = localAccSlot.querySelector('.wuwa-equip-remove');
+  instance.syncPanelState({
+    localClickCount: 999,
+    officialUserInfo: { role_id: '1001', character: { id: 1 }, accessory: { id: 2 }, emote: [{ id: 31 }] },
+  });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(
+    bar.querySelector('[data-wuwa-drop="local:accessory"]')?.querySelector('.wuwa-equip-remove'),
+    accRemoveBefore,
+    'unchanged snapshot tick (e.g. localClickCount) must preserve existing × button DOM node mid-click',
+  );
+  localAccSlot.querySelector('.wuwa-equip-remove').onclick({});
+  assert.equal(instance.selection.value.accessory, null, 'clicking × unequips local accessory');
+
+  // Remove local emote even if asset_id was zero (slotIndex fallback).
+  instance.beginSelect({ asset_id: 0, asset_type: 'emote', __wuwaRemove: true, __wuwaTarget: 'local', __wuwaSlotIndex: 1 }, instance.officialUser.value, 5, () => {}, { noDialog: true });
+  assert.deepEqual(Array.from(instance.selection.value.emote, item => item.id), [31]);
+
+  // Remove official emote via × button routes to official pipeline.
+  const officialEmoteSlot = bar.querySelector('[data-wuwa-drop="official:emote:0"]');
+  officialEmoteSlot.querySelector('.wuwa-equip-remove').onclick({});
+  const officialRemove = emitted.at(-1);
+  assert.equal(officialRemove.__wuwaRemove, true);
+  assert.equal(officialRemove.__wuwaTarget, 'official');
+  assert.equal(officialRemove.asset_type, 'emote');
+  assert.equal(officialRemove.asset_id, 31);
+
+  // Main IPC can sync the local selection directly; the dock re-renders from it.
+  instance.syncPanelState({
+    localSelection: { character: { id: 1, name: 'Hero' }, accessory: null, emote: [{ id: 31, name: 'Emote-31' }] },
+    officialUserInfo: { role_id: '1001', character: { id: 1 }, accessory: { id: 2 }, emote: [{ id: 31 }] },
+  });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(instance.selection.value.accessory, null, 'syncPanelState syncs localSelection from Main IPC snapshot');
+
+  destroy();
+  assert.equal(body.querySelector('.wuwa-equip-dock'), null);
+  instance.dispose();
+});
+
+test('floating equipment dock expands and restores panel window width externally on Tauri', async () => {
+  const tick = () => new Promise(resolve => setTimeout(resolve, 20));
+  // Each case gets its own document/window so the applied wing width and dock-open
+  // session flag never leak between the happy path and the resize-rejection case.
+  const harness = (rejectSetSize = false) => {
+    const { doc, body, root } = richDocument();
+    let curW = 1100;
+    const sizeCalls = [];
+    const invoke = async (cmd, args) => {
+      if (cmd === 'plugin:window|inner_size') return { width: curW * 1.25, height: 760 * 1.25 };
+      if (cmd === 'plugin:window|scale_factor') return 1.25;
+      if (cmd === 'plugin:window|set_size') {
+        if (rejectSetSize) throw new Error('set_size denied');
+        curW = args.value.Logical.width;
+        sizeCalls.push({ label: args.label, width: curW, height: args.value.Logical.height });
+        return null;
+      }
+      throw new Error('unexpected invoke ' + cmd);
+    };
+    const { instance } = controller({
+      document: doc,
+      winProps: {
+        __TAURI_INTERNALS__: {
+          metadata: { currentWindow: { label: 'panel' } },
+          invoke,
+        },
+      },
+    });
+    return { body, root, instance, sizeCalls, getCurW: () => curW };
+  };
+
+  // Happy path: widen the transparent OS window to the right, keep the official
+  // panel un-squished, and restore the exact original width on collapse/unmount.
+  const { body, root, instance, sizeCalls, getCurW } = harness();
+  await instance.ready;
+  instance.enabled.value = true;
+  const destroy = instance.mountEquipmentBar(body, { floating: true });
+  const toggle = body.querySelector('.wuwa-equip-dock')?.querySelector('.wuwa-equip-toggle');
+
+  toggle.onclick();
+  await tick();
+  assert.equal(getCurW(), 1100 + 472, 'expanding widens the OS window by the 472px wing');
+  assert.equal(sizeCalls.at(-1).label, 'panel');
+  assert.equal(root.getAttribute('data-wuwa-equip-wing'), '1');
+  assert.equal(root.style.getPropertyValue('--wuwa-equip-wing'), '472px');
+
+  toggle.onclick();
+  await tick();
+  assert.equal(getCurW(), 1100, 'collapsing restores the original OS window width');
+  assert.equal(root.getAttribute('data-wuwa-equip-wing'), null);
+
+  toggle.onclick();
+  await tick();
+  assert.equal(getCurW(), 1572, 're-expanding widens the OS window again');
+  destroy();
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(getCurW(), 1100, 'closing the dock restores the OS window width');
+  instance.dispose();
+
+  // A failed OS resize must never leave the official panel squished: the wing
+  // style is rolled back even though the toggle reports "open".
+  const rejected = harness(true);
+  await rejected.instance.ready;
+  const rejectDestroy = rejected.instance.mountEquipmentBar(rejected.body, { floating: true });
+  const rejectToggle = rejected.body.querySelector('.wuwa-equip-dock')?.querySelector('.wuwa-equip-toggle');
+  rejectToggle.onclick();
+  await tick();
+  assert.equal(rejected.root.getAttribute('data-wuwa-equip-wing'), null,
+    'the official panel is never squished when the OS resize fails');
+  rejectDestroy();
+  rejected.instance.dispose();
+});
