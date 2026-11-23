@@ -275,7 +275,6 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
             response(request, 200, app.service.status_snapshot(Some(extra)));
         }
         "/sync/status" => response(request, 200, app.service.sync_status()),
-        "/game/status" => response(request, 200, wuwatappo_assistant_core::game_watch::status()),
         "/custom/status" => response(request, 200, app.service.custom_status()),
         "/offline-data" => send_service_result(request, app.service.offline_bundle(None)),
         "/asset-base" => {

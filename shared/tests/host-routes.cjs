@@ -45,7 +45,7 @@ const WINDOWS_ONLY_ROUTES = new Set([
 ]);
 
 // 只认本机服务的路径前缀；官方游戏接口（/api/frontend/...）不属于这里。
-const ROUTE = /["'`]\/(?:assistant|startup|bootstrap|status|sync|mode|custom|diagnostic|asset-base|assets|offline-data|community|official|update|settings|game)[a-zA-Z0-9_\-/]*["'`]/g;
+const ROUTE = /["'`]\/(?:assistant|startup|bootstrap|status|sync|mode|custom|diagnostic|asset-base|assets|offline-data|community|official|update|settings)[a-zA-Z0-9_\-/]*["'`]/g;
 
 const requested = new Map();
 for (const file of callers) {

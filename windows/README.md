@@ -35,7 +35,7 @@ node scripts/build-platform.mjs --platform=win --region=global --package --no-ru
 
 区域会写进 `local_config.json` 的 `region` / `cdn_host` / `api_base`，运行期拉素材和图鉴走本区域的官方源；老配置没有这几个字段时退回国服，既有部署不受影响。
 
-两侧基底同版本（1.0.4）但哈希不同，注入脚本按候选兼容两处差异：国际服前端把 `listen` 压成 `listen$1`、应用标识是 `com.kuro.wuwatappo.global`（国服是 `com.kuro.wuwatappo.cn`）。不维护两套锚点。
+两侧基底同版本（1.0.5）但哈希不同，注入脚本按候选兼容两处差异：国际服前端把 `listen` 压成 `listen$1`、应用标识是 `com.kuro.wuwatappo.global`（国服是 `com.kuro.wuwatappo.cn`）。不维护两套锚点。
 
 ## 从零构建
 

@@ -14,7 +14,7 @@ void source;
     const rendered=renderFrontend('desktop_assistant.js',targetPlatform);
     const localScenario=async(opts={})=>{
       let now=100000,count=0,quiet=false,id=0;
-      const tasks=[],clicks=[],settings={enabled:opts.enabled||false,speed:10,auto_chest:opts.autoChest??true,threshold:1000,remember_monitor:false};
+      const tasks=[],clicks=[],settings={enabled:opts.enabled||false,speed:10,auto_chest:opts.autoChest??true,threshold:1000};
       const value={settings,session:0,confirmed:0,rooms:[],rewards:[]};
       const buttons={};
       for(const side of ['left','right'])buttons[side]={disabled:opts.disabled||false,isConnected:true,getClientRects:()=>opts.hidden?[]:[{}],click(){clicks.push({side,at:now,quiet});this.disabled=true;}};

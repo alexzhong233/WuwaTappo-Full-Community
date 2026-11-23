@@ -29,6 +29,8 @@ function assistantUi(window) {
     .wt-console input[type=number]{font:inherit;color:var(--ink);width:112px;border:1px solid var(--line);padding:6px 10px;border-radius:8px;background:#faf9f7}.wt-chart{display:flex;gap:14px;align-items:flex-end;height:180px;margin:20px 0 8px}.wt-column{flex:1;min-width:0;text-align:center;font-size:11px;color:var(--muted)}.wt-bar{margin:5px auto;background:#ddc292;border-radius:5px 5px 2px 2px;width:70%}.wt-empty{padding:28px 10px;text-align:center;color:var(--muted);font-size:12px}
     .wt-console footer{padding:10px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:11px;color:var(--muted);background:#faf9f6;flex-shrink:0}.wt-console footer button{font-size:11px;padding:4px 10px;min-height:28px}.wt-notice{font-size:12px;color:#9c6c32;padding:6px 0;min-height:20px}
     .wt-transform-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;margin-top:12px}.wt-transform-field{display:grid;gap:5px;font-size:12px;color:var(--muted)}.wt-transform-field input{width:100%}
+    .wt-synth-log{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+    .wt-console input[type=search]{font:inherit;color:var(--ink);flex:1;min-width:0;border:1px solid var(--line);padding:7px 12px;border-radius:9px;background:#faf9f7}
     .wt-versions{margin-top:10px;border-top:1px solid var(--line)}
     .wt-notes{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
     .wt-notes h3{margin-bottom:6px}
@@ -93,7 +95,7 @@ function createAssistantDashboard(d){
   // 和设置页「全图鉴版本」不是同一个号，直接显示会和 Mac 对不上。
   withTimeout(d.atlas.request('/community/version',{}),'本机版本读取').then(r=>{if(r&&r.current)version.textContent='v'+r.current+' · 检查更新';else version.textContent='版本未知 · 检查更新';}).catch(()=>{version.textContent='版本未知 · 检查更新';});
   const notice=el('div','',header,'wt-notice');
-  const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['mods','Mod 管理'],['update','更新'],['settings','设置']],navButtons={};
+  const tabs=[['overview','概览'],['rewards','开箱记录'],['daily','每日统计'],['rooms','房间历史'],['mods','Mod 与挂饰'],['update','更新'],['settings','设置']],navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
   const fmt=n=>Number(n||0).toLocaleString('zh-CN');
   function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);window.clearInterval(installTimer);root.remove();d.onClose?.();}
@@ -106,8 +108,10 @@ function createAssistantDashboard(d){
   function card(parent=content,cls=''){return el('section',undefined,parent,'wt-card '+cls);}
   function setBadge(){const r=value?.runtime||{},on=value?.settings?.enabled;
     const chest=!!value?.settings?.auto_chest;
-    badge.textContent=value?.update_required?'等待更新':on?(r.quiet===false?(chest?'点击避让 · 开箱值守':'输入中 · 点击暂停'):'运行中'):(chest?(r.logged_in?'开箱值守':'开箱待登录'):'已暂停');
-    badge.className='wt-badge'+((!on&&!chest)||value?.update_required?' paused':'');}
+    if(value?.update_required){badge.textContent='等待更新';badge.className='wt-badge paused';return;}
+    if(on&&r.balance_paused){badge.textContent='点数达上限 · 待机';badge.className='wt-badge paused';return;}
+    badge.textContent=on?(r.quiet===false?(chest?'点击避让 · 开箱值守':'输入中 · 点击暂停'):'运行中'):(chest?(r.logged_in?'开箱值守':'开箱待登录'):'已暂停');
+    badge.className='wt-badge'+((!on&&!chest)?' paused':'');}
   function logRows(parent,items){parent.replaceChildren();if(!items.length){el('div','暂无真实开箱记录。原版账号成功领奖后会自动记录。',parent,'wt-empty');return;}
     for(const item of items){
       const row=el('div',undefined,parent,'wt-log');el('span','♧',row,'wt-log-icon');const text=el('div',undefined,row,'wt-log-main');
@@ -143,30 +147,104 @@ function createAssistantDashboard(d){
       renderView=()=>{const week=value.weekly?.normal||[],max=Math.max(1,...week.map(x=>x.count));summary.textContent='今日 '+fmt(week.at(-1)?.count)+' · 昨日 '+fmt(week.at(-2)?.count);chart.replaceChildren();for(const day of week){const col=el('div',undefined,chart,'wt-column');el('div',fmt(day.count),col);const bar=el('div','',col,'wt-bar');bar.style.height=Math.max(3,120*day.count/max)+'px';el('div',day.date.slice(5),col);}legacy.textContent=value.legacy_local?.total?'旧版模拟点数 '+fmt(value.legacy_local.total)+' 已单独存档，不计入真实账号与此统计。':'';};
     }else if(key==='rooms'){
       const c=card();el('h3','去过的房间',c);el('p','成功进入后记录房间号与房主，收藏后置顶。官方联机始终可用；仅本地外观只在本机显示。',c,'wt-muted');const list=el('div',undefined,c);
-      renderView=()=>{list.replaceChildren();if(!value.rooms?.length)el('div','还没有房间历史',list,'wt-empty');for(const room of value.rooms||[]){const row=el('div',undefined,list,'wt-log');button(room.favorite?'★':'☆',row,async()=>{try{await d.favorite(room.code,!room.favorite);await refresh();}catch(e){notice.textContent=e.message;}});const join=button(room.code+' · '+(room.host||'未知房主'),row,()=>d.join(room.code).catch(e=>{notice.textContent=e.message;}));join.disabled=value.update_required;button('删除记录',row,async()=>{try{await d.deleteRoom(room.code);await refresh();}catch(e){notice.textContent=e.message;}});}};
+      const layoutCard=card();el('h3','联机角色样式与布局',layoutCard);
+      el('p','只调整本机联机房间内角色的显示大小、透明度与昵称比例，不写入账号。',layoutCard,'wt-muted');
+      const memberBox=el('div',undefined,layoutCard),layoutControls={},layoutValues={};
+      const roomFormat={scale:v=>Number(v).toFixed(2)+'x',opacity:v=>Math.round(Number(v)*100)+'%',nameScale:v=>Number(v).toFixed(2)+'x'};
+      for(const [key,label,min,max,step] of [['scale','联机角色大小',0.3,2,0.05],['opacity','联机角色透明度',0.15,1,0.05],['nameScale','联机昵称大小',0.5,2,0.05]]){
+        const row=el('label',undefined,layoutCard,'wt-setting'),text=el('div',undefined,row);el('h3',label,text);
+        const head=el('div',undefined,row,'wt-row'),input=el('input',undefined,head);
+        input.type='range';input.min=min;input.max=max;input.step=step;input.setAttribute('aria-label',label);input.style.flex='1';input.style.minWidth='120px';
+        const valueText=el('b','',head,'wt-version-value');
+        input.oninput=()=>{valueText.textContent=roomFormat[key](input.value);try{d.atlas.setRoomLayout?.({[key]:Number(input.value)});}catch(e){notice.textContent=e.message;}};
+        layoutControls[key]=input;layoutValues[key]=valueText;
+      }
+      const layoutActions=el('div',undefined,layoutCard,'wt-controls');
+      button('横向排列',layoutActions,()=>{try{d.atlas.requestRoomArrange?.('horizontal');paintRoom();}catch(e){notice.textContent=e.message;}});
+      button('纵向排列',layoutActions,()=>{try{d.atlas.requestRoomArrange?.('vertical');paintRoom();}catch(e){notice.textContent=e.message;}});
+      button('重置位置',layoutActions,()=>{try{d.atlas.clearRoomPositions?.();paintRoom();}catch(e){notice.textContent=e.message;}});
+      let roomSignature=null;
+      function paintRoom(){
+        const members=(Array.isArray(d.atlas.panelState?.value?.roomMembers)?d.atlas.panelState.value.roomMembers:[]).filter(member=>member&&typeof member==='object');
+        const signature=members.map(member=>String(member.id)+'|'+String(member.nickname||member.name||'')+'|'+(d.atlas.isRoomMemberHidden?.(member.id)?1:0)).join('~');
+        if(signature!==roomSignature){
+          roomSignature=signature;memberBox.replaceChildren();
+          if(!members.length)el('div','当前未在联机房间或暂未同步成员',memberBox,'wt-empty');
+          for(const member of members){
+            const row=el('div',undefined,memberBox,'wt-log'),text=el('div',undefined,row,'wt-log-main');
+            el('strong',String(member.nickname||member.name||member.id||'未知成员'),text);
+            el('div','ID '+String(member.id??'—'),text,'wt-muted');
+            const hidden=!!d.atlas.isRoomMemberHidden?.(member.id);
+            button(hidden?'显示':'隐藏',row,()=>{try{d.atlas.toggleRoomMemberHidden?.(member.id);roomSignature=null;paintRoom();}catch(e){notice.textContent=e.message;}});
+          }
+        }
+        const layout=d.atlas.roomLayout?.value||{};
+        for(const [key,input] of Object.entries(layoutControls)){
+          const next=Number(layout[key]),val=Number.isFinite(next)?next:1;
+          input.value=val;if(layoutValues[key])layoutValues[key].textContent=roomFormat[key](val);
+        }
+      }
+      paintRoom();
+      renderView=()=>{list.replaceChildren();if(!value.rooms?.length)el('div','还没有房间历史',list,'wt-empty');for(const room of value.rooms||[]){const row=el('div',undefined,list,'wt-log');button(room.favorite?'★':'☆',row,async()=>{try{await d.favorite(room.code,!room.favorite);await refresh();}catch(e){notice.textContent=e.message;}});const join=button(room.code+' · '+(room.host||'未知房主'),row,()=>d.join(room.code).catch(e=>{notice.textContent=e.message;}));join.disabled=value.update_required;button('删除记录',row,async()=>{try{await d.deleteRoom(room.code);await refresh();}catch(e){notice.textContent=e.message;}});}paintRoom();};
     }else if(key==='mods'){
       const hero=card(content,'warm');el('h3','官方与本地外观');const modeText=el('p','正在读取外观资源…',hero,'wt-muted');
-      const modeActions=el('div',undefined,hero,'wt-controls');
-      button('检查并同步官方图鉴',modeActions,async()=>{try{await d.atlas.syncCache(true);notice.textContent='官方图鉴与本地素材已同步';}catch(e){notice.textContent=e.message;}},'wt-primary');
       const xform=card();el('h3','挂饰位置 / 大小 / 角度',xform);
       el('p','只修改本机显示，不影响账号联机外观。选择本地挂饰后拖动滑杆即可。',xform,'wt-muted');
-      const xformControls={};const xformRow=el('div',undefined,xform,'wt-transform-grid');
+      const activeLabel=el('p','',xform,'wt-muted');
+      let editId=null;
+      const xformControls={},xformValues={};const xformRow=el('div',undefined,xform,'wt-transform-grid');
+      const formatTransform=(key,raw)=>{const n=Number(raw)||0;
+        if(key==='scale')return n.toFixed(2)+'x';
+        if(key==='rotate')return (n>0?'+':'')+Math.round(n)+'°';
+        return (n>0?'+':'')+Math.round(n)+'px';};
       for(const [key,label,min,max,step] of [['dx','水平位置',-400,400,1],['dy','垂直位置',-400,400,1],['scale','大小',0.3,3,0.01],['rotate','角度',-180,180,1]]){
-        const field=el('label',undefined,xformRow,'wt-transform-field');el('span',label,field);
+        const field=el('label',undefined,xformRow,'wt-transform-field');
+        const head=el('div',undefined,field,'wt-row wt-between');el('span',label,head);
+        const valueText=el('b','',head,'wt-version-value');
         const input=el('input',undefined,field);input.type='range';input.min=min;input.max=max;input.step=step;
-        input.oninput=()=>{try{d.atlas.setAccessoryTransform?.({[key]:Number(input.value)});}catch(e){notice.textContent=e.message;}};
-        xformControls[key]=input;
+        input.oninput=()=>{try{d.atlas.setAccessoryTransform?.({[key]:Number(input.value)},editId||undefined);}catch(e){notice.textContent=e.message;}valueText.textContent=formatTransform(key,input.value);};
+        xformControls[key]=input;xformValues[key]=valueText;
       }
       const xformActions=el('div',undefined,xform,'wt-controls');
-      button('恢复默认',xformActions,()=>{try{d.atlas.resetAccessoryTransform?.();paintTransform();}catch(e){notice.textContent=e.message;}});
-      function paintTransform(){const row=d.atlas.accessoryTransform?.(null)||{dx:0,dy:0,scale:1,rotate:0};for(const key of Object.keys(xformControls))xformControls[key].value=row[key];}
+      button('恢复默认',xformActions,()=>{try{d.atlas.resetAccessoryTransform?.(editId||undefined);paintTransform();paintSaved();}catch(e){notice.textContent=e.message;}});
+      button('跟随当前挂饰',xformActions,()=>{editId=null;paintTransform();paintSaved();});
+      const savedSection=el('div',undefined,xform,'wt-notes');el('h3','已保存的挂饰微调',savedSection);const savedList=el('div',undefined,savedSection);
+      const savedRows=()=>d.atlas.listAccessoryTransforms?.()||[];
+      function accessoryName(item){return item?String(item.asset_name||item.name||item.label||item.id||''):'';}
+      function paintTransform(){
+        const active=d.atlas.selection?.value?.accessory||d.atlas.officialUser?.value?.accessory||null;
+        const rows=savedRows();
+        const editRow=editId?rows.find(r=>String(r.id)===String(editId)):null;
+        const activeId=active&&active.id!==undefined?String(active.id):'';
+        const activeRow=activeId?rows.find(r=>String(r.id)===activeId):null;
+        const target=editId?editRow:(activeRow||d.atlas.accessoryTransform?.(null)||null);
+        const row=target?{dx:Number(target.dx)||0,dy:Number(target.dy)||0,scale:Number(target.scale)||1,rotate:Number(target.rotate)||0}:{dx:0,dy:0,scale:1,rotate:0};
+        for(const key of Object.keys(xformControls)){xformControls[key].value=row[key];if(xformValues[key])xformValues[key].textContent=formatTransform(key,row[key]);}
+        const name=accessoryName(active)||'未选择挂饰';
+        activeLabel.textContent='当前挂饰：'+name+(editId?' · 编辑中：'+((editRow&&editRow.name)||('#'+editId)):'');
+      }
+      let savedSignature=null;
+      function paintSaved(){
+        const rows=savedRows();
+        const signature=rows.map(row=>[row.id,row.name,row.dx,row.dy,row.scale,row.rotate].join(':')).join('|');
+        if(signature===savedSignature)return;
+        savedSignature=signature;savedList.replaceChildren();
+        if(!rows.length){el('div','还没有保存过挂饰微调',savedList,'wt-empty');return;}
+        for(const row of rows){
+          const item=el('div',undefined,savedList,'wt-version'),text=el('div',undefined,item);
+          el('strong',row.name||('#'+row.id),text);
+          el('div','水平 '+formatTransform('dx',row.dx)+' · 垂直 '+formatTransform('dy',row.dy)+' · 大小 '+formatTransform('scale',row.scale)+' · 角度 '+formatTransform('rotate',row.rotate),text,'wt-muted');
+          button('加载编辑',item,()=>{editId=String(row.id);paintTransform();paintSaved();notice.textContent='正在编辑 '+(row.name||('#'+row.id));});
+          button('删除',item,()=>{try{d.atlas.deleteAccessoryTransform?.(row.id);if(String(editId)===String(row.id))editId=null;notice.textContent='已删除 '+(row.name||('#'+row.id));savedSignature=null;paintTransform();paintSaved();}catch(e){notice.textContent=e.message;}});
+        }
+      }
       const tools=card();el('h3','已安装的资源包',tools);const summary=el('p','正在读取…',tools,'wt-muted');
       const actions=el('div',undefined,tools,'wt-controls');
       const importPack=button('导入 Mod ZIP',actions,importArchive,'wt-primary');button('重新扫描',actions,()=>refreshPacks());
       const list=el('div',undefined,tools);
       function paintMode(){
         modeText.textContent='当前：官方图鉴与账号背包正常使用，本地资源只补充本机显示；官方已有外观可设为联机外观，仅本地外观不会写入账号。';
-        paintTransform();
+        paintTransform();paintSaved();
       }
       async function importArchive(){
         importPack.disabled=true;
@@ -205,7 +283,7 @@ function createAssistantDashboard(d){
         }catch(e){notice.textContent='读取 Mod 列表失败：'+e.message;}
       }
       paintMode();refreshPacks();
-      renderView=()=>{paintMode();paintTransform();};
+      renderView=()=>{paintMode();};
     }else if(key==='update'){
       const u=card();el('h3','版本与更新',u);const fields={};
       const versions=el('div',undefined,u,'wt-versions');
@@ -218,7 +296,6 @@ function createAssistantDashboard(d){
       const remoteRow=el('div',undefined,versions,'wt-version'),remoteText=el('div',undefined,remoteRow);
       el('strong','GitHub 最新修改版',remoteText);el('span','本整合包能升级到的版本',remoteText,'wt-muted');
       const remoteValue=el('b','检测中…',remoteRow,'wt-version-value');
-      const check=button('检查更新',remoteRow,checkCommunity);
       const preRow=el('label',undefined,u,'wt-setting');const preText=el('div',undefined,preRow);
       el('h3','包含预发布版本',preText);el('p','关闭时只提醒正式版；打开后 alpha/beta 也算更新',preText,'wt-muted');
       const preBox=el('input',undefined,preRow);preBox.type='checkbox';preBox.setAttribute('aria-label','包含预发布版本');preBox.onchange=async()=>{await change({prerelease_updates:preBox.checked});installChecked=false;await checkCommunity();};fields.prerelease_updates=preBox;
@@ -236,6 +313,7 @@ function createAssistantDashboard(d){
       const actions=el('div',undefined,u,'wt-controls');
       button('打开 GitHub Releases',actions,openReleases);
       button('打开官方桌宠下载页',actions,openPetSite,'wt-primary');
+      const check=button('检查更新',actions,checkCommunity);
       // 拿不到发布号就说「未知」，不要一直挂着「检测中」——那看着像还在等网络。
       withTimeout(d.atlas.request('/community/version',{}),'本机版本读取').then(r=>{modValue.textContent=r.current||'未知';}).catch(()=>{modValue.textContent=d.version||'未知';});
       withTimeout(d.atlas.request('/official/update-check',{}),'官方版本检查').then(paintOfficial).catch(e=>{baseValue.textContent='未知';updates.textContent='官方版本检查失败：'+e.message+'；不影响本机资源同步。';});
@@ -371,12 +449,30 @@ function createAssistantDashboard(d){
         if(!installTimer)installTimer=window.setInterval(pollInstall,2000);
       };
     }else{
+      const searchCard=card();searchCard.setAttribute('data-search-card','true');
+      const searchRow=el('div',undefined,searchCard,'wt-row'),searchInput=el('input',undefined,searchRow);
+      searchInput.type='search';searchInput.setAttribute('data-settings-search','true');searchInput.setAttribute('aria-label','搜索设置与快捷键');searchInput.setAttribute('placeholder','搜索设置项、性能开关或快捷键…');
+      const clearSearch=button('清空',searchRow,()=>{searchInput.value='';applySearch();searchInput.focus();});
+      const searchEmpty=el('div','未找到匹配的设置或快捷键',searchCard,'wt-empty');searchEmpty.hidden=true;
+      const settingRows=[],searchCards=[];
       const c=card();el('h3','自动化设置',c);const fields={};
-      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','先开启后台自动点击，再启用此增强功能；低于下限开始，高于上限停止'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；跟随真实打字与点击次数弹出（支持随机或固定间隔），自动避让后台连点，无需辅助功能权限'],['emote_hotkeys','Alt+1～5 快捷表情','窗口聚焦时按 Alt+数字直接发送对应槽位表情'],['auto_game_mode','按游戏进程自动游戏模式','检测鸣潮进程启动/退出，自动切换官方游戏模式与鼠标穿透'],['remember_monitor','记住显示器','下次启动恢复；找不到原显示器时保持原位']]){
-        const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>{
-          if(key==='enabled'&&!input.checked)change({enabled:false,auto_click_balance:false});
-          else change({[key]:input.checked});
-        };fields[key]=input;
+      function applySearch(){
+        const raw=String(searchInput.value||'').trim();
+        clearSearch.disabled=!raw;
+        if(!raw){
+          for(const item of settingRows)item.hidden=false;
+          for(const item of searchCards)item.hidden=false;
+          c.hidden=false;searchEmpty.hidden=true;return;
+        }
+        const q=raw.toLowerCase();let hits=0;
+        for(const item of settingRows){const hit=String(item.textContent||'').toLowerCase().includes(q);item.hidden=!hit;if(hit)hits++;}
+        c.hidden=!settingRows.some(item=>!item.hidden);
+        for(const item of searchCards){const hit=String(item.textContent||'').toLowerCase().includes(q);item.hidden=!hit;if(hit)hits++;}
+        searchEmpty.hidden=hits>0;
+      }
+      searchInput.oninput=applySearch;
+      for(const[key,title,detail]of [['enabled','后台自动点击','使用桌宠原版计数；打字、Shift 和鼠标拖拽时暂停'],['auto_click_balance','按可用点数自动启停','开启后台自动点击后生效；高于上限暂停触发点击，低于下限自动恢复（不关闭后台点击总开关）'],['auto_chest','自动开宝箱','不等待键鼠空闲；沿用原版登录、冷却、余额与服务器奖励'],['auto_emote','打字自动表情','先在背包装备表情；跟随真实打字与点击次数弹出（支持随机或固定间隔），自动避让后台连点，无需辅助功能权限'],['emote_hotkeys','Alt+1～5 快捷表情','窗口聚焦时按 Alt+数字直接发送对应槽位表情']]){
+        const label=el('label',undefined,c,'wt-setting'),t=el('div',undefined,label);el('h3',title,t);el('p',detail,t,'wt-muted');const input=el('input',undefined,label);input.type='checkbox';input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:input.checked});fields[key]=input;
       }
       const freqRow=el('div',undefined,c,'wt-setting'),freqText=el('div',undefined,freqRow);
       el('h3','自动表情间隔',freqText);const freqSub=el('p','约每 X 次真实按键或点击随机触发一次（±40% 随机波动；后台自动点击不计入）',freqText,'wt-muted');
@@ -406,24 +502,110 @@ function createAssistantDashboard(d){
         slotButtons.push(btn);
       }
       for(const[key,title]of [['auto_click_below','低于此可用点数时开启'],['auto_click_above','高于此可用点数时关闭']]){
-        const row=el('label',undefined,c,'wt-setting'),t=el('div',undefined,row);el('h3',title,t);el('p',key==='auto_click_below'?'严格低于下限后自动开始点击':'严格高于上限后自动停止点击',t,'wt-muted');
+        const row=el('label',undefined,c,'wt-setting'),t=el('div',undefined,row);el('h3',title,t);el('p',key==='auto_click_below'?'低于下限后自动恢复点击':'高于上限后自动暂停点击',t,'wt-muted');
         const input=el('input',undefined,row);input.type='number';input.min=0;input.max=1000000000;input.step=1;input.setAttribute('aria-label',title);input.onchange=()=>change({[key]:Number(input.value)});fields[key]=input;
       }
       const row=el('label',undefined,c,'wt-setting');const t=el('div',undefined,row);el('h3','自动开箱余额阈值',t);el('p','仍需达到原版宝箱实际费用（当前至少 1,000）',t,'wt-muted');const limit=el('input',undefined,row);limit.type='number';limit.min=1;limit.max=1000000000;limit.onchange=()=>change({threshold:Number(limit.value)});fields.threshold=limit;
-      const toolsCard=card();el('h3','联机工具',toolsCard);el('p','只使用官方背包与官方接口；仅本地外观不会被提交。',toolsCard,'wt-muted');
-      const toolRow=el('div',undefined,toolsCard,'wt-controls');const synthStatus=el('p','',toolsCard,'wt-notice');
-      button('批量同阶合成',toolRow,async()=>{synthStatus.textContent='正在按官方背包重复数量批量合成…';try{const r=await d.atlas.synthesizeDuplicates?.('same-level');synthStatus.textContent=r.count?('已提交 '+r.count+' 个重复素材'):'没有可合成的重复素材';}catch(e){synthStatus.textContent='合成失败：'+e.message;}},'wt-primary');
-      const captureCard=card();el('h3','OBS / 面板外观',captureCard);el('p','绿色背景适合色键，透明背景适合窗口捕获；面板背景图只保存在本机。',captureCard,'wt-muted');
-      const captureRow=el('div',undefined,captureCard,'wt-controls');
-      for(const [mode,label] of [['off','关闭'],['green','绿幕'],['transparent','透明']])button(label,captureRow,()=>{d.atlas.setCapture?.({mode});applyDashboardStyle();},mode==='off'?'':'wt-primary');
-      const bgLabel=el('label',undefined,captureCard,'wt-setting'),bgText=el('div',undefined,bgLabel);el('h3','面板背景图',bgText);el('p','选择一张本地图片作为控制台背景',bgText,'wt-muted');
-      const bgInput=el('input',undefined,bgLabel);bgInput.type='file';bgInput.accept='image/*';bgInput.onchange=()=>{const file=bgInput.files?.[0];if(!file)return;if(file.size>2*1024*1024){notice.textContent='背景图片过大，请选择 2 MB 以内的图片';return;}const reader=new FileReader();reader.onload=()=>{try{d.atlas.setCapture?.({panelBackground:String(reader.result||'')});applyDashboardStyle();}catch(e){notice.textContent=e.message;}};reader.readAsDataURL(file);};
-      const opacityRow=el('label',undefined,captureCard,'wt-setting'),opacityText=el('div',undefined,opacityRow);el('h3','面板透明度',opacityText);
-      const opacity=el('input',undefined,opacityRow);opacity.type='range';opacity.min=.35;opacity.max=1;opacity.step=.01;opacity.oninput=()=>{d.atlas.setCapture?.({panelOpacity:Number(opacity.value)});applyDashboardStyle();};
-      function applyDashboardStyle(){const c=d.atlas.capture?.value||{};root.style.opacity=String(Math.max(.35,Math.min(1,Number(c.panelOpacity)||.96)));root.style.backgroundImage=c.panelBackground?`url("${String(c.panelBackground).replace(/"/g,'%22')}")`:'';opacity.value=c.panelOpacity||.96;}
+      for(const node of c.querySelectorAll('.wt-setting'))settingRows.push(node);
+      const toolsCard=card();searchCards.push(toolsCard);el('h3','背包批量合成',toolsCard);el('p','只消耗官方背包中数量大于 1 的多余副本（保留本体），不会提交本地或 Mod 外观。',toolsCard,'wt-muted');
+      const toolRow=el('div',undefined,toolsCard,'wt-controls'),synthStatus=el('p','',toolsCard,'wt-notice'),synthButtons=[];
+      async function runSynthesis(kind,label){
+        for(const b of synthButtons)b.disabled=true;
+        synthStatus.textContent='正在按官方背包重复数量执行'+label+'…';
+        try{
+          const r=await d.atlas.synthesizeDuplicates?.(kind);
+          if(!r){synthStatus.textContent='当前客户端暂不支持批量合成';return;}
+          const batches=Number(r.batches)||0,groups=Array.isArray(r.groups)?r.groups.length:Number(r.groups)||0;
+          synthStatus.textContent=r.count?('已消耗 '+r.count+' 个多余副本'+(batches?' · 提交 '+batches+' 批':'')+(groups?' · '+groups+' 组':'')+'，正在刷新官方背包'):'没有可合成的多余副本，请先刷新官方背包';
+        }catch(e){synthStatus.textContent='合成失败：'+e.message;}
+        finally{for(const b of synthButtons)b.disabled=false;}
+      }
+      synthButtons.push(button('批量同阶合成（5 合 1）',toolRow,()=>runSynthesis('same-level','同阶合成'),'wt-primary'));
+      synthButtons.push(button('批量升阶合成（10 合 1）',toolRow,()=>runSynthesis('upgrade','升阶合成')));
+      const synthLogBtn=button('查看合成日志',toolRow,()=>toggleSynthLog());synthLogBtn.setAttribute('data-synth-log-btn','true');
+      const synthLog=el('div',undefined,toolsCard,'wt-synth-log');synthLog.hidden=true;
+      let synthLogOpen=false;
+      function synthLogTime(value){
+        if(value===undefined||value===null||value==='')return '时间未知';
+        const n=Number(value),date=Number.isFinite(n)?new Date(n<1e12?n*1000:n):new Date(value);
+        return isNaN(date.getTime())?'时间未知':date.toLocaleString('zh-CN',{hour12:false});
+      }
+      async function toggleSynthLog(){
+        if(synthLogOpen){synthLogOpen=false;synthLog.hidden=true;return;}
+        synthLogOpen=true;synthLog.hidden=false;synthLog.replaceChildren();
+        el('div','正在读取合成日志…',synthLog,'wt-muted');
+        try{
+          const r=await d.atlas.request('/diagnostic/synth/list',{limit:20});
+          const rows=Array.isArray(r?.entries)?r.entries:Array.isArray(r?.items)?r.items:Array.isArray(r?.logs)?r.logs:[];
+          synthLog.replaceChildren();
+          if(!rows.length){el('div','暂无合成日志',synthLog,'wt-empty');return;}
+          for(const item of rows){
+            const raw=item&&typeof item==='object'?item:{},entry=raw.entry&&typeof raw.entry==='object'?raw.entry:raw;
+            const kindText=String(entry.kind||'').toLowerCase().includes('up')||entry.kind==='升阶'?'升阶':'同阶';
+            const ok=!entry.error;
+            const logRow=el('div',undefined,synthLog,'wt-log'),main=el('div',undefined,logRow,'wt-log-main');
+            el('strong',kindText+'合成 · '+(ok?'成功':'失败'),main);
+            let line=synthLogTime(raw.time??entry.time??entry.startedAt)+' · 消耗 '+(Number(entry.consumed)||0)+' 个';
+            if(entry.batches!==undefined)line+=' · '+entry.batches+' 批';
+            if(entry.durationMs!==undefined)line+=' · '+Math.round(Number(entry.durationMs)||0)+' ms';
+            el('div',line,main,'wt-muted');
+            if(entry.error)el('div',String(entry.error),main,'wt-muted');
+            el('span',ok?'成功':'失败',logRow,'wt-rarity');
+          }
+        }catch(e){
+          synthLog.replaceChildren();
+          el('div','合成日志读取失败：'+e.message,synthLog,'wt-empty');
+        }
+      }
+      const captureCard=card();searchCards.push(captureCard);el('h3','OBS 桌宠绿幕',captureCard);el('p','仅在桌宠周围绘制绿幕背景，方便 OBS 色键抠像，不影响桌面其他区域。',captureCard,'wt-muted');
+      const captureRow=el('div',undefined,captureCard,'wt-controls'),captureButtons={};
+      for(const [mode,label] of [['off','关闭'],['green','开启绿幕']])captureButtons[mode]=button(label,captureRow,()=>{d.atlas.setCapture?.({mode});applyDashboardStyle();});
+      const lookCard=card();searchCards.push(lookCard);el('h3','面板外观',lookCard);el('p','面板背景图与透明度只保存在本机，会实时作用于控制台与官方面板。',lookCard,'wt-muted');
+      const bgRow=el('div',undefined,lookCard,'wt-setting'),bgText=el('div',undefined,bgRow);el('h3','面板背景图',bgText);el('p','选择一张本地图片作为控制台与面板背景',bgText,'wt-muted');
+      const bgControls=el('div',undefined,bgRow,'wt-row'),bgInput=el('input',undefined,bgControls);bgInput.type='file';bgInput.accept='image/*';bgInput.setAttribute('aria-label','面板背景图');
+      const clearBg=button('清除背景图',bgControls,()=>{try{d.atlas.setCapture?.({panelBackground:''});bgInput.value='';applyDashboardStyle();}catch(e){notice.textContent=e.message;}});
+      bgInput.onchange=()=>{const file=bgInput.files?.[0];if(!file)return;if(file.size>2*1024*1024){notice.textContent='背景图片过大，请选择 2 MB 以内的图片';return;}const reader=new FileReader();reader.onload=()=>{try{d.atlas.setCapture?.({panelBackground:String(reader.result||'')});applyDashboardStyle();}catch(e){notice.textContent=e.message;}};reader.readAsDataURL(file);};
+      const opacityRow=el('label',undefined,lookCard,'wt-setting'),opacityText=el('div',undefined,opacityRow);el('h3','面板透明度',opacityText);
+      const opacity=el('input',undefined,opacityRow);opacity.type='range';opacity.min=.35;opacity.max=1;opacity.step=.01;opacity.setAttribute('aria-label','面板透明度');opacity.oninput=()=>{d.atlas.setCapture?.({panelOpacity:Number(opacity.value)});applyDashboardStyle();};
+      function applyDashboardStyle(){const c=d.atlas.capture?.value||{};d.atlas.applyCaptureStyle?.();
+        const mode=c.mode==='green'?'green':'off';
+        captureButtons.off.className=mode==='off'?'wt-primary':'';
+        captureButtons.green.className=mode==='green'?'wt-primary':'';
+        const panelOpacity=Math.max(.35,Math.min(1,Number(c.panelOpacity)||.96));opacity.value=panelOpacity;
+        clearBg.disabled=!c.panelBackground;
+        if(d.mount){root.style.opacity='';root.style.backgroundImage='';}
+        else{root.style.opacity=String(panelOpacity);root.style.backgroundImage=c.panelBackground?`url("${String(c.panelBackground).replace(/"/g,'%22')}")`:'';}
+      }
       applyDashboardStyle();
+      const perfCard=card();searchCards.push(perfCard);
+      el('h3','性能与省内存渲染',perfCard);
+      el('p','只影响本机桌面渲染；低配或长期挂机时更省电、省内存。',perfCard,'wt-muted');
+      const perfButtons={},perfFpsRow=el('div',undefined,perfCard,'wt-controls');
+      for(const [fpsCap,label] of [[30,'30 FPS（省电）'],[60,'60 FPS（均衡）'],[0,'跟随屏幕']]){
+        perfButtons[fpsCap]=button(label,perfFpsRow,()=>{try{d.atlas.setPerf?.({fpsCap});paintPerf();}catch(e){notice.textContent=e.message;}});
+      }
+      const perfFields={};
+      for(const [key,title,detail] of [['idlePause','空闲停帧','动作静止且菜单收起时暂停桌面动画循环，显著降低闲置功耗'],['reduceMotion','精简动画效果','跳过气泡/窗口过渡动画，减少高频重绘'],['hideMainPet','停止渲染桌面主角','隐藏主桌宠图层但保留后台点击与助手统计，大幅节省内存']]){
+        const row=el('label',undefined,perfCard,'wt-setting'),text=el('div',undefined,row);el('h3',title,text);el('p',detail,text,'wt-muted');
+        const input=el('input',undefined,row);input.type='checkbox';input.setAttribute('data-perf-setting','true');input.setAttribute('aria-label',title);
+        input.onchange=()=>{try{d.atlas.setPerf?.({[key]:input.checked});paintPerf();}catch(e){notice.textContent=e.message;}};
+        perfFields[key]=input;
+      }
+      function paintPerf(){
+        const perf=d.atlas.perf?.value||{};
+        const cap=[0,30,60].includes(Number(perf.fpsCap))?Number(perf.fpsCap):60;
+        for(const [key,btn] of Object.entries(perfButtons))btn.className=Number(key)===cap?'wt-primary':'';
+        for(const [key,input] of Object.entries(perfFields)){if(doc.activeElement===input)continue;input.checked=perf[key]===undefined?(key==='idlePause'):!!perf[key];}
+      }
+      const shortcutCard=card();searchCards.push(shortcutCard);
+      el('h3','快捷键速览',shortcutCard);
+      for(const [keys,desc] of [['Alt+1～5','窗口聚焦时发送 1～5 号槽位表情'],['F7','游戏模式（鼠标穿透）开关'],['F8','切换显示屏幕'],['F9','显示 / 隐藏桌宠']]){
+        const row=el('div',undefined,shortcutCard,'wt-setting');
+        el('b',keys,row,'wt-version-value');el('span',desc,row,'wt-muted');
+      }
+      paintPerf();
       const emoteHint=el('p','',c,'wt-muted');emoteHint.setAttribute('data-emote-hint','true');
-      renderView=()=>{for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox'){input.checked=!!value.settings[k];input.disabled=k==='auto_click_balance'&&!value.settings.enabled&&!value.settings.auto_click_balance;}else input.value=value.settings[k]??(k==='auto_emote_interval'?25:'');}
+      renderView=()=>{applyDashboardStyle();paintPerf();applySearch();for(const[k,input]of Object.entries(fields)){if(doc.activeElement===input)continue;if(input.type==='checkbox'){input.checked=!!value.settings[k];}else input.value=value.settings[k]??(k==='auto_emote_interval'?25:'');}
         const stats=value?.runtime?.emote||d.atlas?.assistant?.emoteStats||{};
         const isRandom=value?.settings?.auto_emote_random!==false;
         randBtn.className='wt-slot'+(isRandom?' active':'');

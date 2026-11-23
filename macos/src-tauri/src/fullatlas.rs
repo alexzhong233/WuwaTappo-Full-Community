@@ -93,7 +93,6 @@ impl FullAtlasState {
                 | "sync/status"
                 | "sync"
                 | "offline-data"
-                | "game/status"
                 | "custom/status"
                 | "custom/import"
                 | "custom/remove"

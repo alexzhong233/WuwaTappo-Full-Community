@@ -5,7 +5,7 @@
 //! `integrate_assistant.py`) while rendering the desktop overlay modules directly from
 //! `shared/frontend/` + `shared/contracts/assistant-settings.json`.
 
-use regex::Regex;
+use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -126,6 +126,200 @@ fn patch_accessory_transform(
         .replace("__X", x)
         .replace("__Y", y);
     rec.replace(text, whole, &replacement)
+}
+
+fn capture<'a>(caps: &Captures<'a>, name: &str) -> &'a str {
+    caps.name(name).map(|m| m.as_str()).unwrap_or("")
+}
+
+/// EmotionMenu 的动画循环在官方前端里一直自转，即使菜单收起也持续 requestAnimationFrame。
+/// 这里给官方循环补上「空闲停帧」和 FPS 上限，并通过 watch 唤醒；不依赖 M.size（官方收起菜单
+/// 并不会清空 M），只看菜单开关与用户设置。
+fn patch_emotion_menu_raf(
+    rec: &mut PatchRecorder,
+    main: &str,
+    watch_sym: &str,
+) -> Result<String, String> {
+    let pattern = r#"(?s)function\s+(?P<fn_name>[A-Za-z0-9_$]+)\(\s*(?P<ts_param>[A-Za-z0-9_$]+)\s*\)\s*\{\s*const\s+(?P<u_var>[A-Za-z0-9_$]+)\s*=\s*Math\.min\(\s*\(\s*(?P<ts_in_min>[A-Za-z0-9_$]+)\s*-\s*(?P<clock_var>[A-Za-z0-9_$]+)\s*\)\s*\/\s*1e3\s*,\s*\.028\s*\)\s*;\s*(?P<clock_assign>[A-Za-z0-9_$]+)\s*=\s*(?P<ts_assign>[A-Za-z0-9_$]+)\s*;\s*(?P<raf_inner>[\s\S]*?;)\s*(?P<raf_var>[A-Za-z0-9_$]+)\s*=\s*requestAnimationFrame\(\s*(?P<fn_in_raf>[A-Za-z0-9_$]+)\s*\)\s*\}\s*;?\s*return\s+(?P<on_mounted>[A-Za-z0-9_$]+)\(\s*\(\s*\)\s*=>\s*\{\s*(?P<clock_reset>[A-Za-z0-9_$]+)\s*=\s*performance\.now\(\s*\)\s*,\s*(?P<raf_start>[A-Za-z0-9_$]+)\s*=\s*requestAnimationFrame\(\s*(?P<fn_start>[A-Za-z0-9_$]+)\s*\)\s*,\s*window\.addEventListener\(\s*["']resize["']\s*,\s*(?P<resize_fn>[A-Za-z0-9_$]+)\s*\)\s*\}\s*\)\s*,\s*(?P<on_unmounted>[A-Za-z0-9_$]+)\(\s*\(\s*\)\s*=>\s*\{\s*cancelAnimationFrame\(\s*(?P<raf_stop>[A-Za-z0-9_$]+)\s*\)\s*,\s*window\.removeEventListener\(\s*["']resize["']\s*,\s*(?P<resize_off>[A-Za-z0-9_$]+)\s*\)\s*,\s*(?P<unmount_tail>[\s\S]*?)\s*\}\s*\)\s*,\s*(?P<render_head>\(\s*[A-Za-z0-9_$]+(?:\s*,\s*[A-Za-z0-9_$]+){0,2}\s*\)\s*=>\s*(?P<open_ref>[A-Za-z0-9_$.]+)\.value\s*\?)"#;
+    let re = Regex::new(pattern).map_err(|error| error.to_string())?;
+    let matches: Vec<Captures<'_>> = re.captures_iter(main).collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "EmotionMenu 动画循环锚点数量异常：{}（期望 1）",
+            matches.len()
+        ));
+    }
+    let caps = &matches[0];
+    let same = capture(caps, "fn_name") == capture(caps, "fn_in_raf")
+        && capture(caps, "fn_name") == capture(caps, "fn_start")
+        && capture(caps, "ts_param") == capture(caps, "ts_in_min")
+        && capture(caps, "ts_param") == capture(caps, "ts_assign")
+        && capture(caps, "clock_var") == capture(caps, "clock_assign")
+        && capture(caps, "clock_var") == capture(caps, "clock_reset")
+        && capture(caps, "raf_var") == capture(caps, "raf_start")
+        && capture(caps, "raf_var") == capture(caps, "raf_stop")
+        && capture(caps, "resize_fn") == capture(caps, "resize_off");
+    if !same {
+        return Err("EmotionMenu 动画循环变量绑定不一致".into());
+    }
+    let whole = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
+    let replacement = "let __wuwaRafLast = 0;\nfunction __FN__(__TS__) {\n const __p = __lg.perf?.value || {};\n if (__p.idlePause !== false && !__OPEN__.value) { __RAF__ = 0; return; }\n const __cap = Number(__p.fpsCap) || 0;\n if (!(__cap > 0 && __wuwaRafLast > 0 && __TS__ - __wuwaRafLast < 1000 / __cap - 1)) { __wuwaRafLast = __TS__; const __U__ = Math.min((__TS__ - __CLOCK__) / 1e3, .028); __CLOCK__ = __TS__; __INNER__ }\n __RAF__ = requestAnimationFrame(__FN__)\n}\nfunction __wuwaWakeRaf() { if (!__RAF__) { __CLOCK__ = performance.now(); __wuwaRafLast = 0; __RAF__ = requestAnimationFrame(__FN__); } }\n__WATCH__([__OPEN__, () => __lg.perf?.value?.idlePause], ([__open, __idle]) => { if (__open || __idle === false) __wuwaWakeRaf(); }, { flush: \"sync\" });\nreturn __MOUNTED__(() => { window.addEventListener(\"resize\", __RESIZE__); __wuwaWakeRaf(); }), __UNMOUNTED__(() => { cancelAnimationFrame(__RAF__); __RAF__ = 0; window.removeEventListener(\"resize\", __RESIZE__); __TAIL__ }), __HEAD__"
+        .replace("__FN__", capture(caps, "fn_name"))
+        .replace("__TS__", capture(caps, "ts_param"))
+        .replace("__OPEN__", capture(caps, "open_ref"))
+        .replace("__RAF__", capture(caps, "raf_var"))
+        .replace("__CLOCK__", capture(caps, "clock_var"))
+        .replace("__U__", capture(caps, "u_var"))
+        .replace("__INNER__", capture(caps, "raf_inner"))
+        .replace("__WATCH__", watch_sym)
+        .replace("__MOUNTED__", capture(caps, "on_mounted"))
+        .replace("__UNMOUNTED__", capture(caps, "on_unmounted"))
+        .replace("__RESIZE__", capture(caps, "resize_fn"))
+        .replace("__TAIL__", capture(caps, "unmount_tail"))
+        .replace("__HEAD__", capture(caps, "render_head"));
+    rec.replace(main, whole, &replacement)
+}
+
+/// 联机大厅的成员显示/位置布局全部落本机：可见性、恢复落点、跨窗口 arrange/reset 与拖拽保存。
+fn patch_room_layout_hooks(
+    rec: &mut PatchRecorder,
+    main: &str,
+    on_unmounted_sym: &str,
+) -> Result<String, String> {
+    // 钩子 A：成员可见性判断追加本机隐藏名单。
+    let vis_re = Regex::new(
+        r#"(?s)function\s+(?P<vo_fn>[A-Za-z0-9_$]+)\(\s*(?P<vo_arg>[A-Za-z0-9_$]+)\s*\)\s*\{\s*return\s+(?P<ho>[A-Za-z0-9_$]+)\.value\s*&&\s*(?P<vo_arg2>[A-Za-z0-9_$]+)\s*!==\s*(?P<ao>[A-Za-z0-9_$]+)\.value\s*\|\|\s*(?P<jo>[A-Za-z0-9_$]+)\.value\.has\(\s*(?P<vo_arg3>[A-Za-z0-9_$]+)\s*\)\s*\}"#,
+    )
+    .map_err(|error| error.to_string())?;
+    let vis_matches: Vec<Captures<'_>> = vis_re.captures_iter(main).collect();
+    if vis_matches.len() != 1 {
+        return Err(format!(
+            "联机成员可见性锚点数量异常：{}（期望 1）",
+            vis_matches.len()
+        ));
+    }
+    let vis = &vis_matches[0];
+    let vo_arg = capture(vis, "vo_arg");
+    if vo_arg != capture(vis, "vo_arg2") || vo_arg != capture(vis, "vo_arg3") {
+        return Err("联机成员可见性变量绑定不一致".into());
+    }
+    let vis_whole = vis.get(0).map(|m| m.as_str()).unwrap_or_default();
+    let vis_out = format!(
+        "function {}({vo_arg}) {{ return {}.value && {vo_arg} !== {}.value || {}.value.has({vo_arg}) || Boolean(__lg.isRoomMemberHidden?.({vo_arg})) }}",
+        capture(vis, "vo_fn"),
+        capture(vis, "ho"),
+        capture(vis, "ao"),
+        capture(vis, "jo"),
+    );
+    let main = rec.replace(main, vis_whole, &vis_out)?;
+
+    // 钩子 B：位置恢复 + 实时排列/重置监听。
+    let layout_re = Regex::new(
+        r#"(?s)function\s+(?P<ep_fn>[A-Za-z0-9_$]+)\(\s*(?P<ep_arg>[A-Za-z0-9_$]+)\s*\)\s*\{\s*if\s*\(\s*(?P<pt_set>[A-Za-z0-9_$]+)\.has\(\s*(?P<ep_arg2>[A-Za-z0-9_$]+)\.id\s*\)\s*\|\|\s*!\s*(?P<ready>[A-Za-z0-9_$]+)\.value\s*\)\s*return\s*;\s*const\s+(?P<t_var>[A-Za-z0-9_$]+)\s*=\s*(?P<ue_ref>[A-Za-z0-9_$]+)\.value\?\.querySelector\(\s*["']\.cat-wrap["']\s*\)\s*;\s*if\s*\(\s*!\s*(?P<t_var2>[A-Za-z0-9_$]+)\s*\)\s*return\s*;\s*const\s+(?P<o_var>[A-Za-z0-9_$]+)\s*=\s*(?P<t_var3>[A-Za-z0-9_$]+)\.getBoundingClientRect\(\s*\)\s*,\s*(?P<l_var>[A-Za-z0-9_$]+)\s*=\s*(?P<o_var2>[A-Za-z0-9_$]+)\.width\s*\/\s*(?P<base_w>[A-Za-z0-9_$]+)\s*;\s*if\s*\(\s*!\s*\(\s*(?P<l_var2>[A-Za-z0-9_$]+)\s*>\s*0\s*\)\s*\|\|\s*!\s*Number\.isFinite\(\s*(?P<o_var3>[A-Za-z0-9_$]+)\.left\s*\)\s*\|\|\s*!\s*Number\.isFinite\(\s*(?P<o_var4>[A-Za-z0-9_$]+)\.top\s*\)\s*\)\s*return\s*;\s*const\s+(?P<d_var>[A-Za-z0-9_$]+)\s*=\s*(?P<clamp_fn>[A-Za-z0-9_$]+)\(\s*(?P<o_var5>[A-Za-z0-9_$]+)\.left\s*\+\s*(?P<ep_arg3>[A-Za-z0-9_$]+)\.left\s*\*\s*(?P<l_var3>[A-Za-z0-9_$]+)\s*,\s*(?P<o_var6>[A-Za-z0-9_$]+)\.top\s*\+\s*(?P<ep_arg4>[A-Za-z0-9_$]+)\.top\s*\*\s*(?P<l_var4>[A-Za-z0-9_$]+)\s*\)\s*;\s*(?P<ep_arg5>[A-Za-z0-9_$]+)\.left\s*=\s*(?P<d_var2>[A-Za-z0-9_$]+)\.left\s*,\s*(?P<ep_arg6>[A-Za-z0-9_$]+)\.top\s*=\s*(?P<d_var3>[A-Za-z0-9_$]+)\.top\s*,\s*(?P<pt_set2>[A-Za-z0-9_$]+)\.add\(\s*(?P<ep_arg7>[A-Za-z0-9_$]+)\.id\s*\)\s*,\s*(?P<zi_fn>[A-Za-z0-9_$]+)\(\s*(?P<ep_arg8>[A-Za-z0-9_$]+)\s*\)\s*\}\s*async\s+function\s+(?P<ml_fn>[A-Za-z0-9_$]+)\(\s*\)\s*\{\s*if\s*\(\s*await\s+(?P<tick_fn>[A-Za-z0-9_$]+)\(\s*\)\s*,\s*!!\s*(?P<ready2>[A-Za-z0-9_$]+)\.value\s*\)\s*\{\s*for\s*\(\s*const\s*\[\s*(?P<k_var>[A-Za-z0-9_$]+)\s*,\s*(?P<v_var>[A-Za-z0-9_$]+)\s*\]\s*of\s*(?P<members_comp>[A-Za-z0-9_$]+)\.value\.entries\(\s*\)\s*\)\s*(?P<il_fn>[A-Za-z0-9_$]+)\(\s*(?P<v_var2>[A-Za-z0-9_$]+)\s*,\s*(?P<k_var2>[A-Za-z0-9_$]+)\s*\)\s*,\s*(?P<ep_fn2>[A-Za-z0-9_$]+)\(\s*(?P<v_var3>[A-Za-z0-9_$]+)\s*\)\s*;\s*(?P<ta_fn>[A-Za-z0-9_$]+)\(\s*\)\s*,\s*await\s+(?P<tick_fn2>[A-Za-z0-9_$]+)\(\s*\)\s*,\s*(?P<ea_fn>[A-Za-z0-9_$]+)\(\s*\)\s*\}\s*\}\s*function\s+(?P<jn_fn>[A-Za-z0-9_$]+)\(\s*\)\s*\{\s*(?P<ml_fn2>[A-Za-z0-9_$]+)\(\s*\)\s*\}"#,
+    )
+    .map_err(|error| error.to_string())?;
+    let layout_matches: Vec<Captures<'_>> = layout_re.captures_iter(&main).collect();
+    if layout_matches.len() != 1 {
+        return Err(format!(
+            "联机成员布局锚点数量异常：{}（期望 1）",
+            layout_matches.len()
+        ));
+    }
+    let lay = &layout_matches[0];
+    let ep_arg = capture(lay, "ep_arg");
+    let t_var = capture(lay, "t_var");
+    let o_var = capture(lay, "o_var");
+    let l_var = capture(lay, "l_var");
+    let d_var = capture(lay, "d_var");
+    let v_var = capture(lay, "v_var");
+    let same = ep_arg == capture(lay, "ep_arg2")
+        && ep_arg == capture(lay, "ep_arg3")
+        && ep_arg == capture(lay, "ep_arg4")
+        && ep_arg == capture(lay, "ep_arg5")
+        && ep_arg == capture(lay, "ep_arg6")
+        && ep_arg == capture(lay, "ep_arg7")
+        && ep_arg == capture(lay, "ep_arg8")
+        && t_var == capture(lay, "t_var2")
+        && t_var == capture(lay, "t_var3")
+        && o_var == capture(lay, "o_var2")
+        && o_var == capture(lay, "o_var3")
+        && o_var == capture(lay, "o_var4")
+        && o_var == capture(lay, "o_var5")
+        && o_var == capture(lay, "o_var6")
+        && l_var == capture(lay, "l_var2")
+        && l_var == capture(lay, "l_var3")
+        && l_var == capture(lay, "l_var4")
+        && d_var == capture(lay, "d_var2")
+        && d_var == capture(lay, "d_var3")
+        && capture(lay, "pt_set") == capture(lay, "pt_set2")
+        && capture(lay, "ready") == capture(lay, "ready2")
+        && capture(lay, "ep_fn") == capture(lay, "ep_fn2")
+        && capture(lay, "ml_fn") == capture(lay, "ml_fn2")
+        && capture(lay, "tick_fn") == capture(lay, "tick_fn2")
+        && capture(lay, "k_var") == capture(lay, "k_var2")
+        && v_var == capture(lay, "v_var2")
+        && v_var == capture(lay, "v_var3");
+    if !same {
+        return Err("联机成员布局变量绑定不一致".into());
+    }
+    let layout_whole = lay.get(0).map(|m| m.as_str()).unwrap_or_default();
+    let template = "function __EP__(__ARG__) { if (__SET__.has(__ARG__.id) || !__READY__.value) return; const __T__ = __UE__.value?.querySelector(\".cat-wrap\"); if (!__T__) return; const __O__ = __T__.getBoundingClientRect(), __L__ = __O__.width / __BASE__; if (!(__L__ > 0) || !Number.isFinite(__O__.left) || !Number.isFinite(__O__.top)) return; const __others = __MEMBERS__.value.filter(__m => __m.id !== __ARG__.id && __SET__.has(__m.id)).map(__m => ({ left: __m.left, top: __m.top })); const __saved = __lg.savedRoomMemberPosition?.(__ARG__.id, __others, __BASE__, __BASE__); const __D__ = __saved ? __CLAMP__(__saved.left, __saved.top) : __CLAMP__(__O__.left + __ARG__.left * __L__, __O__.top + __ARG__.top * __L__); __ARG__.left = __D__.left, __ARG__.top = __D__.top, __SET__.add(__ARG__.id), __ZI__(__ARG__) }\nasync function __ML__() { if (await __TICK__(), !!__READY__.value) { for (const [__K__, __V__] of __MEMBERS__.value.entries()) __IL__(__V__, __K__), __EP__(__V__); __TA__(), await __TICK__(), __EA__() } }\nfunction __JN__() { __ML__() }\nfunction __wuwaRoomStorage(event) {\n if (!event || event.key !== \"wuwatappo-room-action-v1\" || !event.newValue) return;\n let payload = null;\n try { payload = JSON.parse(event.newValue); } catch (error) { return; }\n if (!payload || typeof payload !== \"object\") return;\n if (payload.action === \"arrange\") {\n  const __visible = __MEMBERS__.value.filter(__m => !__lg.isRoomMemberHidden?.(__m.id));\n  const __positions = __lg.arrangeRoomMembers?.(__visible, payload.mode || \"horizontal\", { width: window.innerWidth, height: window.innerHeight }) || [];\n  for (const __pos of __positions) {\n   const __m = __MEMBERS__.value.find(__item => __item.id === __pos.id);\n   if (!__m) continue;\n   const __c = __CLAMP__(__pos.left, __pos.top);\n   __m.left = __c.left; __m.top = __c.top; __SET__.add(__m.id); __ZI__(__m); __lg.saveRoomMemberPosition?.(__m.id, __c.left, __c.top);\n  }\n  __JN__();\n } else if (payload.action === \"reset-positions\") {\n  for (const __m of __MEMBERS__.value) { __SET__.delete(__m.id); __m.left = 0; __m.top = 0; }\n  __JN__();\n }\n}\nwindow.addEventListener(\"storage\", __wuwaRoomStorage);\n__UNMOUNTED__(() => window.removeEventListener(\"storage\", __wuwaRoomStorage));";
+    let layout_out = template
+        .replace("__EP__", capture(lay, "ep_fn"))
+        .replace("__ARG__", ep_arg)
+        .replace("__SET__", capture(lay, "pt_set"))
+        .replace("__READY__", capture(lay, "ready"))
+        .replace("__T__", t_var)
+        .replace("__UE__", capture(lay, "ue_ref"))
+        .replace("__O__", o_var)
+        .replace("__L__", l_var)
+        .replace("__BASE__", capture(lay, "base_w"))
+        .replace("__CLAMP__", capture(lay, "clamp_fn"))
+        .replace("__D__", d_var)
+        .replace("__ZI__", capture(lay, "zi_fn"))
+        .replace("__MEMBERS__", capture(lay, "members_comp"))
+        .replace("__ML__", capture(lay, "ml_fn"))
+        .replace("__TICK__", capture(lay, "tick_fn"))
+        .replace("__K__", capture(lay, "k_var"))
+        .replace("__V__", v_var)
+        .replace("__IL__", capture(lay, "il_fn"))
+        .replace("__TA__", capture(lay, "ta_fn"))
+        .replace("__EA__", capture(lay, "ea_fn"))
+        .replace("__JN__", capture(lay, "jn_fn"))
+        .replace("__UNMOUNTED__", on_unmounted_sym);
+    let main = rec.replace(&main, layout_whole, &layout_out)?;
+
+    // 钩子 C：拖拽结束后落点入库。
+    let drag_re = Regex::new(
+        r#"(?s)(?P<drag_obj>[A-Za-z0-9_$]+)\s*&&\s*(?P<drag_test>[A-Za-z0-9_$]+)\(\s*(?P<drag_obj2>[A-Za-z0-9_$]+)\s*\)\s*&&\s*\(\s*(?P<bounce>[A-Za-z0-9_$]+)\s*\?\s*(?P<settle>[A-Za-z0-9_$]+)\(\s*(?P<drag_obj3>[A-Za-z0-9_$]+)\s*,\s*\{\s*left:\s*(?P<left_val>[A-Za-z0-9_$]+)\s*,\s*top:\s*(?P<top_val>[A-Za-z0-9_$]+)\s*\}\s*\)\s*:\s*\(\s*(?P<drag_obj4>[A-Za-z0-9_$]+)\.left\s*=\s*(?P<pos_var>[A-Za-z0-9_$]+)\.left\s*,\s*(?P<drag_obj5>[A-Za-z0-9_$]+)\.top\s*=\s*(?P<pos_var2>[A-Za-z0-9_$]+)\.top\s*,\s*(?P<settle2>[A-Za-z0-9_$]+)\(\s*(?P<drag_obj6>[A-Za-z0-9_$]+)\s*,\s*(?P<pos_var3>[A-Za-z0-9_$]+)\s*\)\s*\)\s*\)\s*;"#,
+    )
+    .map_err(|error| error.to_string())?;
+    let drag_matches: Vec<Captures<'_>> = drag_re.captures_iter(&main).collect();
+    if drag_matches.len() != 1 {
+        return Err(format!(
+            "联机成员拖拽锚点数量异常：{}（期望 1）",
+            drag_matches.len()
+        ));
+    }
+    let drag = &drag_matches[0];
+    let drag_obj = capture(drag, "drag_obj");
+    let pos_var = capture(drag, "pos_var");
+    let same = drag_obj == capture(drag, "drag_obj2")
+        && drag_obj == capture(drag, "drag_obj3")
+        && drag_obj == capture(drag, "drag_obj4")
+        && drag_obj == capture(drag, "drag_obj5")
+        && drag_obj == capture(drag, "drag_obj6")
+        && pos_var == capture(drag, "pos_var2")
+        && pos_var == capture(drag, "pos_var3");
+    if !same {
+        return Err("联机成员拖拽变量绑定不一致".into());
+    }
+    let drag_whole = drag.get(0).map(|m| m.as_str()).unwrap_or_default();
+    let drag_out = format!(
+        "{drag_whole} if ({drag_obj} && {}({drag_obj})) __lg.saveRoomMemberPosition?.({drag_obj}.id, {pos_var}.left, {pos_var}.top);",
+        capture(drag, "drag_test")
+    );
+    rec.replace(&main, drag_whole, &drag_out)
 }
 
 /// Convert `inspect_js.cjs` Unicode codepoint (char) indices into UTF-8 byte offsets.
@@ -633,7 +827,9 @@ if (localAtlasRoute) try {{\n\
  localAtlasController = createLocalAtlasController({{\n\
 ref, window, storage: localStorage, {transport}, normalizeAtlasList, resolvePetAssetIdFromAppearanceId, getAppearanceAssetById,\n\
 apiBase: {api_base}, synthesisAtlas, synthesisAtlasSame, refreshBag: getBagList,\n\
-setGameMode: enabled => invoke('plugin:event|emit',{{event:'cat-settings-game-mode',payload:{{enabled:Boolean(enabled)}}}}).catch(()=>{{}}),\n\
+fetchBag: async () => {{ const raw = unwrapApiData(await getBagList()); return normalizeBagList(Array.isArray(raw) ? raw : Array.isArray(raw?.list) ? raw.list : []); }},\n\
+resolveAssetUrl: (item, host) => resolveBagAppearanceImageUrl(host || loadedAssetsHost || '', item),\n\
+onSynthesisComplete: () => {{ invoke('plugin:event|emit',{{event:'cat-panel-action',payload:{{type:'synthesis-success'}}}}).catch(()=>{{}}); }},\n\
 snapshotCatalog: () => ({{assets: appearanceAssetCatalog.value, atlases: appearanceAtlasCatalog.value, host: loadedAssetsHost, ts: loadedAssetsJsonTs}}),\n\
 getAccountCumulative: () => globalStore.userInfo ? isFrozenClickCount(globalStore.serverClickTotal) ? globalStore.serverClickTotal : clampClickCountSum(globalStore.serverClickTotal+globalStore.localClickCount) : parseSafeClickCount(globalStore.localClickCount),\n\
 getAccountPending: () => parseSafeClickCount(globalStore.localClickCount),\n\
@@ -867,6 +1063,11 @@ pub fn integrate_build(
     shared = patch_mod_display_name(&mut rec, &shared)?;
     shared = patch_taskbar_default(&mut rec, &shared)?;
     shared = patch_mod_asset_url(&mut rec, &shared)?;
+    shared = rec.replace(
+        &shared,
+        "const BAG_RARITY_SORT_ORDER = [\"epic\", \"rare\", \"uncommon\", \"common\"];",
+        "const BAG_RARITY_SORT_ORDER = [\"mod\", \"epic\", \"rare\", \"uncommon\", \"common\"];",
+    )?;
     shared = patch_online_services(&mut rec, &shared)?;
 
     let pkg_json: Value = serde_json::from_str(
@@ -1016,28 +1217,53 @@ pub fn integrate_build(
         .captures(select_source)
         .ok_or("Emote capacity guard changed")?[1]
         .to_owned();
+    let reorder_name = m_raw
+        .cases
+        .get("reorder-emotes")
+        .ok_or("缺少 case reorder-emotes")?
+        .clone();
+    let reorder_param = param_of(&reorder_name)?.ok_or("reorder-emotes 缺少参数")?;
+
     insert_fn(
         &mut edits,
         select_name,
         format!(
             "if(__lg.enabled.value && !__skipLocalSelectChoice){{
- if(__lg.beginSelect({select_param},{store}.userInfo,{max_emotes},()=>{{
+ if({select_param}?.__wuwaReorder){{
+  const __ids=Array.isArray({select_param}.emoteAssetIds)?{select_param}.emoteAssetIds:[];
+  if({select_param}.__wuwaTarget==='official'){{
+   __skipLocalReorder=true;__officialApplyDepth++;
+   Promise.resolve({reorder_name}(__ids)).finally(()=>{{__officialApplyDepth--;__skipLocalReorder=false;__localRefresh();}}).catch(err=>console.error('[reorder-official]',err));
+  }}else{{
+   __lg.reorder(__ids,{store}.userInfo);__localRefresh();
+  }}
+  return;
+ }}
+ if(__lg.beginSelect({select_param},{store}.userInfo,{max_emotes},async ()=>{{
   __skipLocalSelectChoice=true;
-  try{{return {select_name}({select_param});}}finally{{__skipLocalSelectChoice=false;}}
+  __officialApplyDepth++;
+  try{{
+   const __off={store}.userInfo;
+   const __offChar={getchar_sym}(__off);
+   {role}=__offChar?__offChar.replace(/\\.png$/i,''):'';
+   {accessory}={getaccess_sym}(__off)||null;
+   return await {select_name}({select_param});
+  }}finally{{
+   __skipLocalSelectChoice=false;
+   __officialApplyDepth--;
+   __localRefresh();
+  }}
  }}))return;
 }}"
         ),
     )?;
 
-    let reorder_name = m_raw
-        .cases
-        .get("reorder-emotes")
-        .ok_or("缺少 case reorder-emotes")?;
-    let reorder_param = param_of(reorder_name)?.ok_or("reorder-emotes 缺少参数")?;
     insert_fn(
         &mut edits,
-        reorder_name,
-        format!("if(__lg.enabled.value){{__lg.reorder({reorder_param},{store}.userInfo);__localRefresh();return;}}"),
+        &reorder_name,
+        format!(
+            "if(__lg.enabled.value && !__skipLocalReorder && Array.isArray(__lg.selection.value?.emote)){{__lg.reorder({reorder_param},{store}.userInfo);__localRefresh();return;}}"
+        ),
     )?;
 
     let favorite_name = m_raw
@@ -1083,8 +1309,8 @@ pub fn integrate_build(
     let create_op = format!("__lg.createLocalPreset({store}.userInfo,{preset_limit})");
     for (action, template) in [
         ("create-preset", create_op.as_str()),
-        ("delete-preset", "__lg.deleteLocalPreset({arg}.preset_id)"),
-        ("apply-preset", "__lg.applyLocalPreset({arg}.preset_id)"),
+        ("delete-preset", "__lg.deleteLocalPreset(Number(__pid))"),
+        ("apply-preset", "__lg.applyLocalPreset(Number(__pid))"),
     ] {
         let action_name = m_raw
             .cases
@@ -1097,11 +1323,25 @@ pub fn integrate_build(
                 "if(__lg.enabled.value && __lg.shouldCreateLocalPreset({store}.userInfo)){{try{{{op};__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}"
             ),
             _ => format!(
-                "if(__lg.enabled.value && Number({arg}?.preset_id)<0){{try{{{op};__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}"
+                "const __pid=typeof {arg}==='object'&&{arg}!==null?{arg}.preset_id:{arg};\n\
+                 if(__lg.enabled.value && Number(__pid)<0){{try{{{op};__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}"
             ),
         };
         insert_fn(&mut edits, action_name, guard)?;
     }
+
+    let snapshot_fn = function_for(&component_functions, &main_orig, "streamId:")?
+        .name
+        .clone();
+    let snap_push_re = Regex::new(&format!(
+        r"function ([A-Za-z0-9_$]+)\(\) \{{\s*[A-Za-z0-9_$]+\.value && [A-Za-z0-9_$]+\({}\(\)\)",
+        regex::escape(&snapshot_fn)
+    ))
+    .unwrap();
+    let snap_push_fn = snap_push_re
+        .captures(&main_orig)
+        .ok_or("snapshot push helper changed")?[1]
+        .to_owned();
 
     let mut snap_text = main_orig[snapshot.start..snapshot.end].to_owned();
     snap_text = snap_text.replace(
@@ -1122,13 +1362,15 @@ pub fn integrate_build(
         &format!("presetListLoading: {preset_loading_field}"),
         &format!("presetListLoading: {preset_loading_field}"),
     );
-    snap_text = snap_text.replace(
-        user_info_field,
-        &user_info_field.replace(
-            &format!("{store}.userInfo"),
-            &format!("__lg.viewUser({store}.userInfo)"),
-        ),
+    let rewritten_user_info = user_info_field.replace(
+        &format!("{store}.userInfo"),
+        &format!("__lg.viewUser({store}.userInfo)"),
     );
+    snap_text = rec.replace(
+        &snap_text,
+        &format!("userInfo: {user_info_field}"),
+        &format!("userInfo: {rewritten_user_info},\n          officialUserInfo: {user_info_field}"),
+    )?;
     snap_text = snap_text.replace(
         &format!("selectedEmoteAssetIds: {selected_emotes_field}"),
         &format!(
@@ -1155,7 +1397,7 @@ pub fn integrate_build(
                 edits.push(Edit::new(
                     m.start(),
                     m.end(),
-                    format!("{alias}(__lg.viewUser({store}.userInfo))"),
+                    format!("{alias}(__effectiveUser({store}.userInfo))"),
                 ));
             }
         }
@@ -1163,15 +1405,17 @@ pub fn integrate_build(
 
     let local_code = format!(
         r#"
- let __localSaved=null,__skipLocalSelectChoice=false;
+ let __localSaved=null,__skipLocalSelectChoice=false,__skipLocalReorder=false,__officialApplyDepth=0;
+function __effectiveUser(u){{return __officialApplyDepth>0?u:__lg.viewUser(u);}}
 function __localRefresh(){{
- if(!__lg.enabled.value)return;
+ if(!__lg.enabled.value||__officialApplyDepth>0)return;
  const user=__lg.viewUser({store}.userInfo);
  {host}=__lg.assetsHost;
  const name={getchar_sym}(user);if(name){role}=name.replace(/\.png$/i,'');
  {accessory}={getaccess_sym}(user)||null;
  {emotes}={getemotes_sym}(user).map(item=>({{id:item.id,name:item.name}}));
-  {atlas}=__lg.mergeAtlas({atlas});
+ {atlas}=__lg.mergeAtlas({atlas});
+ {snap_push_fn}();
 }}
 {watch_sym}(__lg.enabled,on=>{{
  if(on){{__localSaved={{role:{role},accessory:{accessory},emotes:[...{emotes}],host:{host},atlas:{atlas}}};__localRefresh();}}
@@ -1190,6 +1434,9 @@ function __localRefresh(){{
     let mut main = apply_edits(&main_orig, edits)?;
     let accessory_alias = require_import(&mi, "getUserAccessoryOffset")?;
     main = patch_accessory_transform(&mut rec, &main, accessory_alias)?;
+    main = patch_emotion_menu_raf(&mut rec, &main, watch_sym)?;
+    let on_unmounted_m = require_import(&mi, "onUnmounted")?;
+    main = patch_room_layout_hooks(&mut rec, &main, on_unmounted_m)?;
     // Panel edits
     let p_raw = structure
         .files
@@ -1257,6 +1504,7 @@ function __openCommunityUpdate(event){{try{{event&&event.stopPropagation&&event.
     let on_mounted_p = require_import(&pi, "onMounted")?;
     let on_unmounted_p = require_import(&pi, "onUnmounted")?;
     let computed_p = require_import(&pi, "computed")?;
+    let watch_p = require_import(&pi, "watch")?;
     let unref_p = require_import(&pi, "unref")?;
     let open_block_p = require_import(&pi, "openBlock")?;
     let create_elem_block_p = require_import(&pi, "createElementBlock")?;
@@ -1327,6 +1575,80 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         panel_edits.push(Edit::new(pos, pos + old.len(), new));
     }
 
+    let module_emit = Regex::new(r#"([A-Za-z0-9_$]+)\("apply-preset","#)
+        .unwrap()
+        .captures(module_text)
+        .ok_or("MainModulePanel apply-preset emit missing")?[1]
+        .to_owned();
+    let char_confirm_re =
+        Regex::new(r#"if \(([A-Za-z0-9_$]+)\.asset_type === "character_skin"\) \{"#).unwrap();
+    let char_confirm_matches: Vec<_> = char_confirm_re.captures_iter(module_text).collect();
+    if char_confirm_matches.len() != 1 {
+        return Err("MainModulePanel character confirm guard changed".into());
+    }
+    let cc_m = &char_confirm_matches[0];
+    let cc_span = cc_m.get(0).unwrap();
+    let cc_var = &cc_m[1];
+    panel_edits.push(Edit::new(
+        module_component.start + cc_span.start(),
+        module_component.start + cc_span.end(),
+        format!(
+            "if ({cc_var}.asset_type === \"character_skin\" && {cc_var}.__wuwaTarget !== \"local\" && !{cc_var}.__wuwaRemove) {{"
+        ),
+    ));
+    let preset_confirm_re = Regex::new(
+        r#"const ([A-Za-z0-9_$]+) = [A-Za-z0-9_$]+\.bagList\.find\(([A-Za-z0-9_$]+) => ([A-Za-z0-9_$]+)\.asset_type === "character_skin" && ([A-Za-z0-9_$]+)\.asset_id === ([A-Za-z0-9_$]+)\.character_asset_id\);"#,
+    )
+    .unwrap();
+    let pc_matches: Vec<_> = preset_confirm_re
+        .captures_iter(module_text)
+        .filter(|c| &c[2] == &c[3] && &c[2] == &c[4])
+        .collect();
+    if pc_matches.len() != 1 {
+        return Err("MainModulePanel preset apply guard changed".into());
+    }
+    let pc_m = &pc_matches[0];
+    let pc_span = pc_m.get(0).unwrap();
+    let pc_param = &pc_m[5];
+    panel_edits.push(Edit::new(
+        module_component.start + pc_span.start(),
+        module_component.start + pc_span.start(),
+        format!("if (Number({pc_param}?.preset_id) < 0) {{ {module_emit}(\"apply-preset\", {pc_param}); return; }}\n        "),
+    ));
+
+    let bag_item = find_component(p_raw, "BagAtlasItem")?;
+    let bag_item_text = &panel_orig[bag_item.start..bag_item.end];
+    let props_var = Regex::new(r#""atlas-item--active":\s*([A-Za-z0-9_$]+)\.active"#)
+        .unwrap()
+        .captures(bag_item_text)
+        .ok_or("BagAtlasItem active prop binding changed")?[1]
+        .to_owned();
+    let div_click_re = Regex::new(
+        r#"(\{\s*class:\s*[A-Za-z0-9_$]+\(\["atlas-item",[\s\S]{0,400}?\]\),\s*)(onClick:\s*[A-Za-z0-9_$]+)"#,
+    )
+    .unwrap();
+    let div_m = div_click_re
+        .captures(bag_item_text)
+        .ok_or("BagAtlasItem div onClick anchor changed")?;
+    let div_click = div_m.get(2).unwrap();
+    panel_edits.push(Edit::new(
+        bag_item.start + div_click.start(),
+        bag_item.start + div_click.end(),
+        format!(
+            "\"data-wuwa-asset-id\": {props_var}.item?.asset_id, \"data-wuwa-asset-type\": {props_var}.item?.asset_type, \"data-wuwa-asset-name\": {props_var}.item?.asset_name, {}",
+            &div_m[2]
+        ),
+    ));
+    let end_flag_rel = bag_item_text
+        .rfind("], 2))")
+        .filter(|pos| bag_item_text.len() - pos < 45)
+        .ok_or("BagAtlasItem root patchFlag changed")?;
+    panel_edits.push(Edit::new(
+        bag_item.start + end_flag_rel,
+        bag_item.start + end_flag_rel + "], 2))".len(),
+        "], 10, [\"data-wuwa-asset-id\", \"data-wuwa-asset-type\", \"data-wuwa-asset-name\"]))",
+    ));
+
     let panel_root = find_component(p_raw, "index")?;
     let root_source = &panel_orig[panel_root.body..panel_root.body_end];
     let state_ref_re = Regex::new(&format!(
@@ -1355,6 +1677,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     };
     let ready_retry = format!(
         "\nlet __panelDisposed=false;\n\
+{watch_p}({state_ref_name},__s=>{{if(__s)__lg.syncPanelState?.(__s);}},{{immediate:true}});\n\
 {on_unmounted_p}(()=>{{__panelDisposed=true;}});\n\
 {on_mounted_p}(()=>{{
  for(const delay of [500,1500,3000,6000,10000])window.setTimeout(()=>{{
@@ -1368,6 +1691,47 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     panel_edits.push(Edit::new(panel_return, panel_return, ready_retry));
 
     let atlas_text = &panel_orig[atlas_component.start..atlas_component.end];
+    let atlas_emit = Regex::new(r#"([A-Za-z0-9_$]+)\("select-appearance","#)
+        .unwrap()
+        .captures(atlas_text)
+        .ok_or("MainPanelAtlasTab select-appearance emit missing")?[1]
+        .to_owned();
+    let atlas_owned_re = Regex::new(
+        r"if \(!([A-Za-z0-9_$]+)\.owned \|\| !([A-Za-z0-9_$]+)\.asset_id\) return null;",
+    )
+    .unwrap();
+    let atlas_owned_m = atlas_owned_re
+        .captures_iter(atlas_text)
+        .find(|c| &c[1] == &c[2])
+        .ok_or("MainPanelAtlasTab owned guard changed")?;
+    let ao_span = atlas_owned_m.get(0).unwrap();
+    let ao_var = &atlas_owned_m[1];
+    panel_edits.push(Edit::new(
+        atlas_component.start + ao_span.start(),
+        atlas_component.start + ao_span.end(),
+        format!("if ((!<v>.owned && !__lg.enabled.value) || !<v>.asset_id) return null;").replace("<v>", ao_var),
+    ));
+    let atlas_click_re = Regex::new(&format!(
+        r#"([A-Za-z0-9_$]+) && ([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\) && {}\("select-appearance", ([A-Za-z0-9_$]+)\)"#,
+        regex::escape(&atlas_emit)
+    ))
+    .unwrap();
+    let atlas_click_m = atlas_click_re
+        .captures_iter(atlas_text)
+        .find(|c| &c[1] == &c[4])
+        .ok_or("MainPanelAtlasTab click handler changed")?;
+    let ac_span = atlas_click_m.get(0).unwrap();
+    panel_edits.push(Edit::new(
+        atlas_component.start + ac_span.start(),
+        atlas_component.start + ac_span.end(),
+        format!(
+            "{w} && (__lg.enabled.value ? __lg.canSelect({arg}) : {h_fn}({arg})) && {atlas_emit}(\"select-appearance\", {w})",
+            w = &atlas_click_m[1],
+            h_fn = &atlas_click_m[2],
+            arg = &atlas_click_m[3],
+        ),
+    ));
+
     let merge_check_re = Regex::new(&format!(
         r"[A-Za-z0-9_$]+ = {}\(\(\) => [A-Za-z0-9_$]+\([A-Za-z0-9_$]+\([A-Za-z0-9_$]+\.atlasList, [A-Za-z0-9_$]+\.bagList\)\)\)",
         regex::escape(computed_p)
@@ -1402,7 +1766,10 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         atlas_return,
         atlas_return,
         format!(
-            "const __atlasProgress={computed_p}(()=>__lg.collectionProgress({category_rows}.value,{atlas_loading_var}.value)),__atlasProgressTitle={computed_p}(()=>['全图鉴收集进度','全角色收集进度','全配件收集进度','全表情收集进度'][{category_index}.value]||'全图鉴收集进度');\n"
+            "const __atlasProgress={computed_p}(()=>__lg.collectionProgress({category_rows}.value,{atlas_loading_var}.value)),__atlasProgressTitle={computed_p}(()=>['全图鉴收集进度','全角色收集进度','全配件收集进度','全表情收集进度'][{category_index}.value]||'全图鉴收集进度'),__atlasEquipEl={ref_p}(null);\n\
+             let __disposeAtlasEquip=null;\n\
+             {on_mounted_p}(()=>{{__disposeAtlasEquip=__lg.mountEquipmentBar?.(__atlasEquipEl.value,{{page:'atlas',emitSelect:x=>{atlas_emit}('select-appearance',x)}})||null;}});\n\
+             {on_unmounted_p}(()=>{{__disposeAtlasEquip?.();__disposeAtlasEquip=null;}});\n"
         ),
     ));
     let tab_anchor = "null, 8, [\"modelValue\", \"tabs\"]),";
@@ -1415,7 +1782,8 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
  {h}('span',null,__atlasProgressTitle.value),{h}('strong',{{style:{{fontVariantNumeric:'tabular-nums',color:'#996644'}}}},\n\
  !{global_store_p}.isLoggedIn?'登录后查看':{atlas_loading_var}.value?'正在读取…':__atlasProgress.value.collected+'/'+__atlasProgress.value.total+' · '+__atlasProgress.value.percent.toFixed(1)+'%')]),\n\
  {h}('div',{{role:'progressbar','aria-label':'真实账号'+__atlasProgressTitle.value,'aria-valuemin':0,'aria-valuemax':__atlasProgress.value.total,'aria-valuenow':__atlasProgress.value.collected,'aria-busy':{atlas_loading_var}.value,style:{{height:'9px',width:'100%',background:'#ecddc4',borderRadius:'20px',overflow:'hidden'}}}},[\n\
- {h}('span',{{style:{{display:'block',height:'100%',width:({global_store_p}.isLoggedIn?__atlasProgress.value.percent:0)+'%',background:'linear-gradient(90deg,#e4b56f,#c58b51)',borderRadius:'inherit',transition:'width .25s ease'}}}})])],-2)),"
+ {h}('span',{{style:{{display:'block',height:'100%',width:({global_store_p}.isLoggedIn?__atlasProgress.value.percent:0)+'%',background:'linear-gradient(90deg,#e4b56f,#c58b51)',borderRadius:'inherit',transition:'width .25s ease'}}}})])],-2)),\n\
+ ({open_block_p}(),{create_elem_block_p}('div',{{ref_key:'__atlasEquipRef',ref:__atlasEquipEl,class:'wuwa-equip-mount'}},null,512)),"
     );
     let progress_at = atlas_component.start + atlas_text.find(tab_anchor).unwrap() + tab_anchor.len();
     panel_edits.push(Edit::new(progress_at, progress_at, progress_ui));
@@ -1472,6 +1840,109 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
 
     let bag_component = find_component(p_raw, "MainPanelBagTab")?;
     let bag_text = &panel_orig[bag_component.start..bag_component.end];
+    let bag_emit = Regex::new(r#"([A-Za-z0-9_$]+)\("select-appearance","#)
+        .unwrap()
+        .captures(bag_text)
+        .ok_or("MainPanelBagTab select-appearance emit missing")?[1]
+        .to_owned();
+    let bag_click_re = Regex::new(&format!(
+        r#"([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\) && {}\("select-appearance", ([A-Za-z0-9_$]+)\)"#,
+        regex::escape(&bag_emit)
+    ))
+    .unwrap();
+    let bag_click_m = bag_click_re
+        .captures_iter(bag_text)
+        .find(|c| &c[2] == &c[3])
+        .ok_or("MainPanelBagTab click handler changed")?;
+    let bc_span = bag_click_m.get(0).unwrap();
+    panel_edits.push(Edit::new(
+        bag_component.start + bc_span.start(),
+        bag_component.start + bc_span.end(),
+        format!(
+            "(__lg.enabled.value ? __lg.canSelect({arg}) : {chk}({arg})) && {bag_emit}(\"select-appearance\", {arg})",
+            chk = &bag_click_m[1],
+            arg = &bag_click_m[2],
+        ),
+    ));
+
+    let rem_owned_re = Regex::new(&format!(
+        r#"(const ([A-Za-z0-9_$]+) = [A-Za-z0-9_$]+\.bagList\.find\([^\n]+?\);\s*if \([A-Za-z0-9_$]+\) \{{\s*{}\("select-appearance", )([A-Za-z0-9_$]+)(\);)"#,
+        regex::escape(&bag_emit)
+    ))
+    .unwrap();
+    let rem_owned_m = rem_owned_re
+        .captures_iter(bag_text)
+        .find(|c| &c[2] == &c[3])
+        .ok_or("MainPanelBagTab emote remove branch changed")?;
+    let ro_span = rem_owned_m.get(0).unwrap();
+    panel_edits.push(Edit::new(
+        bag_component.start + ro_span.start(),
+        bag_component.start + ro_span.end(),
+        format!(
+            "{}{{...{}, __wuwaRemove: !0}}{}",
+            &rem_owned_m[1], &rem_owned_m[3], &rem_owned_m[4]
+        ),
+    ));
+    let rem_fallback_re = Regex::new(&format!(
+        r#"([A-Za-z0-9_$]+ && {}\("select-appearance", \{{\s*)(asset_code: "",)"#,
+        regex::escape(&bag_emit)
+    ))
+    .unwrap();
+    let rem_fb_m = rem_fallback_re
+        .captures(bag_text)
+        .ok_or("MainPanelBagTab emote remove fallback changed")?;
+    let rf_span = rem_fb_m.get(0).unwrap();
+    panel_edits.push(Edit::new(
+        bag_component.start + rf_span.start(),
+        bag_component.start + rf_span.end(),
+        format!("{}__wuwaRemove: !0,\n          {}", &rem_fb_m[1], &rem_fb_m[2]),
+    ));
+
+    let bag_list_re = Regex::new(
+        r"return ([A-Za-z0-9_$]+) \? ([A-Za-z0-9_$]+)\.bagList\.filter\(([A-Za-z0-9_$]+) => ([A-Za-z0-9_$]+)\.asset_type === ([A-Za-z0-9_$]+)\) : ([A-Za-z0-9_$]+)\.bagList",
+    )
+    .unwrap();
+    let bl_m = bag_list_re
+        .captures_iter(bag_text)
+        .find(|c| &c[1] == &c[5] && &c[2] == &c[6] && &c[3] == &c[4])
+        .ok_or("MainPanelBagTab bagList computed changed")?;
+    let bl_span = bl_m.get(0).unwrap();
+    panel_edits.push(Edit::new(
+        bag_component.start + bl_span.start(),
+        bag_component.start + bl_span.end(),
+        format!(
+            "const __mb=__lg.mergeBag?__lg.mergeBag({src}.bagList):{src}.bagList; return {tab} ? __mb.filter({it} => {it}.asset_type === {tab}) : __mb",
+            src = &bl_m[2],
+            tab = &bl_m[1],
+            it = &bl_m[3],
+        ),
+    ));
+
+    let bag_return = bag_component
+        .return_start
+        .ok_or("MainPanelBagTab 缺少 returnStart")?;
+    panel_edits.push(Edit::new(
+        bag_return,
+        bag_return,
+        format!(
+            "const __bagEquipEl={ref_p}(null);let __disposeBagEquip=null;\n\
+             {on_mounted_p}(()=>{{__disposeBagEquip=__lg.mountEquipmentBar?.(__bagEquipEl.value,{{page:'bag',emitSelect:x=>{bag_emit}('select-appearance',x)}})||null;}});\n\
+             {on_unmounted_p}(()=>{{__disposeBagEquip?.();__disposeBagEquip=null;}});\n"
+        ),
+    ));
+    let bag_tab_anchor = "\"track-kind\": \"backpack\"\n      }, null, 8, [\"modelValue\"]),";
+    if bag_text.match_indices(bag_tab_anchor).count() != 1 {
+        return Err("MainPanelBagTab tab header changed".into());
+    }
+    let bag_equip_at = bag_component.start + bag_text.find(bag_tab_anchor).unwrap() + bag_tab_anchor.len();
+    panel_edits.push(Edit::new(
+        bag_equip_at,
+        bag_equip_at,
+        format!(
+            " ({open_block_p}(),{create_elem_block_p}('div',{{ref_key:'__bagEquipRef',ref:__bagEquipEl,class:'wuwa-equip-mount'}},null,512)),"
+        ),
+    ));
+
     let bag_guard = format!("if (!{global_store_p}.isLoggedIn)");
     if bag_text.match_indices(&bag_guard).count() != 2 {
         return Err("preset login guard layout changed".into());
@@ -1502,6 +1973,27 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     ));
 
     let mut panel = apply_edits(&panel_orig, panel_edits)?;
+    panel = rec.replace(
+        &panel,
+        "= [\"common\", \"uncommon\", \"rare\", \"epic\"];",
+        "= [\"mod\", \"common\", \"uncommon\", \"rare\", \"epic\"];",
+    )?;
+    let bs_re = Regex::new(
+        r"const ([A-Za-z0-9_$]+) = [A-Za-z0-9_$]+\.trim\(\)\.toLowerCase\(\);\s*return [A-Za-z0-9_$]+\(`select_rarity_\$\{([A-Za-z0-9_$]+)\}`",
+    )
+    .unwrap();
+    let bs_m = bs_re
+        .captures_iter(&panel)
+        .find(|c| &c[1] == &c[2])
+        .ok_or("BagAtlasFilters rarity label helper changed")?;
+    let bs_whole = bs_m.get(0).unwrap().as_str().to_owned();
+    let bs_var = bs_m[1].to_owned();
+    let bs_new = bs_whole.replacen(
+        "return ",
+        &format!("if ({bs_var} === \"mod\") return \"MOD\";\n  return "),
+        1,
+    );
+    panel = rec.replace(&panel, &bs_whole, &bs_new)?;
     let panel_accessory_alias = require_import(&pi, "getUserAccessoryOffset")?;
     if let Ok(patched) = patch_accessory_transform(&mut rec, &panel, panel_accessory_alias) {
         panel = patched;
@@ -1844,7 +2336,6 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     }
 
     let invoke_m = require_import(&mi, "invoke$1")?;
-    let current_monitor_m = require_import(&mi, "currentMonitor")?;
     let listen_m = require_import(&mi, "listen")?;
     let code = format!(
         "{code_prefix}\n\
@@ -1856,8 +2347,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
  chests:()=>({{left:{{remaining:Math.max(0,{left_rem}.value),ready:{left_ready}.value}},right:{{remaining:Math.max(0,{right_rem}.value),ready:{right_ready}.value}},cooldown:1800000,busy:{busy_open}.value||{blocked_chest}.value}}),\n\
  emotes:()=>({emote_items}.value||[]).map(item=>({{id:item.id,name:item.name,src:item.src||(item.name?((window.__WUWA_MOD_ASSET_PATH__&&window.__WUWA_MOD_ASSET_PATH__('emote/'+item.name))||{emote_url}('emote/'+item.name)):'')}})),\n\
  sendEmote:item=>{emote_send}(item),\n\
- monitors:__assistantMonitors,restoreMonitor:__assistantRestoreMonitor,\n\
- currentMonitor:{current_monitor_m},toast:{show_toast_sym},\n\
+ toast:{show_toast_sym},\n\
  openSettings:{open_settings},\n\
  openView:async view=>{{\n\
    if(__lg.assistant.updateRequired.value)return;\n\
@@ -1868,7 +2358,6 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
  quit:{quit_fn},\n\
  persistOriginal:async()=>{{{persist_original}}},\n\
  refreshBag:async()=>{{await {bag_fn}();}},\n\
- setGameMode:enabled=>{{return {invoke_m}('plugin:event|emit',{{event:'cat-settings-game-mode',payload:{{enabled:Boolean(enabled)}}}}).catch(()=>{{}});}},\n\
  listenClicks:callback=>{watch_sym}(()=>{store}.localClickCount,(next,prev)=>{{if(Number(next)===Number(prev)+1)callback(1);}},{{flush:'sync'}}),\n\
  listenRoom:callback=>{watch_sym}([()=>{room_field},()=>{members}.map(x=>[x.id,x.nickname,x.isOwner]).join('|')],()=>{{
    const owner={members}.find(x=>x.isOwner);if({room_field})callback(String({room_field}),owner?.nickname||'').catch(()=>{{}});
@@ -1883,8 +2372,8 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     );
     main = rec.replace(
         &main,
-        "let __localSaved=null,__skipLocalSelectChoice=false;",
-        &format!("{code}\nlet __localSaved=null,__skipLocalSelectChoice=false;"),
+        "let __localSaved=null,__skipLocalSelectChoice=false,__skipLocalReorder=false,__officialApplyDepth=0;",
+        &format!("{code}\nlet __localSaved=null,__skipLocalSelectChoice=false,__skipLocalReorder=false,__officialApplyDepth=0;"),
     )?;
 
     let monitor_name = fs::read_dir(&readable_assets)
@@ -1894,73 +2383,25 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         .find(|name| name.starts_with("switchDisplayMonitor-") && name.ends_with(".js"))
         .ok_or("缺少 switchDisplayMonitor-*.js 模块")?;
     let mut monitor = read_normalized_js(&readable_assets.join(&monitor_name))?;
-    let sw_caps = Regex::new(
-        r"async function ([A-Za-z0-9_$]+)\(\) \{\n  let e = !1;\n  const t = `\$\{Date\.now\(\)\}",
-    )
-    .unwrap()
-    .captures(&monitor)
-    .ok_or("display switch contract changed")?;
-    let switch_fn = sw_caps[1].to_owned();
-    monitor = rec.replace(
-        &monitor,
-        &format!("async function {switch_fn}() {{"),
-        &format!("async function {switch_fn}(targetName=null) {{"),
-    )?;
-    let list_re = Regex::new(
-        r"([A-Za-z0-9_$]+) = [A-Za-z0-9_$]+\([A-Za-z0-9_$]+, [A-Za-z0-9_$]+\);\s*if \(([A-Za-z0-9_$]+)\.length <= 1\)",
+    let rn_re = Regex::new(
+        r"return \[\.\.\.([A-Za-z0-9_$]+)\]\.sort\(\(([A-Za-z0-9_$]+), ([A-Za-z0-9_$]+)\) => \{\s*if \(([A-Za-z0-9_$]+)\.owned !== ([A-Za-z0-9_$]+)\.owned\) return ([A-Za-z0-9_$]+)\.owned \? -1 : 1;",
     )
     .unwrap();
-    let list_caps = list_re
+    let rn_caps = rn_re
         .captures_iter(&monitor)
-        .find(|c| &c[1] == &c[2])
-        .ok_or("display list count guard changed")?;
-    let list_var = list_caps[1].to_owned();
-    let cur_re = Regex::new(
-        r"const ([A-Za-z0-9_$]+) = await [A-Za-z0-9_$]+\([A-Za-z0-9_$]+\);\s*let ([A-Za-z0-9_$]+) = 0;\s*if \(([A-Za-z0-9_$]+)\) \{\s*const [A-Za-z0-9_$]+ = ([A-Za-z0-9_$]+)\(([A-Za-z0-9_$]+)\)",
-    )
-    .unwrap();
-    let cur_caps = cur_re
-        .captures_iter(&monitor)
-        .find(|c| &c[1] == &c[3] && &c[1] == &c[5])
-        .ok_or("display current monitor anchor changed")?;
-    let cur_var = cur_caps[1].to_owned();
-    let idx_var = cur_caps[2].to_owned();
-    let fp_fn = cur_caps[4].to_owned();
-    let next_re = Regex::new(&format!(
-        r"const ([A-Za-z0-9_$]+) = \({} \+ 1\) % {}\.length,",
-        regex::escape(&idx_var),
-        regex::escape(&list_var)
-    ))
-    .unwrap();
-    let next_caps = next_re
-        .captures(&monitor)
-        .ok_or("display next index anchor changed")?;
-    let next_whole = next_caps[0].to_owned();
-    let next_var = next_caps[1].to_owned();
-    monitor = rec.replace(
-        &monitor,
-        &format!("if ({list_var}.length <= 1)"),
-        &format!("if (!targetName && {list_var}.length <= 1)"),
-    )?;
-    monitor = rec.replace(
-        &monitor,
-        &next_whole,
+        .find(|c| &c[2] == &c[4] && &c[2] == &c[6] && &c[3] == &c[5])
+        .ok_or("atlas flat sort rn() anchor changed")?;
+    let rn_whole = rn_caps[0].to_owned();
+    let rn_a = rn_caps[2].to_owned();
+    let rn_b = rn_caps[3].to_owned();
+    let rn_new = rn_whole.replacen(
+        &format!("if ({rn_a}.owned !== {rn_b}.owned)"),
         &format!(
-            "if(targetName){{const __t={list_var}.find(x=>x.name===targetName);if(!__t)return false;if({cur_var}&&{fp_fn}({cur_var})==={fp_fn}(__t))return false;}}\n    const {next_var} = targetName ? {list_var}.findIndex(x=>x.name===targetName) : ({idx_var} + 1) % {list_var}.length,"
+            "const __tm=({rn_a}.rarity||\"\").toLowerCase()===\"mod\",__am=({rn_b}.rarity||\"\").toLowerCase()===\"mod\";if(__tm!==__am)return __tm?-1:1;\n    if ({rn_a}.owned !== {rn_b}.owned)"
         ),
-    )?;
-    let mon_re = Regex::new(
-        r"async function ([A-Za-z0-9_$]+)\(\) \{\s*const ([A-Za-z0-9_$]+) = await [A-Za-z0-9_$]+\(\),\s*([A-Za-z0-9_$]+) = await [A-Za-z0-9_$]+\(\);\s*return [A-Za-z0-9_$]+\(([A-Za-z0-9_$]+), ([A-Za-z0-9_$]+)\)",
-    )
-    .unwrap();
-    let mon_fn = mon_re
-        .captures_iter(&monitor)
-        .find(|c| &c[2] == &c[4] && &c[3] == &c[5])
-        .ok_or("display list contract changed")?[1]
-        .to_owned();
-    monitor.push_str(&format!(
-        "\nexport{{{mon_fn} as __zzMonitors,{switch_fn} as __zzSwitchMonitor}};\n"
-    ));
+        1,
+    );
+    monitor = rec.replace(&monitor, &rn_whole, &rn_new)?;
     let tab_guard =
         "return e === \"bag\" || e === \"atlas\" || e === \"exchange\" || e === \"room\" || e === \"setting\"";
     monitor = rec.replace(&monitor, tab_guard, &format!("{tab_guard} || e === \"console\""))?;
@@ -1969,12 +2410,9 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     }
     fs::write(frontend_dir.join("assets").join(&monitor_name), monitor.as_bytes())
         .map_err(|e| e.to_string())?;
-    main = format!(
-        "import {{__zzMonitors as __assistantMonitors,__zzSwitchMonitor as __assistantRestoreMonitor}} from \"./{monitor_name}\";\n{main}"
-    );
 
     let assistant_row = format!(
-        "{h}('div',{{class:'setting-item','data-desktop-assistant':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'桌宠助手'),{h}('div',{{class:'setting-sub'}},'自动点击与开箱、每日统计、Mod 管理与版本更新')]),{h}('button',{{class:'setting-btn',type:'button',onClick:()=>__lg.assistant.openPanel()}},'打开控制台')]),"
+        "{h}('div',{{class:'setting-item','data-desktop-assistant':'true'}},[{h}('div',{{class:'setting-label'}},[{h}('div',{{class:'setting-title'}},'桌宠助手'),{h}('div',{{class:'setting-sub'}},'自动点击与开箱、每日统计、Mod 与挂饰及版本更新')]),{h}('button',{{class:'setting-btn',type:'button',onClick:()=>__lg.assistant.openPanel()}},'打开控制台')]),"
     );
     let gallery_anchor =
         format!("{h}('div',{{class:'setting-item','data-local-gallery-setting':'true'}},[");
@@ -2222,6 +2660,121 @@ mod tests {
         assert!(out.contains("rotate(${__t.rotate}deg)"), "{out}");
         assert!(out.contains("sn=pe(()=>"), "{out}");
         assert!(!out.contains("NAME=pe(()=>"), "{out}");
+    }
+
+    #[test]
+    fn emotion_menu_raf_patch_injects_idle_and_fps_guards() {
+        let source = r#"function De(X) {
+  const U = Math.min((X - C) / 1e3, .028);
+  C = X;
+  for (const [Q, z] of M) z.style.transform = `translate(${Q}px, ${z}px)`;
+  L = requestAnimationFrame(De)
+}
+return al(() => {
+  C = performance.now(), L = requestAnimationFrame(De), window.addEventListener("resize", f)
+}), Di(() => {
+  cancelAnimationFrame(L), window.removeEventListener("resize", f), r(); console.log("cleanup")
+}), (A, B) => ce.value ? A("open") : null;
+"#;
+        let mut rec = PatchRecorder::default();
+        let out = patch_emotion_menu_raf(&mut rec, source, "watch").unwrap();
+        assert!(out.contains("let __wuwaRafLast = 0;\nfunction De(X) {"), "{out}");
+        assert!(out.contains("const __p = __lg.perf?.value || {};"), "{out}");
+        assert!(
+            out.contains("if (__p.idlePause !== false && !ce.value) { L = 0; return; }"),
+            "{out}"
+        );
+        assert!(out.contains("const __cap = Number(__p.fpsCap) || 0;"), "{out}");
+        assert!(
+            out.contains("if (!(__cap > 0 && __wuwaRafLast > 0 && X - __wuwaRafLast < 1000 / __cap - 1)) { __wuwaRafLast = X;"),
+            "{out}"
+        );
+        assert!(
+            out.contains("const U = Math.min((X - C) / 1e3, .028); C = X; for (const [Q, z] of M) z.style.transform = `translate(${Q}px, ${z}px)`; }"),
+            "{out}"
+        );
+        assert!(out.contains("\n L = requestAnimationFrame(De)\n}"), "{out}");
+        assert!(!out.contains("requestAnimationFrame(De); return; }"), "{out}");
+        assert_eq!(out.match_indices("requestAnimationFrame").count(), 2);
+        assert!(
+            out.contains("function __wuwaWakeRaf() { if (!L) { C = performance.now(); __wuwaRafLast = 0; L = requestAnimationFrame(De); } }"),
+            "{out}"
+        );
+        assert!(
+            out.contains("watch([ce, () => __lg.perf?.value?.idlePause], ([__open, __idle]) => { if (__open || __idle === false) __wuwaWakeRaf(); }, { flush: \"sync\" });"),
+            "{out}"
+        );
+        assert!(
+            out.contains("return al(() => { window.addEventListener(\"resize\", f); __wuwaWakeRaf(); }), Di(() => { cancelAnimationFrame(L); L = 0; window.removeEventListener(\"resize\", f); r(); console.log(\"cleanup\") }), (A, B) => ce.value ?"),
+            "{out}"
+        );
+
+        let broken = source.replace("C = performance.now()", "D = performance.now()");
+        assert!(patch_emotion_menu_raf(&mut rec, &broken, "watch").is_err());
+    }
+
+    #[test]
+    fn room_layout_hooks_patch_visibility_restore_and_actions() {
+        let source = r#"function vo(e) { return fe.value && e !== go.value || xo.value.has(e) }
+function ep(t) { if (pt.has(t.id) || !ready.value) return; const u = zr.value?.querySelector(".cat-wrap"); if (!u) return; const o = u.getBoundingClientRect(), l = o.width / 800; if (!(l > 0) || !Number.isFinite(o.left) || !Number.isFinite(o.top)) return; const d = cl(o.left + t.left * l, o.top + t.top * l); t.left = d.left, t.top = d.top, pt.add(t.id), zi(t) }
+async function ml() { if (await tick(), !!ready.value) { for (const [k, v] of members.value.entries()) il(v, k), ep(v); ta(), await tick(), ea() } }
+function jn() { ml() }
+function drag(x) { x && hit(x) && (bounce ? settle(x, { left: tx, top: oy }) : (x.left = pos.left, x.top = pos.top, settle(x, pos))); }
+"#;
+        let mut rec = PatchRecorder::default();
+        let out = patch_room_layout_hooks(&mut rec, source, "onUnmounted").unwrap();
+        assert!(
+            out.contains("function vo(e) { return fe.value && e !== go.value || xo.value.has(e) || Boolean(__lg.isRoomMemberHidden?.(e)) }"),
+            "{out}"
+        );
+        assert!(
+            out.contains("const __others = members.value.filter(__m => __m.id !== t.id && pt.has(__m.id)).map(__m => ({ left: __m.left, top: __m.top }));"),
+            "{out}"
+        );
+        assert!(
+            out.contains("const __saved = __lg.savedRoomMemberPosition?.(t.id, __others, 800, 800);"),
+            "{out}"
+        );
+        assert!(
+            out.contains("const d = __saved ? cl(__saved.left, __saved.top) : cl(o.left + t.left * l, o.top + t.top * l);"),
+            "{out}"
+        );
+        assert!(out.contains("t.left = d.left, t.top = d.top, pt.add(t.id), zi(t)"), "{out}");
+        assert!(
+            out.contains("async function ml() { if (await tick(), !!ready.value) { for (const [k, v] of members.value.entries()) il(v, k), ep(v); ta(), await tick(), ea() } }"),
+            "{out}"
+        );
+        assert!(out.contains("function __wuwaRoomStorage(event) {"), "{out}");
+        assert!(out.contains("window.addEventListener(\"storage\", __wuwaRoomStorage);"), "{out}");
+        assert!(
+            out.contains("onUnmounted(() => window.removeEventListener(\"storage\", __wuwaRoomStorage));"),
+            "{out}"
+        );
+        assert!(
+            out.contains("const __visible = members.value.filter(__m => !__lg.isRoomMemberHidden?.(__m.id));"),
+            "{out}"
+        );
+        assert!(
+            out.contains("__lg.arrangeRoomMembers?.(__visible, payload.mode || \"horizontal\", { width: window.innerWidth, height: window.innerHeight }) || [];"),
+            "{out}"
+        );
+        assert!(
+            out.contains("__lg.saveRoomMemberPosition?.(__m.id, __c.left, __c.top);"),
+            "{out}"
+        );
+        assert!(out.contains("payload.action === \"arrange\""), "{out}");
+        assert!(out.contains("payload.action === \"reset-positions\""), "{out}");
+        assert!(
+            out.contains("for (const __m of members.value) { pt.delete(__m.id)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("if (x && hit(x)) __lg.saveRoomMemberPosition?.(x.id, pos.left, pos.top);"),
+            "{out}"
+        );
+
+        let broken = source.replace("xo.value.has(e)", "xo.value.has(q)");
+        assert!(patch_room_layout_hooks(&mut rec, &broken, "onUnmounted").is_err());
     }
 
     #[test]

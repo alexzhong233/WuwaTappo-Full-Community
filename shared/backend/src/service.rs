@@ -18,8 +18,8 @@ use std::{
 };
 
 use crate::{
-    append_diagnostic, custom_resources, release_installer, release_updates, resource_cache,
-    AssistantCore,
+    append_diagnostic, append_synth_log, custom_resources, read_recent_synth_logs,
+    release_installer, release_updates, resource_cache, AssistantCore,
 };
 
 pub const COMMUNITY_RELEASES_URL: &str =
@@ -709,6 +709,16 @@ impl FullAtlasService {
         json!({ "ok": true })
     }
 
+    pub fn log_synth(&self, body: &Value) -> Value {
+        append_synth_log(&self.root, body);
+        json!({ "ok": true })
+    }
+
+    pub fn list_synth_logs(&self, limit: usize) -> Value {
+        let entries = read_recent_synth_logs(&self.root, limit);
+        json!({ "entries": entries })
+    }
+
     pub fn assistant(
         &self,
         action: &str,
@@ -746,7 +756,6 @@ impl FullAtlasService {
         match action {
             "community/version" => Some(Ok(self.community_version())),
             "status" => Some(Ok(self.status_snapshot(None))),
-            "game/status" => Some(Ok(crate::game_watch::status())),
             "sync/status" => Some(Ok(self.sync_status())),
             "sync" => {
                 let force = body.get("force") == Some(&Value::Bool(true));
@@ -768,6 +777,11 @@ impl FullAtlasService {
             }
             "update/healthy" => Some(Ok(self.update_healthy())),
             "diagnostic" => Some(Ok(self.diagnostic(body))),
+            "diagnostic/synth" => Some(Ok(self.log_synth(body))),
+            "diagnostic/synth/list" => {
+                let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+                Some(Ok(self.list_synth_logs(limit)))
+            }
             name if name.starts_with("assistant/") => {
                 let sub = name.trim_start_matches("assistant/");
                 Some(self.assistant(sub, body, quiet))
