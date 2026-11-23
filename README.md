@@ -1,6 +1,6 @@
 # WuwaTappo Full Community
 
-> 当前整合版本为 **1.4.0-beta.2**（与根目录 `package.json` 同源）。国服与国际服的官方客户端基线均锁定 **1.0.5**，分别记录在 `shared/upstream/cn.json` 与 `shared/upstream/global.json`。macOS（Apple Silicon）与 Windows（x64）共用同一套 `shared/frontend/`（4 个前端模块）与 `shared/backend/`（Rust 核心、注入器与本地服务），全仓零 Python 依赖。详见[架构说明](docs/ARCHITECTURE.md) 与 [开发说明](docs/DEVELOPMENT.md)。
+> 当前整合版本为 **1.4.0**（与根目录 `package.json` 同源）。国服与国际服的官方客户端基线均锁定 **1.0.5**，分别记录在 `shared/upstream/cn.json` 与 `shared/upstream/global.json`。macOS（Apple Silicon）与 Windows（x64）共用同一套 `shared/frontend/`（4 个前端模块）与 `shared/backend/`（Rust 核心、注入器与本地服务），全仓零 Python 依赖。详见[架构说明](docs/ARCHITECTURE.md) 与 [开发说明](docs/DEVELOPMENT.md)。
 
 让《鸣潮》桌宠在 macOS 和 Windows 上运行，并在官方面板中加入本地全图鉴、混合外观与桌面助手。
 
@@ -65,7 +65,7 @@ npm run build:check -- --platform=win
 | --- | --- |
 | 服务区域 | 国服与国际服都构建：两个平台都锁定官方 1.0.5 基底（国服、国际服各一份 canonical lock），产物名带 `Full-CN-Community` / `Full-Global-Community` |
 | 系统 | macOS：Apple Silicon（M 系列），macOS 13 及以上；Windows：10/11 x64 |
-| 整合版本 | 与仓库根 `package.json` 同源（当前 `1.4.0-beta.2`），基于官方客户端 1.0.5 与 FullAtlas 兼容功能集；两个平台同一基底 |
+| 整合版本 | 与仓库根 `package.json` 同源（当前 `1.4.0`），基于官方客户端 1.0.5 与 FullAtlas 兼容功能集；两个平台同一基底 |
 | 代码共享 | 双端共用 `shared/frontend/`（4 个模块）与 `shared/backend/`（Rust 核心、注入器、本地服务）；零 Python 依赖 |
 | 分支 | `main` 为 1.0.5 基底，两个平台同仓共用；`dev` 用于开发版；`official-1.0.3` 保留为历史适配分支 |
 | 验证 | 自动测试、原生构建、签名与 DMG / EXE 校验通过；角色和设置面板可显示，完整业务仍需实机验收 |
