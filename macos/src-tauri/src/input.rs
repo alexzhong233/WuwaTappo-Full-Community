@@ -485,10 +485,6 @@ pub fn request_input_access(app: AppHandle) -> Result<InputStatus, String> {
 
 #[derive(Debug)]
 enum NativeInput {
-    Shortcut {
-        key: String,
-        flags: u64,
-    },
     Key {
         key: String,
         pressed: bool,
@@ -627,10 +623,6 @@ unsafe extern "C" fn observe_event(
             };
             if pressed {
                 if context.pressed.insert(code) {
-                    context.send(NativeInput::Shortcut {
-                        key: key_label(code),
-                        flags,
-                    });
                     context.send(NativeInput::Key {
                         key: key_label(code),
                         pressed: true,
@@ -859,7 +851,6 @@ fn route_event(
     state: &MonitorState,
 ) -> Result<Option<RoutedInput>, String> {
     match event {
-        NativeInput::Shortcut { .. } => Ok(None),
         NativeInput::Key { key, pressed } => Ok(Some(RoutedInput::Key { key, pressed })),
         NativeInput::Move(point) => {
             let point = physical_mouse_point(point, state);
@@ -908,9 +899,6 @@ fn dispatch_events(
 ) {
     let mut routing = MouseRouting::default();
     for event in receiver {
-        if matches!(event, NativeInput::Shortcut { .. }) {
-            continue;
-        }
         let event = match route_event(event, &mut routing, &state) {
             Ok(Some(event)) => event,
             Ok(None) => continue,
@@ -1231,10 +1219,9 @@ mod tests {
         send_test_event(&mut context, 10, &down);
         send_test_event(&mut context, 11, &up);
         let events: Vec<_> = receiver.try_iter().collect();
-        assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], NativeInput::Shortcut { key, .. } if key == " "));
-        assert!(matches!(&events[1], NativeInput::Key { key, pressed: true } if key == " "));
-        assert!(matches!(&events[2], NativeInput::Key { key, pressed: false } if key == " "));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], NativeInput::Key { key, pressed: true } if key == " "));
+        assert!(matches!(&events[1], NativeInput::Key { key, pressed: false } if key == " "));
     }
 
     #[test]
@@ -1271,10 +1258,9 @@ mod tests {
         context.release_keys();
         assert!(context.pressed.is_empty());
         let events: Vec<_> = receiver.try_iter().collect();
-        assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], NativeInput::Shortcut { key, .. } if key == "F8"));
-        assert!(matches!(&events[1], NativeInput::Key { key, pressed: true } if key == "F8"));
-        assert!(matches!(&events[2], NativeInput::Key { key, pressed: false } if key == "F8"));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], NativeInput::Key { key, pressed: true } if key == "F8"));
+        assert!(matches!(&events[1], NativeInput::Key { key, pressed: false } if key == "F8"));
     }
 
     #[test]

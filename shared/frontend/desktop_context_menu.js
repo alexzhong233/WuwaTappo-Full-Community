@@ -9,11 +9,14 @@ function createDesktopContextMenu(d){
     const items=[
       ...[['bag',labels.openBag||'背包'],['atlas',labels.openAtlas||'图鉴'],['exchange',labels.openExchange||'合成'],['room',labels.openRoom||'联机']].map(([key,text])=>item(key,text,()=>actions.openTab(key))),
       {separator:true},item('console','控制台',actions.openConsole),item('setting',labels.dockSettings||'设置',()=>actions.openTab('setting')),
+      {separator:true},
+      item('hide',d.visible()?labels.hidePet||'隐藏桌宠':labels.showPet||'显示桌宠',()=>emit('tray-toggle-pet-visibility')),
+      item('switch-display',labels.switchDisplay||'切换屏幕',()=>emit('tray-switch-display')),
+      {text:labels.windowSize||'桌宠大小',items:[50,75,100,125,150,175,200].map(value=>item('scale-'+value,value+'%',()=>emit('tray-set-pet-scale',value),settings.petScale===value))},
+      {text:labels.windowOpacity||'桌宠不透明度',items:[0,25,50,75,100].map(value=>item('opacity-'+value,value+'%',()=>emit('tray-set-window-opacity',value),settings.windowOpacity===value))},
       item('drag',labels.windowPassthrough||'禁用拖动',()=>emit('tray-toggle-window-passthrough'),!!settings.windowPassthrough),
       item('game',labels.gameMode||'游戏模式',()=>emit('tray-toggle-game-mode'),!!settings.gameMode),
-      {text:labels.windowOpacity||'桌宠不透明度',items:[25,50,75,100].map(value=>item('opacity-'+value,value+'%',()=>emit('tray-set-window-opacity',value),settings.windowOpacity===value))},
-      {text:labels.windowSize||'桌宠大小',items:[50,75,100,125,150,175,200].map(value=>item('scale-'+value,value+'%',()=>emit('tray-set-pet-scale',value),settings.petScale===value))},
-      item('hide',d.visible()?labels.hidePet||'隐藏桌宠':labels.showPet||'显示桌宠',()=>emit('tray-toggle-pet-visibility')),
+      {separator:true},item('open-logs','查看日志',()=>d.request('/diagnostic/open-logs',{})),
       {separator:true},item('restart',labels.restart||'重启应用',()=>emit('tray-restart')),item('quit',labels.quit||'退出应用',()=>emit('tray-quit'))
     ];
     return{items,handlers};

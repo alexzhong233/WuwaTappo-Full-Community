@@ -247,6 +247,15 @@ while [ "$i" -lt 60 ]; do
   i=$((i + 1))
 done
 
+if [ ! -f "$JOB_DIR/healthy" ]; then
+  /usr/bin/pkill -f -- "$TARGET_APP/Contents/MacOS/" 2>/dev/null || true
+  /bin/rm -rf "$TARGET_APP"
+  /bin/mv "$BACKUP_APP" "$TARGET_APP" 2>/dev/null || true
+  "$OPEN_BIN" "$TARGET_APP" 2>/dev/null || true
+  write_status "failed" 0 "新版本启动超时，已恢复原版本"
+  exit 1
+fi
+
 /bin/rm -rf "$BACKUP_APP" "$JOB_DIR/stage" "$JOB_DIR/pending.json"
 write_status "complete" 100 "更新完成！"
 exit 0

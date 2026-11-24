@@ -66,17 +66,40 @@ fn status_line_ok(response: &str) -> bool {
         .is_some_and(|code| code == "200")
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn response_ready(response: &str, expected_region: Option<&str>) -> Result<bool, String> {
+    if !status_line_ok(response) {
+        return Ok(false);
+    }
+    if let (Some(expected), Some(body_start)) = (expected_region, response.find("\r\n\r\n")) {
+        let body = response[body_start + 4..].trim();
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+            if let Some(region) = parsed.get("region").and_then(serde_json::Value::as_str) {
+                if region != expected {
+                    return Err(format!(
+                        "端口已被其他区服（{region}）的本地服务占用，请关闭后再试或修改端口。"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(windows)]
-fn ready(address: SocketAddr) -> bool {
+fn ready(address: SocketAddr, expected_region: Option<&str>) -> Result<bool, String> {
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
-        return false;
+        return Ok(false);
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
     if write!(stream, "GET /status HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").is_err() {
-        return false;
+        return Ok(false);
     }
     let mut response = String::new();
-    stream.read_to_string(&mut response).is_ok() && status_line_ok(&response)
+    if stream.read_to_string(&mut response).is_err() {
+        return Ok(false);
+    }
+    response_ready(&response, expected_region)
 }
 
 #[cfg(windows)]
@@ -118,8 +141,9 @@ fn run() -> Result<(), String> {
         .get("port")
         .and_then(Value::as_u64)
         .ok_or("本地服务端口无效")? as u16;
+    let expected_region = config.get("region").and_then(Value::as_str);
     let address = SocketAddr::from(([127, 0, 0, 1], port));
-    if !ready(address) {
+    if !ready(address, expected_region)? {
         let host = root.join("LocalGalleryHost.exe");
         // 启动器是 GUI 子系统，子进程的 stdout/stderr 没有控制台可去。
         // 落到日志里，宿主启动失败时才有东西可查。
@@ -141,7 +165,7 @@ fn run() -> Result<(), String> {
     }
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
-        if ready(address) {
+        if ready(address, expected_region)? {
             let app = root.join("WuwaTappo.Local.exe");
             return elevate_app(&root, &app);
         }
@@ -164,7 +188,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::status_line_ok;
+    use super::{response_ready, status_line_ok};
 
     #[test]
     fn accepts_ok_from_either_protocol_version() {
@@ -184,5 +208,18 @@ mod tests {
         assert!(!status_line_ok(""));
         // 端口被别的服务占着时，别把任意文本当成就绪。
         assert!(!status_line_ok("SSH-2.0-OpenSSH_9.0\r\n"));
+    }
+
+    #[test]
+    fn rejects_cross_region_status_host() {
+        assert_eq!(
+            response_ready("HTTP/1.0 200 OK\r\n\r\n{\"region\":\"cn\"}", Some("cn")),
+            Ok(true)
+        );
+        assert!(response_ready(
+            "HTTP/1.0 200 OK\r\n\r\n{\"region\":\"global\"}",
+            Some("cn")
+        )
+        .is_err());
     }
 }

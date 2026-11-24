@@ -452,6 +452,37 @@ fn release_tag_from_location(location: &str) -> Result<(String, String), String>
     Ok((ver, resolved.to_string()))
 }
 
+fn find_markdown_body_end(window: &str) -> usize {
+    let bytes = window.as_bytes();
+    let mut depth = 1usize;
+    let mut i = 0usize;
+    let matches_tag = |pos: usize, tag: &[u8]| -> bool {
+        bytes.get(pos..pos + tag.len()).is_some_and(|s| {
+            s.eq_ignore_ascii_case(tag)
+                && bytes
+                    .get(pos + tag.len())
+                    .is_some_and(|next| next.is_ascii_whitespace() || matches!(next, b'>' | b'/'))
+        })
+    };
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let tag_start = i + 1;
+            if matches_tag(tag_start, b"details") && depth == 1 {
+                return i;
+            } else if matches_tag(tag_start, b"/div") {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return i;
+                }
+            } else if matches_tag(tag_start, b"div") {
+                depth += 1;
+            }
+        }
+        i += 1;
+    }
+    window.len()
+}
+
 fn release_notes_from_html(html: &str) -> String {
     let section = html
         .find("data-test-selector=\"body-content\"")
@@ -464,10 +495,7 @@ fn release_notes_from_html(html: &str) -> String {
                 limit -= 1;
             }
             let window = &after_open[..limit];
-            let end = window
-                .find("</div")
-                .or_else(|| window.find("<details"))
-                .unwrap_or(window.len());
+            let end = find_markdown_body_end(window);
             &window[..end]
         })
         .unwrap_or("");
@@ -977,5 +1005,15 @@ mod tests {
         );
         assert_eq!(err_policy["github_version"], "");
         assert_eq!(err_policy["error"], "network down");
+    }
+
+    #[test]
+    fn release_notes_from_html_keeps_content_past_nested_divs() {
+        let html = r#"<div class="markdown-body"><p>Intro</p><div class="markdown-alert"><p>Nested Alert</p></div><p>After Div</p></div><div class="footer">Ignore</div>"#;
+        let notes = release_notes_from_html(html);
+        assert!(notes.contains("Intro"), "{notes}");
+        assert!(notes.contains("Nested Alert"), "{notes}");
+        assert!(notes.contains("After Div"), "{notes}");
+        assert!(!notes.contains("Ignore"), "{notes}");
     }
 }

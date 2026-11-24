@@ -66,6 +66,7 @@
     for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu']) {
       document.addEventListener(type, event => {
         if (state.nativeInput && event.isTrusted) {
+          if (event.target?.closest?.('.wt-soft-update, .wt-choice, .wt-console, .wt-gate, [data-wuwa-interactive]')) return;
           event.preventDefault();
           event.stopImmediatePropagation();
         }

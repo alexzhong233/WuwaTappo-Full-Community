@@ -566,7 +566,7 @@ pub fn install_archive(
             return Err("ZIP 文件数量超过限制".into());
         }
         let mut seen = HashSet::new();
-        let mut expanded = 0;
+        let mut expanded: u64 = 0;
         for i in 0..zip.len() {
             let mut e = zip.by_index(i).map_err(|_| "ZIP 文件目录损坏".to_owned())?;
             let raw = e.name().trim_end_matches('/').to_owned();
@@ -593,7 +593,9 @@ pub fn install_archive(
             if matches!(raw.as_str(), "manifest.json" | "items.json") && e.size() > MAX_JSON {
                 return Err(format!("{raw} 超过 16 MiB"));
             }
-            expanded += e.size();
+            expanded = expanded
+                .checked_add(e.size())
+                .ok_or_else(|| "ZIP 解压后大小溢出".to_string())?;
             if expanded > MAX_EXPANDED {
                 return Err("ZIP 解压后不能超过 1 GiB".into());
             }
@@ -608,7 +610,14 @@ pub fn install_archive(
             }
             let mut out = File::create(&target).map_err(|e| e.to_string())?;
             let mut prefix = [0u8; 16];
-            let count = e.read(&mut prefix).map_err(|e| e.to_string())?;
+            let mut count = 0usize;
+            while count < prefix.len() {
+                let n = e.read(&mut prefix[count..]).map_err(|e| e.to_string())?;
+                if n == 0 {
+                    break;
+                }
+                count += n;
+            }
             if raw.starts_with("assets/") && !image_ok(&target, &prefix[..count]) {
                 return Err(format!("资源文件不是受支持的图片：{raw}"));
             }

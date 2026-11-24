@@ -1243,14 +1243,55 @@ async function testBalanceInitialAndLoggedOutGuard(platform) {
   listeners.get('pagehide')?.();
 }
 
+async function testDesktopContextMenu(platform) {
+  const source = renderFrontend('desktop_context_menu.js', platform);
+  const ctx = vm.createContext({ Map, Error, console });
+  vm.runInContext(source + ';globalThis.createMenu = createDesktopContextMenu;', ctx);
+  const emits = [];
+  const requests = [];
+  let nextAction = 'switch-display';
+  const menu = ctx.createMenu({
+    invoke: async (cmd, payload) => { emits.push({ cmd, payload }); },
+    request: async (route, body) => {
+      requests.push({ route, body });
+      if (route === '/assistant/context-menu') return { action: nextAction };
+      return { ok: true };
+    },
+    settings: () => ({ windowPassthrough: false, gameMode: true, windowOpacity: 0, petScale: 100 }),
+    visible: () => true,
+    labels: async () => ({ switchDisplay: 'Switch Display' }),
+  });
+
+  const actions = { openTab() {}, openConsole() {} };
+  await menu.initialize(actions);
+  await menu.popup(10, 20, actions);
+  const menuItems = requests.find(r => r.route === '/assistant/context-menu').body.items;
+  const flatKeys = menuItems.flatMap(item => item.items ? item.items.map(sub => sub.key) : [item.key]).filter(Boolean);
+  assert.ok(flatKeys.includes('switch-display'), 'switch-display menu item exists');
+  assert.ok(flatKeys.includes('opacity-0'), '0% opacity preset exists');
+  assert.ok(flatKeys.includes('open-logs'), 'open-logs menu item exists');
+  const hideIdx = menuItems.findIndex(item => item.key === 'hide');
+  assert.equal(menuItems[hideIdx + 1]?.key, 'switch-display');
+  const opacityMenu = menuItems.find(item => Array.isArray(item.items) && item.items.some(sub => sub.key === 'opacity-0'));
+  assert.equal(opacityMenu.items.find(sub => sub.key === 'opacity-0')?.checked, true);
+  assert.equal(emits.at(-1)?.cmd, 'plugin:event|emit');
+  assert.equal(emits.at(-1)?.payload?.event, 'tray-switch-display');
+  assert.equal(emits.at(-1)?.payload?.payload, null);
+
+  nextAction = 'open-logs';
+  await menu.popup(10, 20, actions);
+  assert.ok(requests.some(r => r.route === '/diagnostic/open-logs'), 'open-logs posts to /diagnostic/open-logs');
+}
+
 (async () => {
   for (const platform of ['mac', 'win']) {
     await testDashboard(platform);
     await testClickDrivenAutoEmoteAndAutoClickAvoidance(platform);
     await testDriverBalanceHybridAndSoftUpdate(platform);
     await testBalanceInitialAndLoggedOutGuard(platform);
+    await testDesktopContextMenu(platform);
   }
-  console.log('dashboard and emote regression passed (macOS + Windows): Mod tab rename, update action order, settings cards/decoupling, balance hysteresis, hybrid room history + soft update dismissal');
+  console.log('dashboard, context menu, and emote regression passed (macOS + Windows): Mod tab rename, update action order, settings cards/decoupling, balance hysteresis, hybrid room history, soft update dismissal + menu parity');
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;

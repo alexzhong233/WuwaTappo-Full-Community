@@ -86,32 +86,16 @@ impl FullAtlasState {
             .map(|h| h.base().to_owned())
             .filter(|s| !s.is_empty());
 
-        if matches!(
+        let quiet = matches!(action, "assistant/tick" | "assistant/observe")
+            && app.state::<crate::input::InputMonitor>().status().running
+            && crate::input::physical_input_quiet();
+        if let Some(res) = self.service.handle_shared_action(
             action,
-            "community/version"
-                | "status"
-                | "sync/status"
-                | "sync"
-                | "offline-data"
-                | "custom/status"
-                | "custom/import"
-                | "custom/remove"
-                | "update/healthy"
-                | "diagnostic"
-                | "diagnostic/synth"
-                | "diagnostic/synth/list"
-        ) || action.starts_with("assistant/")
-        {
-            let quiet = app.state::<crate::input::InputMonitor>().status().running
-                && crate::input::physical_input_quiet();
-            if let Some(res) = self.service.handle_shared_action(
-                action,
-                body,
-                quiet,
-                asset_base.as_deref(),
-            ) {
-                return res.map_err(|e| e.message);
-            }
+            body,
+            quiet,
+            asset_base.as_deref(),
+        ) {
+            return res.map_err(|e| e.message);
         }
 
         match action {
@@ -221,6 +205,10 @@ impl FullAtlasState {
                     "message": "已开始后台下载并校验安装包…",
                 }))
             }
+            "diagnostic/open-logs" => {
+                crate::system::open_log_dir(app)?;
+                Ok(json!({ "ok": true }))
+            }
             _ => Err(format!("未知全图鉴操作：{action}")),
         }
     }
@@ -237,7 +225,7 @@ pub async fn fullatlas_request(
         return Err("全图鉴仅允许本机主窗口与面板访问".into());
     }
     let body = payload.unwrap_or_else(|| json!({}));
-    if !body.is_object() || serde_json::to_vec(&body).map_err(|e| e.to_string())?.len() > 16384 {
+    if !body.is_object() || serde_json::to_vec(&body).map_err(|e| e.to_string())?.len() > 65536 {
         return Err("全图鉴请求格式无效或过大".into());
     }
     let label = window.label().to_owned();

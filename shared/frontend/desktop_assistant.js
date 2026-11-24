@@ -7,7 +7,7 @@ function resolveBalanceAutoClick(settings,balance) {
 }
 
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
-  const VERSION='1.4.1-beta.1', updateRequired=ref(false);
+  const VERSION='1.4.1-beta.2', updateRequired=ref(false);
   const DISMISSED_UPDATE_KEY='wuwatappo-dismissed-update-v1',COMMUNITY_CHECK_INTERVAL_MS=8*3600*1000;
   const state=ref({settings:__WUWA_ASSISTANT_DEFAULTS__});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
@@ -210,7 +210,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
         syncEmoteTarget();
         if(result.update_required&&!updateRequired.value)showRequiredUpdate(await atlas.request('/update/status',{}));
         if(result.flush_generation){await flush();await request('flush-ack',{generation:result.flush_generation});}
-        if(result.quit){await flush();await d.quit();return;}
+        if(result.quit){try{await flush();}catch{}await d.quit();return;}
         if(typeof result.open_settings==='string')await d.openView?.(result.open_settings);
         else if(result.open_settings)await d.openSettings?.();
         if(result.settings?.enabled&&!balancePaused&&!updateRequired.value)delay=50;
@@ -235,6 +235,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       removeSoftUpdate();
       const latest=String(result?.latest||''),current=String(result?.current||VERSION),notice=doc.createElement('div');
       notice.className='wt-soft-update';
+      notice.setAttribute?.('data-wuwa-interactive','1');
       notice.style.cssText='position:fixed;right:16px;bottom:16px;z-index:2147483647;max-width:320px;padding:12px 14px;border-radius:12px;background:#1f232b;color:#f3f4f6;box-shadow:0 8px 28px rgba(0,0,0,.45);font:13px/1.5 system-ui,sans-serif;display:flex;flex-direction:column;gap:8px;';
       const text=doc.createElement('div');
       text.textContent=latest?(`发现新版本：当前 ${current} → 最新 ${latest}`):'发现新版本';
@@ -279,9 +280,8 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
   // 「控制台」在支持面板页签的壳里是面板的一页（联机下方、设置上方）；
   // 壳没提供就退回桌宠窗口内的浮层，两种都拿到同一套界面。
   async function openPanel(initialTab){
-    // 浮层已经开着就直接切页聚焦，别关了重建（重建会闪一下，还会丢掉正在看的页）。
-    // 面板壳（macOS）那条路不能这么走：它要靠 openTab 把页签叫到前台。
-    if(!window.__WUWA_OPEN_PANEL_TAB__&&dashboard){
+    // 浮层或内嵌控制台已经挂载时直接切页聚焦，别关了重建（重建会闪一下，或被重试事件清空刚挂好的页面）。
+    if(dashboard&&typeof dashboard.showTab==='function'){
       dashboard.showTab(initialTab||dashboard.currentTab?.()||lastTab);
       dashboard.focus();
       return;

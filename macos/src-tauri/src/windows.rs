@@ -64,6 +64,7 @@ pub const COMMANDS: &[&str] = &[
 #[derive(Default)]
 pub struct WindowState {
     hit: RwLock<HitState>,
+    cursor_ignored: std::sync::atomic::AtomicU8,
     update: Mutex<Value>,
     maintenance: Mutex<Option<Value>>,
     panel_collapsed: Mutex<bool>,
@@ -567,12 +568,14 @@ pub fn dispatch(
             hit.force_ignore = false;
         }
         "set_main_force_cursor_ignore" => {
-            state.hit.write().map_err(err)?.force_ignore = args
+            let enabled = args
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .ok_or("Missing enabled state")?;
+            state.hit.write().map_err(err)?.force_ignore = enabled;
+            state.cursor_ignored.store(0, Ordering::Release);
             main_window(app)?
-                .set_ignore_cursor_events(true)
+                .set_ignore_cursor_events(enabled)
                 .map_err(err)?;
         }
         "set_main_swallow_mouse" => {
@@ -582,6 +585,7 @@ pub fn dispatch(
                 .ok_or("Missing enabled state")?;
             state.hit.write().map_err(err)?.swallow = enabled;
             if enabled {
+                state.cursor_ignored.store(0, Ordering::Release);
                 main_window(app)?
                     .set_ignore_cursor_events(false)
                     .map_err(err)?;
@@ -599,6 +603,7 @@ pub fn dispatch(
             }
             let w = main_window(app)?;
             state.hit.write().map_err(err)?.force_ignore = true;
+            state.cursor_ignored.store(0, Ordering::Release);
             w.set_ignore_cursor_events(true).map_err(err)?;
             let target = w
                 .available_monitors()
@@ -620,6 +625,7 @@ pub fn dispatch(
         }
         "finish_main_window_monitor_switch" => {
             state.hit.write().map_err(err)?.force_ignore = false;
+            state.cursor_ignored.store(0, Ordering::Release);
         }
         "set_main_window_content_bounds" => {
             let p = payload(args);
@@ -789,7 +795,6 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     std::thread::spawn({
         let app = app.clone();
         move || {
-            let mut previous = None;
             loop {
                 if app.state::<WindowState>().stop.load(Ordering::Acquire) {
                     break;
@@ -869,9 +874,10 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
                         } else {
                             16
                         };
-                        if previous != Some(ignored) {
+                        let desired = if ignored { 2 } else { 1 };
+                        if state.cursor_ignored.load(Ordering::Acquire) != desired {
                             w.set_ignore_cursor_events(ignored).map_err(err)?;
-                            previous = Some(ignored);
+                            state.cursor_ignored.store(desired, Ordering::Release);
                         }
                         Ok(())
                     })();

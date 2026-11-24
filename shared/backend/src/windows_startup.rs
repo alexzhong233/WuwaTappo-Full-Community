@@ -140,6 +140,20 @@ pub fn run(root: &Path, action: &str) -> Result<Value, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("无法启动 PowerShell：{error}"))?;
+    let stdout_thread = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let stderr_thread = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    });
     let deadline = Instant::now() + TIMEOUT;
     let status = loop {
         match child.try_wait() {
@@ -150,18 +164,22 @@ pub fn run(root: &Path, action: &str) -> Result<Value, String> {
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
+                if let Some(handle) = stdout_thread {
+                    let _ = handle.join();
+                }
+                if let Some(handle) = stderr_thread {
+                    let _ = handle.join();
+                }
                 return Err("开机自启动设置超时".into());
             }
         }
     };
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr);
-    }
+    let stdout = stdout_thread
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_thread
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
     if !status.success() {
         let message = String::from_utf8_lossy(&stderr).trim().to_owned();
         return Err(if message.is_empty() {

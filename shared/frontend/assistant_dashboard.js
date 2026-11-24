@@ -73,7 +73,7 @@ function assistantUi(window) {
 
 function createAssistantUpdateGate({window,result,retry,install,quit}){
   const {el,button}=assistantUi(window),root=el('section',undefined,window.document.body,'wt-gate');
-  root.setAttribute('role','alertdialog');root.setAttribute('aria-modal','true');root.tabIndex=-1;
+  root.setAttribute('role','alertdialog');root.setAttribute('aria-modal','true');root.setAttribute('data-wuwa-interactive','1');root.tabIndex=-1;
   const card=el('article',undefined,root),title=el('h2','需要更新',card),message=el('p','',card);
   el('p','新版本来自本项目 GitHub 发布。更新会保留账号、图鉴缓存与设置，支持自动下载、校验、备份并重启升级。',card,'wt-muted');
   const actions=el('div',undefined,card,'wt-controls'),status=el('p','',card,'wt-notice');
@@ -394,7 +394,8 @@ function createAssistantDashboard(d){
       const savedRows=()=>d.atlas.listAccessoryTransforms?.()||[];
       function accessoryName(item){return item?String(item.asset_name||item.name||item.label||item.id||''):'';}
       function paintTransform(){
-        const active=d.atlas.selection?.value?.accessory||d.atlas.officialUser?.value?.accessory||null;
+        const sel=d.atlas.selection?.value||{};
+        const active=(d.atlas.enabled?.value&&Object.hasOwn(sel,'accessory'))?sel.accessory:(d.atlas.officialUser?.value?.accessory||null);
         const rows=savedRows();
         const editRow=editId?rows.find(r=>String(r.id)===String(editId)):null;
         const activeId=active&&active.id!==undefined?String(active.id):'';
@@ -535,6 +536,11 @@ function createAssistantDashboard(d){
       function versionParts(value){return String(value||'').split(/[.+-]/).map(n=>parseInt(n,10)||0).slice(0,3);}
       function compareVersion(a,b){const x=versionParts(a),y=versionParts(b);for(let i=0;i<3;i++){if(x[i]!==y[i])return x[i]-y[i];}return 0;}
       function paintOfficial(r){
+        if(r?.error){
+          baseValue.textContent=r.currentVersion||r.local||'未知';
+          updates.textContent=r.message||('官方版本检查失败：'+r.error);
+          return;
+        }
         const remote=r.latestVersion||r.remote||'';
         const current=r.currentVersion||r.local||'未知';
         baseValue.textContent=current;
@@ -615,7 +621,7 @@ function createAssistantDashboard(d){
         }catch{}
       }
       function confirmUpdate(r){
-        const gate=el('section',undefined,doc.body,'wt-gate');gate.setAttribute('role','alertdialog');gate.setAttribute('aria-modal','true');
+        const gate=el('section',undefined,doc.body,'wt-gate');gate.setAttribute('role','alertdialog');gate.setAttribute('aria-modal','true');gate.setAttribute('data-wuwa-interactive','1');
         const box=el('article',undefined,gate);el('h2','发现新版本',box);
         el('p','当前整合版 '+r.current+'，GitHub 最新发布 '+r.latest+'。',box);
         el('p','更新会保留账号、图鉴缓存与已导入的 Mod 资源包。',box,'wt-muted');

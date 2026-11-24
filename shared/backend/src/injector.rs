@@ -263,7 +263,7 @@ fn patch_room_layout_hooks(
         return Err("联机成员布局变量绑定不一致".into());
     }
     let layout_whole = lay.get(0).map(|m| m.as_str()).unwrap_or_default();
-    let template = "function __EP__(__ARG__) { if (__SET__.has(__ARG__.id) || !__READY__.value) return; const __T__ = __UE__.value?.querySelector(\".cat-wrap\"); if (!__T__) return; const __O__ = __T__.getBoundingClientRect(), __L__ = __O__.width / __BASE__; if (!(__L__ > 0) || !Number.isFinite(__O__.left) || !Number.isFinite(__O__.top)) return; const __others = __MEMBERS__.value.filter(__m => __m.id !== __ARG__.id && __SET__.has(__m.id)).map(__m => ({ left: __m.left, top: __m.top })); const __saved = __lg.savedRoomMemberPosition?.(__ARG__.id, __others, __BASE__, __BASE__); const __D__ = __saved ? __CLAMP__(__saved.left, __saved.top) : __CLAMP__(__O__.left + __ARG__.left * __L__, __O__.top + __ARG__.top * __L__); __ARG__.left = __D__.left, __ARG__.top = __D__.top, __SET__.add(__ARG__.id), __ZI__(__ARG__) }\nasync function __ML__() { if (await __TICK__(), !!__READY__.value) { for (const [__K__, __V__] of __MEMBERS__.value.entries()) __IL__(__V__, __K__), __EP__(__V__); __TA__(), await __TICK__(), __EA__() } }\nfunction __JN__() { __ML__() }\nfunction __wuwaRoomStorage(event) {\n if (!event || event.key !== \"wuwatappo-room-action-v1\" || !event.newValue) return;\n let payload = null;\n try { payload = JSON.parse(event.newValue); } catch (error) { return; }\n if (!payload || typeof payload !== \"object\") return;\n if (payload.action === \"arrange\") {\n  const __visible = __MEMBERS__.value.filter(__m => !__lg.isRoomMemberHidden?.(__m.id));\n  const __positions = __lg.arrangeRoomMembers?.(__visible, payload.mode || \"horizontal\", { width: window.innerWidth, height: window.innerHeight }) || [];\n  for (const __pos of __positions) {\n   const __m = __MEMBERS__.value.find(__item => __item.id === __pos.id);\n   if (!__m) continue;\n   const __c = __CLAMP__(__pos.left, __pos.top);\n   __m.left = __c.left; __m.top = __c.top; __SET__.add(__m.id); __ZI__(__m); __lg.saveRoomMemberPosition?.(__m.id, __c.left, __c.top);\n  }\n  __JN__();\n } else if (payload.action === \"reset-positions\") {\n  for (const __m of __MEMBERS__.value) { __SET__.delete(__m.id); __m.left = 0; __m.top = 0; }\n  __JN__();\n }\n}\nwindow.addEventListener(\"storage\", __wuwaRoomStorage);\n__UNMOUNTED__(() => window.removeEventListener(\"storage\", __wuwaRoomStorage));";
+    let template = "function __EP__(__ARG__) { if (__SET__.has(__ARG__.id) || !__READY__.value) return; const __T__ = __UE__.value?.querySelector(\".cat-wrap\"); if (!__T__) return; const __O__ = __T__.getBoundingClientRect(), __L__ = __O__.width / __BASE__; if (!(__L__ > 0) || !Number.isFinite(__O__.left) || !Number.isFinite(__O__.top)) return; const __others = __MEMBERS__.value.filter(__m => __m.id !== __ARG__.id && __SET__.has(__m.id)).map(__m => ({ left: __m.left, top: __m.top })); const __saved = __lg.savedRoomMemberPosition?.(__ARG__.id, __others, Math.max(80, Math.round(132 * __L__)), Math.max(80, Math.round(152 * __L__))); const __D__ = __saved ? __CLAMP__(__saved.left, __saved.top) : __CLAMP__(__O__.left + __ARG__.left * __L__, __O__.top + __ARG__.top * __L__); __ARG__.left = __D__.left, __ARG__.top = __D__.top, __SET__.add(__ARG__.id), __ZI__(__ARG__) }\nasync function __ML__() { if (await __TICK__(), !!__READY__.value) { for (const [__K__, __V__] of __MEMBERS__.value.entries()) __IL__(__V__, __K__), __EP__(__V__); __TA__(), await __TICK__(), __EA__() } }\nfunction __JN__() { __ML__() }\nfunction __wuwaRoomStorage(event) {\n if (!event || event.key !== \"wuwatappo-room-action-v1\" || !event.newValue) return;\n let payload = null;\n try { payload = JSON.parse(event.newValue); } catch (error) { return; }\n if (!payload || typeof payload !== \"object\") return;\n if (payload.action === \"arrange\") {\n  const __visible = __MEMBERS__.value.filter(__m => !__lg.isRoomMemberHidden?.(__m.id));\n  const __positions = __lg.arrangeRoomMembers?.(__visible, payload.mode || \"horizontal\", { width: window.innerWidth, height: window.innerHeight }) || [];\n  for (const __pos of __positions) {\n   const __m = __MEMBERS__.value.find(__item => __item.id === __pos.id);\n   if (!__m) continue;\n   const __c = __CLAMP__(__pos.left, __pos.top);\n   __m.left = __c.left; __m.top = __c.top; __SET__.add(__m.id); __ZI__(__m); __lg.saveRoomMemberPosition?.(__m.id, __c.left, __c.top);\n  }\n  __JN__();\n } else if (payload.action === \"reset-positions\") {\n  for (const __m of __MEMBERS__.value) { __SET__.delete(__m.id); __m.left = 0; __m.top = 0; }\n  __JN__();\n }\n}\nwindow.addEventListener(\"storage\", __wuwaRoomStorage);\n__UNMOUNTED__(() => window.removeEventListener(\"storage\", __wuwaRoomStorage));";
     let layout_out = template
         .replace("__EP__", capture(lay, "ep_fn"))
         .replace("__ARG__", ep_arg)
@@ -315,8 +315,11 @@ fn patch_room_layout_hooks(
         return Err("联机成员拖拽变量绑定不一致".into());
     }
     let drag_whole = drag.get(0).map(|m| m.as_str()).unwrap_or_default();
+    let bounce = capture(drag, "bounce");
+    let left_val = capture(drag, "left_val");
+    let top_val = capture(drag, "top_val");
     let drag_out = format!(
-        "{drag_whole} if ({drag_obj} && {}({drag_obj})) __lg.saveRoomMemberPosition?.({drag_obj}.id, {pos_var}.left, {pos_var}.top);",
+        "{drag_whole} if ({drag_obj} && {}({drag_obj})) __lg.saveRoomMemberPosition?.({drag_obj}.id, {bounce} ? {left_val} : {pos_var}.left, {bounce} ? {top_val} : {pos_var}.top);",
         capture(drag, "drag_test")
     );
     rec.replace(&main, drag_whole, &drag_out)
@@ -347,6 +350,42 @@ fn patch_sync_emotion(rec: &mut PatchRecorder, main: &str) -> Result<String, Str
         1,
     );
     rec.replace(main, whole, &replacement)
+}
+
+fn patch_monitor_switch_display(rec: &mut PatchRecorder, monitor: &str) -> Result<String, String> {
+    let re = Regex::new(
+        r#"async function\s+([A-Za-z0-9_$]+)\(\)\s*\{\s*if\s*\(\s*([A-Za-z0-9_$]+)\s*\)\s*return\s+([A-Za-z0-9_$]+)\s*;\s*([A-Za-z0-9_$]+)\s*=\s*([A-Za-z0-9_$]+)\(\)\s*;\s*try\s*\{\s*return await\s+([A-Za-z0-9_$]+)\s*;?\s*\}\s*finally\s*\{\s*([A-Za-z0-9_$]+)\s*=\s*null\s*;?\s*\}\s*\}"#,
+    )
+    .unwrap();
+    let caps = re
+        .captures_iter(monitor)
+        .find(|c| {
+            let cache = &c[2];
+            let inner = &c[5];
+            let needle = format!("async function {inner}(");
+            cache == &c[3]
+                && cache == &c[4]
+                && cache == &c[6]
+                && cache == &c[7]
+                && monitor.find(&needle).is_some_and(|idx| {
+                    let tail = &monitor[idx + needle.len()..];
+                    let end = tail
+                        .find("\nasync function ")
+                        .map(|d| idx + needle.len() + d)
+                        .unwrap_or(monitor.len());
+                    monitor[idx..end].contains("\"set_main_window_monitor_bounds\"")
+                })
+        })
+        .ok_or("缺少 switchDisplayMonitor 切屏入口锚点")?;
+    let whole = caps[0].to_owned();
+    let fn_name = &caps[1];
+    rec.replace(
+        monitor,
+        &whole,
+        &format!(
+            "{whole}\nif (typeof window !== \"undefined\") window.__WUWA_SWITCH_DISPLAY__ = {fn_name};"
+        ),
+    )
 }
 
 /// Convert `inspect_js.cjs` Unicode codepoint (char) indices into UTF-8 byte offsets.
@@ -844,7 +883,7 @@ fn transport_options(platform: Platform, config: &Value) -> Result<String, Strin
     match platform {
         Platform::Mac => Ok(concat!(
             "origin: window.__WUWATAPPO_PROFILE__.assetHost, ",
-            "request: (route,payload) => window.__TAURI_INTERNALS__.invoke('fullatlas_request',{action:route.replace(/^\\//,''),payload:payload||{}}), ",
+            "request: (route,payload) => window.__TAURI_INTERNALS__.invoke('fullatlas_request',{action:route.replace(/^\\//,''),payload:payload||{}}).catch(e=>{throw e instanceof Error?e:new Error(typeof e==='string'?e:String(e?.message||e||'本地服务请求失败'));}), ",
             "token: null, customAssetUrl: () => \"\""
         )
         .to_owned()),
@@ -1402,7 +1441,7 @@ pub fn integrate_build(
         &mut edits,
         favorite_name,
         format!(
-            "if(__lg.enabled.value){{__lg.favorite({favorite_param}.assetId,{favorite_param}.is_collect===1);return;}}"
+            "if(__lg.isModAsset?.({favorite_param}.assetId)){{__lg.favorite({favorite_param}.assetId,{favorite_param}.is_collect===1);return;}}"
         ),
     )?;
 
@@ -2200,7 +2239,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     let fav_item = fav_caps[3].to_owned();
     panel.insert_str(
         fav_pos,
-        &format!("(__lg.enabled.value || __lg.isModAsset?.({fav_item}.item)) ? __lg.favorite({fav_item}.item.asset_id,!{fav_flag}.value) : "),
+        &format!("(__lg.isModAsset?.({fav_item}.item) || (__lg.enabled.value && {fav_item}.item?.owned === false)) ? __lg.favorite({fav_item}.item.asset_id,!{fav_flag}.value) : "),
     );
 
     // Phase 2: Desktop assistant + platform hooks (assistant_core + WindowsHooks)
@@ -2234,15 +2273,18 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         .unwrap()
         .captures(press_text)
         .ok_or("按键处理缺少守卫条件")?;
-    let held_guard = Regex::new(r"[A-Za-z0-9_$]+\.has\(e\)")
-        .unwrap()
-        .find_iter(&first_guard_caps[1])
-        .last()
-        .ok_or("按键守卫缺少 held_guard")?
-        .as_str()
-        .to_owned();
     let press_param = param_of(&handlers[0])?.unwrap_or_else(|| "e".into());
     let release_param = param_of(&handlers[1])?.unwrap_or_else(|| "e".into());
+    let held_guard = Regex::new(&format!(
+        r"[A-Za-z0-9_$]+\.has\({}\)",
+        regex::escape(&press_param)
+    ))
+    .unwrap()
+    .find_iter(&first_guard_caps[1])
+    .last()
+    .ok_or("按键守卫缺少 held_guard")?
+    .as_str()
+    .to_owned();
     main = rec.replace(
         &main,
         &format!("function {}({press_param}) {{", handlers[0]),
@@ -2321,6 +2363,11 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
         &shared,
         "function schedulePreloadAppUiImages() {",
         "function schedulePreloadAppUiImages() {\n return;",
+    )?;
+    shared = rec.replace(
+        &shared,
+        "gameMode: t(\"setting_game_mode\"),",
+        "gameMode: t(\"setting_game_mode\"),\n    switchDisplay: t(\"setting_screen_btn\"),",
     )?;
 
     let report_sticker = require_import(&mi, "reportSendSticker")?;
@@ -2499,8 +2546,12 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
 
     let invoke_m = require_import(&mi, "invoke$1")?;
     let listen_m = require_import(&mi, "listen")?;
+    let on_unmounted_m = require_import(&mi, "onUnmounted")?;
     let code = format!(
         "{code_prefix}\n\
+let __unlistenSwitchDisplay=null;\n\
+{on_mounted_m}(async()=>{{__unlistenSwitchDisplay=await {listen_m}('tray-switch-display',async()=>{{if(__lg.assistant?.updateRequired?.value)return;try{{const ok=await window.__WUWA_SWITCH_DISPLAY__?.();if(ok===false){show_toast_sym}('未检测到其他可切换的显示器');}}catch(error){{{show_toast_sym}(error?.message||'切换屏幕失败');}}}});}});\n\
+{on_unmounted_m}(()=>{{__unlistenSwitchDisplay?.();}});\n\
 {on_mounted_m}(()=>{{window.setTimeout(()=>__lg.assistant.startMain({{\n\
  total:()=>{store}.cumulativeClickCount,balance:()=>{store}.totalClickCount,\n\
  account:()=>String({store}.userInfo?.cuid||{store}.userInfo?.user_id||{store}.userInfo?.uid||'guest'),\n\
@@ -2513,7 +2564,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
  openSettings:{open_settings},\n\
  openView:async view=>{{\n\
    if(__lg.assistant.updateRequired.value)return;\n\
-   await {open_tab}(view==='atlas'?'atlas':'settings');\n\
+   await {open_tab}(view==='atlas'?'atlas':(['settings','setting'].includes(view)?'setting':'console'));\n\
    const send=()=>{{{invoke_m}('plugin:event|emit',{{event:'local-assistant-view',payload:view}}).catch(()=>{{}});}};\n\
    send();window.setTimeout(send,800);window.setTimeout(send,2200);\n\
  }},\n\
@@ -2567,6 +2618,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     let tab_guard =
         "return e === \"bag\" || e === \"atlas\" || e === \"exchange\" || e === \"room\" || e === \"setting\"";
     monitor = rec.replace(&monitor, tab_guard, &format!("{tab_guard} || e === \"console\""))?;
+    monitor = patch_monitor_switch_display(&mut rec, &monitor)?;
     if platform == Platform::Windows {
         monitor = patch_windows_monitor_autostart(&monitor);
     }
@@ -2604,8 +2656,8 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
             "let __assistantViewUnlisten=null;\n\
 {on_mounted_p}(async()=>{{__assistantViewUnlisten=await {listen_p}('local-assistant-view',event=>{{\n\
  const view=event.payload;\n\
- if(['overview','rewards','daily'].includes(view))__lg.assistant.openPanel(view).catch(error=>console.error('[assistant-view]',error));\n\
- else if(['atlas','settings'].includes(view))__lg.assistant.closePanel();\n\
+ if(['overview','rewards','daily','automation','records','rooms','mods','system','update'].includes(view))__lg.assistant.openPanel(view).catch(error=>console.error('[assistant-view]',error));\n\
+ else if(['atlas','settings','setting'].includes(view))__lg.assistant.closePanel();\n\
 }});}});\n\
 {on_unmounted_p}(()=>{{__assistantViewUnlisten?.();}});\n\
 let __panelDisposed=false;"
@@ -2895,7 +2947,7 @@ function drag(x) { x && hit(x) && (bounce ? settle(x, { left: tx, top: oy }) : (
             "{out}"
         );
         assert!(
-            out.contains("const __saved = __lg.savedRoomMemberPosition?.(t.id, __others, 800, 800);"),
+            out.contains("const __saved = __lg.savedRoomMemberPosition?.(t.id, __others, Math.max(80, Math.round(132 * l)), Math.max(80, Math.round(152 * l)));"),
             "{out}"
         );
         assert!(
@@ -2932,7 +2984,7 @@ function drag(x) { x && hit(x) && (bounce ? settle(x, { left: tx, top: oy }) : (
             "{out}"
         );
         assert!(
-            out.contains("if (x && hit(x)) __lg.saveRoomMemberPosition?.(x.id, pos.left, pos.top);"),
+            out.contains("if (x && hit(x)) __lg.saveRoomMemberPosition?.(x.id, bounce ? tx : pos.left, bounce ? oy : pos.top);"),
             "{out}"
         );
 
@@ -2984,5 +3036,30 @@ function drag(x) { x && hit(x) && (bounce ? settle(x, { left: tx, top: oy }) : (
         assert_eq!(rec.entries.len(), 1);
         assert_eq!(rec.entries[0].matches, 2);
         assert_eq!(rec.entries[0].anchor, "a");
+    }
+
+    #[test]
+    fn monitor_switch_display_patch_exposes_global_hook() {
+        let source = r#"
+async function Na() {
+  await u("set_main_window_monitor_bounds", { payload: {} });
+  return true;
+}
+async function On() {
+  if (C) return C;
+  C = Na();
+  try {
+    return await C
+  } finally {
+    C = null
+  }
+}
+"#;
+        let mut rec = PatchRecorder::default();
+        let out = patch_monitor_switch_display(&mut rec, source).unwrap();
+        assert!(out.contains("window.__WUWA_SWITCH_DISPLAY__ = On;"), "{out}");
+
+        let unrelated = source.replace("set_main_window_monitor_bounds", "other");
+        assert!(patch_monitor_switch_display(&mut rec, &unrelated).is_err());
     }
 }

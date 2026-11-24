@@ -597,43 +597,44 @@ impl FullAtlasService {
     }
 
     pub fn official_update_check(&self, is_macos: bool) -> Result<Value, ServiceError> {
+        let mac_reason =
+            "已安装的 Mac 应用没有源码、Node、Rust、Xcode 和 7-Zip，不能在应用内安全重打包。";
+        let mut result = match release_updates::check_official(&self.region_id, &self.client_version)
+        {
+            Ok(value) => value,
+            Err(error) => json!({
+                "currentVersion": self.client_version,
+                "latestVersion": "",
+                "remote": "",
+                "updateAvailable": false,
+                "newer": false,
+                "checked_at": now_f64() as u64,
+                "error": error,
+                "message": format!("检查失败：{error}"),
+                "communityReleasesUrl": COMMUNITY_RELEASES_URL,
+            }),
+        };
         if is_macos {
-            let mut result = release_updates::check_official(&self.region_id, &self.client_version)
-                .map_err(ServiceError::bad_request)?;
             result["communityReleasesUrl"] = json!(COMMUNITY_RELEASES_URL);
             result["supportsLocalAdaptation"] = json!(false);
-            let reason = "已安装的 Mac 应用没有源码、Node、Rust、Xcode 和 7-Zip，不能在应用内安全重打包。";
-            result["localAdaptationReason"] = json!(reason);
+            result["localAdaptationReason"] = json!(mac_reason);
             result["local_adaptation_supported"] = json!(false);
-            result["local_adaptation_reason"] = json!(reason);
-            result["message"] = json!(if result["newer"].as_bool() == Some(true) {
-                format!(
-                    "检测到官方 {}，可下载官方 Windows 原包；Mac 全图鉴包需由本项目构建后从 Releases 更新。",
-                    result["remote"].as_str().unwrap_or("")
-                )
-            } else {
-                result["message"]
-                    .as_str()
-                    .unwrap_or("官方版本检查完成")
-                    .to_string()
-            });
-            Ok(result)
-        } else {
-            Ok(
-                match release_updates::check_official(&self.region_id, &self.client_version) {
-                    Ok(value) => value,
-                    Err(error) => json!({
-                        "currentVersion": self.client_version,
-                        "latestVersion": "",
-                        "updateAvailable": false,
-                        "checked_at": now_f64(),
-                        "error": error,
-                        "message": format!("检查失败：{error}"),
-                        "communityReleasesUrl": COMMUNITY_RELEASES_URL,
-                    }),
-                },
-            )
+            result["local_adaptation_reason"] = json!(mac_reason);
+            if result["error"].is_null() || result["error"].as_str() == Some("") {
+                result["message"] = json!(if result["newer"].as_bool() == Some(true) {
+                    format!(
+                        "检测到官方 {}，可下载官方 Windows 原包；Mac 全图鉴包需由本项目构建后从 Releases 更新。",
+                        result["remote"].as_str().unwrap_or("")
+                    )
+                } else {
+                    result["message"]
+                        .as_str()
+                        .unwrap_or("官方版本检查完成")
+                        .to_string()
+                });
+            }
         }
+        Ok(result)
     }
 
     pub fn official_download(
@@ -734,14 +735,12 @@ impl FullAtlasService {
             .assistant
             .handle(action, body, now_f64(), physical_quiet, offline, false)
             .map_err(ServiceError::bad_request)?;
-        let force_save = match self.persistence {
-            PersistenceMode::CombinedFile(_) => {
-                action != "observe" || body.get("flush") == Some(&Value::Bool(true))
-            }
-            PersistenceMode::SplitFiles => action != "observe" || action == "tick",
-        };
-        self.save_assistant(&mut inner, force_save)
-            .map_err(ServiceError::internal)?;
+        if action != "state" {
+            let force_save = !matches!(action, "tick" | "observe")
+                || body.get("flush") == Some(&Value::Bool(true));
+            self.save_assistant(&mut inner, force_save)
+                .map_err(ServiceError::internal)?;
+        }
         Ok(result)
     }
 
@@ -900,6 +899,31 @@ mod tests {
             reloaded.assistant("state", &json!({}), false).unwrap()["settings"]["enabled"],
             true
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn state_query_skips_redundant_disk_write_and_tick_respects_flush_flag() {
+        let root = temp_dir("state-tick-flush");
+        seed_valid_cache(&root);
+        let cfg = ServiceConfig {
+            root: root.clone(),
+            persistence: PersistenceMode::SplitFiles,
+            region_id: "cn".into(),
+            region_code: "CN".into(),
+            community_version: "1.4.1-beta.1".into(),
+            client_version: "1.0.5".into(),
+            expected_asset_count: None,
+            on_sync_complete: None,
+        };
+        let svc = FullAtlasService::new(cfg).unwrap();
+        let state_path = root.join("assistant_state.json");
+        let _ = fs::remove_file(&state_path);
+        svc.assistant("state", &json!({}), false).unwrap();
+        assert!(!state_path.exists(), "read-only state query must not flush disk");
+
+        svc.assistant("tick", &json!({"flush": true}), true).unwrap();
+        assert!(state_path.is_file(), "explicit flush:true persists tick state");
         let _ = fs::remove_dir_all(root);
     }
 }

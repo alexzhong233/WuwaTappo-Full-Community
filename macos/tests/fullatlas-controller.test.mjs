@@ -6,7 +6,7 @@ import { renderPlatformModule } from '../../scripts/sync-frontend.mjs';
 const source = await renderPlatformModule('local_atlas_controller.js', 'mac');
 const factory = vm.runInNewContext(`${source}\ncreateLocalAtlasController`, { URL, AbortController, console });
 
-function controller({ document, appearance, synthesisSame, synthesisAtlas, refreshBag, fetchBag, onSynthesisComplete, offline, winProps } = {}) {
+function controller({ document, appearance, synthesisSame, synthesisAtlas, refreshBag, fetchBag, onSynthesisComplete, offline, winProps, catalogConsumer = false, applyOfflineCatalog, restoreCatalog } = {}) {
   const calls = [];
   const mergedCatalogs = [];
   const storage = new Map();
@@ -34,10 +34,10 @@ function controller({ document, appearance, synthesisSame, synthesisAtlas, refre
   const instance = factory({
     ref: value => ({ value }), window: win,
     storage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-    origin: 'https://mc-wuwatappo.kurogames-global.com', atlasCount: 1, catalogConsumer: false,
+    origin: 'https://mc-wuwatappo.kurogames-global.com', atlasCount: 1, catalogConsumer,
     normalizeAtlasList: value => value,
     resolvePetAssetIdFromAppearanceId: id => id,
-    snapshotCatalog: () => ({}), applyOfflineCatalog: () => {}, mergeModCatalog: payload => mergedCatalogs.push(payload), restoreCatalog: () => {},
+    snapshotCatalog: () => ({}), applyOfflineCatalog: applyOfflineCatalog || (() => {}), mergeModCatalog: payload => mergedCatalogs.push(payload), restoreCatalog: restoreCatalog || (() => {}),
     getAppearanceAssetById: appearance || (id => ({ asset_id: id, asset_type: 'character_skin' })),
     synthesisAtlasSame: synthesisSame || (async ids => { calls.push(['synthesis', ids]); return {}; }),
     synthesisAtlas: synthesisAtlas || (async ids => { calls.push(['synthesis-upgrade', ids]); return {}; }),
@@ -575,6 +575,7 @@ test('__wuwaRemove and __wuwaTarget bypass the choice dialog', async () => {
 test('equipment bar renders local and official slots and handles pointer drags and reordering', async () => {
   const appearance = id => {
     if (id === 1) return { asset_id: 1, asset_type: 'character_skin', game_role_id: '1001' };
+    if (id === 9) return { asset_id: 9, asset_type: 'character_skin', game_role_id: '2002' };
     if (id === 2) return { asset_id: 2, asset_type: 'accessory', game_role_id: '1001' };
     if (id === 31) return { asset_id: 31, asset_type: 'emote', game_role_id: '1001' };
     if (id === 32) return { asset_id: 32, asset_type: 'emote', game_role_id: '2002' };
@@ -586,6 +587,7 @@ test('equipment bar renders local and official slots and handles pointer drags a
   instance.enabled.value = true;
   instance.inventory([], [
     { asset_id: 1, asset_type: 'character_skin' },
+    { asset_id: 9, asset_type: 'character_skin' },
     { asset_id: 2, asset_type: 'accessory' },
     { asset_id: 31, asset_type: 'emote' },
     { asset_id: 32, asset_type: 'emote' },
@@ -644,6 +646,11 @@ test('equipment bar renders local and official slots and handles pointer drags a
   emitted.length = 0;
   dragFromAtlas(atlasItem(1, 'character_skin', 'Hero'), 'official:character_skin');
   assert.equal(emitted.length, 1);
+  assert.equal(emitted[0].__wuwaTarget, 'official');
+
+  emitted.length = 0;
+  dragFromAtlas(atlasItem(9, 'character_skin', 'OtherHero'), 'official:character_skin');
+  assert.equal(emitted.length, 1, 'owned character_skin with different role can switch official character');
   assert.equal(emitted[0].__wuwaTarget, 'official');
 
   emitted.length = 0;
@@ -1097,6 +1104,7 @@ test('floating equipment dock expands and restores panel window width externally
     let curW = 1100;
     const sizeCalls = [];
     const invoke = async (cmd, args) => {
+      if (cmd === '__simulateSidebarCollapse') { curW -= 142; return null; }
       if (cmd === 'plugin:window|inner_size') return { width: curW * 1.25, height: 760 * 1.25 };
       if (cmd === 'plugin:window|scale_factor') return 1.25;
       if (cmd === 'plugin:window|set_size') {
@@ -1116,12 +1124,12 @@ test('floating equipment dock expands and restores panel window width externally
         },
       },
     });
-    return { body, root, instance, sizeCalls, getCurW: () => curW };
+    return { body, root, instance, sizeCalls, getCurW: () => curW, invoke };
   };
 
   // Happy path: widen the transparent OS window to the right, keep the official
   // panel un-squished, and restore the exact original width on collapse/unmount.
-  const { body, root, instance, sizeCalls, getCurW } = harness();
+  const { body, root, instance, sizeCalls, getCurW, invoke } = harness();
   await instance.ready;
   instance.enabled.value = true;
   const destroy = instance.mountEquipmentBar(body, { floating: true });
@@ -1142,9 +1150,17 @@ test('floating equipment dock expands and restores panel window width externally
   toggle.onclick();
   await tick();
   assert.equal(getCurW(), 1572, 're-expanding widens the OS window again');
+  // Sidebar collapse while wing is open (-142px): closing wing must subtract only 472px -> 958px.
+  invoke('__simulateSidebarCollapse');
+  toggle.onclick();
+  await tick();
+  assert.equal(getCurW(), 1100 - 142, 'collapsing after sidebar toggle preserves the -142px sidebar delta');
+  toggle.onclick();
+  await tick();
+  assert.equal(getCurW(), 1430);
   destroy();
   await new Promise(resolve => setTimeout(resolve, 150));
-  assert.equal(getCurW(), 1100, 'closing the dock restores the OS window width');
+  assert.equal(getCurW(), 958, 'closing the dock restores collapsed window width');
   instance.dispose();
 
   // A failed OS resize must never leave the official panel squished: the wing
@@ -1233,4 +1249,136 @@ test('Mod catalog merges via mergeModCatalog, mergeBag includes asset_code, and 
   await instance.setEnabled(false);
   assert.equal(mergedCatalogs.at(-1), null, 'disabling local mode clears injected Mod catalog entries');
   instance.dispose();
+});
+
+test('Mod preview resolves filename stems, disambiguates active Mod, avoids badge overlap, and keeps UX fixes', async () => {
+  const { doc } = fakeDocument();
+  const offline = {
+    customAssetBase: 'http://127.0.0.1:41234/tok/',
+    customAssetPaths: {
+      'custom-assets/pack-a/character/icon.png': 'custom-assets/pack-a/character/icon.png',
+      'custom-assets/pack-a/character/body1.png': 'custom-assets/pack-a/character/body1.png',
+      'custom-assets/pack-b/character/icon.png': 'custom-assets/pack-b/character/icon.png',
+    },
+    catalog: {
+      character_skin: {
+        900000001: {
+          url: 'custom-assets/pack-a/character/icon.png',
+          game_role_id: 1001,
+          body1: { url: 'custom-assets/pack-a/character/body1.png' },
+        },
+        900000011: {
+          url: 'custom-assets/pack-b/character/icon.png',
+          game_role_id: 1002,
+        },
+        101: { url: 'assets/c101.png', game_role_id: 1 },
+        102: { url: 'assets/c102.png', game_role_id: 2 },
+      },
+      character_skin_atlas: {
+        900000002: { url: 'custom-assets/pack-a/character/icon.png', height_light_id: 900000001, game_role_id: 1001 },
+        900000012: { url: 'custom-assets/pack-b/character/icon.png', height_light_id: 900000011, game_role_id: 1002 },
+        201: { url: 'assets/c101.png', height_light_id: 101, game_role_id: 1 },
+        202: { url: 'assets/c102.png', height_light_id: 102, game_role_id: 2 },
+      },
+      accessory: {
+        301: { url: 'assets/a301.png', game_role_id: 0 },
+      },
+      emote: {
+        401: { url: 'assets/e401.png', game_role_id: 0 },
+        402: { url: 'assets/e402.png', game_role_id: 0 },
+        403: { url: 'assets/e403.png', game_role_id: 0 },
+        404: { url: 'assets/e404.png', game_role_id: 0 },
+        405: { url: 'assets/e405.png', game_role_id: 0 },
+        406: { url: 'assets/e406.png', game_role_id: 0 },
+      },
+    },
+    atlas: [
+      { asset_id: 900000002, asset_type: 'character_skin_atlas', asset_name: '小家伙（演示）', rarity: 'MOD', custom_pack_id: 'pack-a' },
+      { asset_id: 900000012, asset_type: 'character_skin_atlas', asset_name: '第二只（演示）', rarity: 'MOD', custom_pack_id: 'pack-b' },
+      { asset_id: 201, asset_type: 'character_skin_atlas', asset_name: 'Role1', rarity: 'common' },
+      { asset_id: 202, asset_type: 'character_skin_atlas', asset_name: 'Role2', rarity: 'common' },
+      { asset_id: 301, asset_type: 'accessory_atlas', asset_name: 'UnivAcc', rarity: 'common' },
+      { asset_id: 401, asset_type: 'emote_atlas', asset_name: 'E1', rarity: 'common' },
+      { asset_id: 402, asset_type: 'emote_atlas', asset_name: 'E2', rarity: 'common' },
+      { asset_id: 403, asset_type: 'emote_atlas', asset_name: 'E3', rarity: 'common' },
+      { asset_id: 404, asset_type: 'emote_atlas', asset_name: 'E4', rarity: 'common' },
+      { asset_id: 405, asset_type: 'emote_atlas', asset_name: 'E5', rarity: 'common' },
+      { asset_id: 406, asset_type: 'emote_atlas', asset_name: 'E6', rarity: 'common' },
+    ],
+    atlas_count: 11,
+  };
+  let bagRows = [
+    { asset_id: 101, asset_type: 'character_skin', asset_name: 'Role1' },
+    { asset_id: 102, asset_type: 'character_skin', asset_name: 'Role2' },
+  ];
+  const { instance, win } = controller({
+    document: doc,
+    offline,
+    catalogConsumer: true,
+    appearance: id => {
+      const n = Number(id);
+      if (n === 101 || n === 102) return { asset_id: n, asset_type: 'character_skin', game_role_id: n === 101 ? 1 : 2 };
+      if (n === 301) return { asset_id: 301, asset_type: 'accessory', game_role_id: 0 };
+      if (n >= 401 && n <= 406) return { asset_id: n, asset_type: 'emote', game_role_id: 0 };
+      return null;
+    },
+  });
+  await instance.ready;
+  await instance.setEnabled(true);
+
+  const badgeStyle = doc.head.children.find(n => n.id === 'wuwa-mod-badge')?.textContent || '';
+  assert.match(badgeStyle, /\.atlas-thumb--mod::after\{[^}]*right:3px;bottom:3px/);
+  assert.doesNotMatch(badgeStyle, /\.atlas-thumb--mod::after\{[^}]*left:3px;bottom:3px/);
+
+  // Stem lookup for character/icon.png resolves even when asset_name differs from filename,
+  // and disambiguates between two Mods sharing icon.png by active equipped character.
+  instance.select({ asset_id: 900000011, asset_type: 'character_skin' }, null, 5);
+  assert.equal(win.__WUWA_MOD_ASSET_PATH__('character/icon.png'), 'http://127.0.0.1:41234/tok/custom-assets/pack-b/character/icon.png');
+  assert.equal(win.__WUWA_MOD_ASSET_PATH__('character/icon.webp.png'), 'http://127.0.0.1:41234/tok/custom-assets/pack-b/character/icon.png');
+  instance.select({ asset_id: 900000001, asset_type: 'character_skin' }, null, 5);
+  assert.equal(win.__WUWA_MOD_ASSET_PATH__('character/icon.png'), 'http://127.0.0.1:41234/tok/custom-assets/pack-a/character/icon.png');
+  assert.equal(win.__WUWA_MOD_ASSET_PATH__('character/%E5%B0%8F%E5%AE%B6%E4%BC%99%EF%BC%88%E6%BC%94%E7%A4%BA%EF%BC%89.png'), 'http://127.0.0.1:41234/tok/custom-assets/pack-a/character/icon.png');
+  assert.equal(win.__WUWA_MOD_ASSET_PATH__('character/小家伙（演示）_body_1.png'), 'http://127.0.0.1:41234/tok/custom-assets/pack-a/character/body1.png');
+
+  // Favorites reflect on mergeAtlas for Mod & unowned items.
+  instance.favorite(900000002, true);
+  const atlasMerged = instance.mergeAtlas([{ asset_id: 202, asset_type: 'character_skin_atlas', asset_name: 'Role2', owned: false }]);
+  assert.equal(atlasMerged.find(r => r.asset_id === 900000002)?.is_collect, 1);
+
+  // Universal accessory (role 0) stays equipped when switching character_skin.
+  instance.select({ asset_id: 301, asset_type: 'accessory' }, { character: { id: 101 }, role_id: '1' }, 5);
+  instance.select({ asset_id: 102, asset_type: 'character_skin' }, { character: { id: 101 }, role_id: '1' }, 5);
+  assert.equal(instance.selection.value.accessory?.id, 301);
+
+  // Full 5/5 emote bar allows slot replacement on drop without hitting limit error.
+  for (const id of [401, 402, 403, 404, 405]) {
+    instance.select({ asset_id: id, asset_type: 'emote' }, null, 5);
+  }
+  instance.select({ asset_id: 406, asset_type: 'emote' }, null, 5, { slotIndex: 2 });
+  assert.equal(instance.selection.value.emote.length, 5);
+  assert.equal(instance.selection.value.emote[2].id, 406);
+
+  // applyPreset returns numeric meta asset_id instead of undefined.
+  instance.mergePresets([], [{ preset_id: 88, character_asset_id: 101, accessory_asset_id: 301, emotes: [{ asset_id: 401 }] }]);
+  const applied = instance.applyPreset(88);
+  assert.equal(applied.character.id, 101);
+  assert.equal(applied.accessory.id, 301);
+
+  // Disabling mode clears Mod name & path resolvers cleanly.
+  await instance.setEnabled(false);
+  assert.equal(win.__WUWA_MOD_NAMES__.size, 0);
+  assert.equal(win.__WUWA_MOD_ASSET_PATH__, null);
+
+  // Verify removeCustomResource prunes removed Mod IDs from selection.
+  await instance.setEnabled(true);
+  instance.select({ asset_id: 900000001, asset_type: 'character_skin' }, null, 5);
+  assert.equal(instance.selection.value.character?.id, 900000001);
+  offline.atlas = offline.atlas.filter(r => r.asset_id !== 900000002);
+  offline.atlas_count = offline.atlas.length;
+  delete offline.catalog.character_skin[900000001];
+  delete offline.catalog.character_skin_atlas[900000002];
+  await instance.removeCustomResource('pack-a');
+  assert.equal(instance.selection.value.character, undefined, 'removed Mod is pruned from selection');
+  instance.dispose();
+  void bagRows;
 });

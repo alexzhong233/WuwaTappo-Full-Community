@@ -150,9 +150,16 @@ test('native input suppression still follows trusted main-window status', async 
   await drain();
   let prevented = 0;
   let stopped = 0;
-  const input = isTrusted => ({ isTrusted, preventDefault() { prevented += 1; }, stopImmediatePropagation() { stopped += 1; } });
+  const input = (isTrusted, selectorMatch = '') => ({
+    isTrusted,
+    target: selectorMatch ? { closest(selector) { return selector.includes(selectorMatch) ? {} : null; } } : null,
+    preventDefault() { prevented += 1; },
+    stopImmediatePropagation() { stopped += 1; },
+  });
   view.documentEvents.get('mousedown')(input(true));
   view.documentEvents.get('mousedown')(input(false));
+  view.documentEvents.get('mousedown')(input(true, '.wt-soft-update'));
+  view.documentEvents.get('mousedown')(input(true, '.wt-gate'));
   assert.equal(prevented, 1);
   assert.equal(stopped, 1);
   view.updateInput(false);

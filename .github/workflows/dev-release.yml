@@ -65,7 +65,7 @@ jobs:
           源码提交：${HEAD_SHA}
 
           这是随 dev 分支持续更新的开发预发布版本，仅用于测试。
-          macOS 产物为 dmg（拖入「应用程序」）；Windows 产物为 exe 安装包（装完双击快捷方式即用，不含 WebView2 运行时）。
+          macOS 产物为 dmg（拖入「应用程序」）；Windows 产物为 exe 安装包及程序内升级 zip（装完双击快捷方式即用，不含 WebView2 运行时）。
           EOF
           node scripts/release-assets.mjs prepare --version "$VERSION"
           mapfile -t FILES < <(node scripts/release-assets.mjs files --version "$VERSION")

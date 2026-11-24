@@ -478,11 +478,16 @@ impl AssistantCore {
                 {
                     return Ok(self.snapshot(now, update_required));
                 }
+                if !self.state["rooms"].is_array() {
+                    self.state["rooms"] = json!([]);
+                }
+                if !self.state["deleted_rooms"].is_array() {
+                    self.state["deleted_rooms"] = json!([]);
+                }
                 if new_visit {
-                    self.state["deleted_rooms"]
-                        .as_array_mut()
-                        .unwrap()
-                        .retain(|x| x.as_str() != Some(code));
+                    if let Some(deleted) = self.state["deleted_rooms"].as_array_mut() {
+                        deleted.retain(|x| x.as_str() != Some(code));
+                    }
                 }
                 let rooms = self.state["rooms"].as_array_mut().ok_or("房间状态损坏")?;
                 let old = rooms.iter().find(|r| r["code"] == code).cloned();
@@ -498,33 +503,36 @@ impl AssistantCore {
             }
             "delete-room" => {
                 let code = room_code(body.get("code")).ok_or("房间号无效")?.to_string();
-                self.state["rooms"]
-                    .as_array_mut()
-                    .unwrap()
-                    .retain(|r| r["code"] != code);
-                let deleted = self.state["deleted_rooms"].as_array_mut().unwrap();
-                deleted.retain(|x| x.as_str() != Some(&code));
-                deleted.push(json!(code));
-                if deleted.len() > 100 {
-                    deleted.remove(0);
+                if let Some(rooms) = self.state["rooms"].as_array_mut() {
+                    rooms.retain(|r| r["code"] != code);
+                }
+                if !self.state["deleted_rooms"].is_array() {
+                    self.state["deleted_rooms"] = json!([]);
+                }
+                if let Some(deleted) = self.state["deleted_rooms"].as_array_mut() {
+                    deleted.retain(|x| x.as_str() != Some(&code));
+                    deleted.push(json!(code));
+                    if deleted.len() > 100 {
+                        deleted.remove(0);
+                    }
                 }
             }
             "favorite" => {
                 let code = body.get("code");
-                for room in self.state["rooms"].as_array_mut().unwrap() {
-                    if room.get("code") == code {
-                        room["favorite"] = json!(body.get("favorite") == Some(&Value::Bool(true)));
+                if let Some(rooms) = self.state["rooms"].as_array_mut() {
+                    for room in rooms.iter_mut() {
+                        if room.get("code") == code {
+                            room["favorite"] =
+                                json!(body.get("favorite") == Some(&Value::Bool(true)));
+                        }
                     }
-                }
-                self.state["rooms"]
-                    .as_array_mut()
-                    .unwrap()
-                    .sort_by_key(|r| {
+                    rooms.sort_by_key(|r| {
                         (
                             r["favorite"] != true,
                             Reverse(r["visited"].as_u64().unwrap_or(0)),
                         )
                     });
+                }
             }
             "monitor" => {
                 let monitor = body.get("monitor").cloned().unwrap_or(Value::Null);
@@ -546,7 +554,7 @@ const MAX_DIAGNOSTIC_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SYNTH_LOG_BYTES: u64 = 16 * 1024 * 1024;
 const SYNTH_LOG_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 const REDACTED: &str = "[REDACTED]";
-const DEFAULT_HOST_PORT: u64 = 38472;
+const DEFAULT_HOST_PORT: u64 = 43229;
 
 fn unix_time_secs() -> u64 {
     SystemTime::now()
@@ -649,7 +657,13 @@ pub fn append_diagnostic(root: &Path, body: &Value) {
     append_diagnostic_with_limit(root, body, MAX_DIAGNOSTIC_BYTES);
 }
 
+static LOG_IO_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
 fn append_diagnostic_with_limit(root: &Path, body: &Value, max_bytes: u64) {
+    let _guard = LOG_IO_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _ = fs::create_dir_all(root);
     let path = root.join("client_diagnostics.jsonl");
     if fs::metadata(&path).is_ok_and(|meta| meta.len() >= max_bytes) {
@@ -714,6 +728,10 @@ fn prune_synth_logs(dir: &Path) {
 }
 
 fn append_synth_log_with_limit(root: &Path, body: &Value, max_bytes: u64) {
+    let _guard = LOG_IO_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = synth_log_dir(root);
     let _ = fs::create_dir_all(&dir);
     prune_synth_logs(&dir);
@@ -765,13 +783,11 @@ fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
 }
 
 /// 读取或初始化本机运行配置：从 `package_config.json` 补齐公开字段并确保有效端口与随机令牌。
-const SYNC_PACKAGE_KEYS: [&str; 9] = [
+const SYNC_PACKAGE_KEYS: [&str; 7] = [
     "region",
     "label",
     "cdn_host",
     "api_base",
-    "asset_count",
-    "atlas_count",
     "client_version",
     "mod_version",
     "community_version",
@@ -782,7 +798,13 @@ pub fn ensure_local_config(root: &Path) -> Result<Value, String> {
     let local_path = root.join("local_config.json");
     let mut changed = !local_path.exists();
     let mut map = read_json_object(&local_path).unwrap_or_default();
-    if let Some(pkg) = read_json_object(&root.join("package_config.json")) {
+    let pkg = read_json_object(&root.join("package_config.json"));
+    let pkg_port = pkg
+        .as_ref()
+        .and_then(|p| p.get("port"))
+        .and_then(Value::as_u64)
+        .filter(|port| (1..=65535).contains(port));
+    if let Some(pkg) = pkg {
         for (key, value) in pkg {
             if key == "token" || key == "port" {
                 continue;
@@ -799,7 +821,7 @@ pub fn ensure_local_config(root: &Path) -> Result<Value, String> {
         .and_then(Value::as_u64)
         .is_some_and(|port| (1..=65535).contains(&port));
     if !valid_port {
-        map.insert("port".into(), json!(DEFAULT_HOST_PORT));
+        map.insert("port".into(), json!(pkg_port.unwrap_or(DEFAULT_HOST_PORT)));
         changed = true;
     }
     let valid_token = map
@@ -1240,6 +1262,43 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["entry"]["step"], "second");
         assert_eq!(entries[1]["entry"]["step"], "first");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_local_config_port_fallback_and_corrupted_rooms_recovery() {
+        let root = temp_root("cfg-rooms");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("package_config.json"),
+            r#"{"region":"cn","port":45123,"asset_count":99}"#,
+        )
+        .unwrap();
+        let cfg = ensure_local_config(&root).unwrap();
+        assert_eq!(cfg["port"], 45123);
+
+        fs::write(root.join("local_config.json"), r#"{"port":0}"#).unwrap();
+        fs::write(root.join("package_config.json"), r#"{"region":"cn"}"#).unwrap();
+        let defaulted = ensure_local_config(&root).unwrap();
+        assert_eq!(defaulted["port"], 43229);
+
+        let mut core = AssistantCore::new(None);
+        core.state["rooms"] = json!(null);
+        core.state["deleted_rooms"] = json!({"bad": 1});
+        core.handle(
+            "room",
+            &json!({"code":"123456","host":"p","new_visit":true}),
+            100.0,
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(core.state["rooms"].as_array().unwrap().len(), 1);
+        core.handle("delete-room", &json!({"code":"123456"}), 101.0, true, true, false)
+            .unwrap();
+        assert_eq!(core.state["rooms"].as_array().unwrap().len(), 0);
+        assert_eq!(core.state["deleted_rooms"][0], "123456");
         let _ = fs::remove_dir_all(root);
     }
 }

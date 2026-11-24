@@ -827,14 +827,30 @@ pub fn resolve_cached_asset(cache_dir: &Path, relative_key: &str) -> Option<Path
 /// `character/role_1304_1007_body_1.png`). The download manifest is keyed by
 /// official UUID URLs, while the renderer often composes paths from atlas
 /// names. The cached atlas + catalog contain the authoritative mapping.
+fn json_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+fn strip_image_ext(name: &str) -> Option<&str> {
+    if let Some(stem) = name
+        .strip_suffix(".png")
+        .or_else(|| name.strip_suffix(".webp"))
+    {
+        return Some(stem);
+    }
+    (!name.contains('.')).then_some(name)
+}
+
 fn resolve_named_catalog_asset(cache_dir: &Path, relative_key: &str) -> Option<PathBuf> {
     let (category, requested) = relative_key.split_once('/')?;
     let category = category.to_ascii_lowercase();
-    let stem = requested
-        .strip_suffix(".png")
-        .or_else(|| requested.strip_suffix(".webp"))?;
+    let stem = strip_image_ext(requested)?;
     let (atlas_type, primary_type) = match category.as_str() {
-        "character" | "character_atlas" => ("character_skin_atlas", "character_skin"),
+        "character" | "character_atlas" | "character_skin_atlas" => {
+            ("character_skin_atlas", "character_skin")
+        }
         "accessory" | "accessory_atlas" => ("accessory_atlas", "accessory"),
         "emote" | "emote_atlas" => ("emote_atlas", "emote"),
         _ => return None,
@@ -845,12 +861,12 @@ fn resolve_named_catalog_asset(cache_dir: &Path, relative_key: &str) -> Option<P
         .iter()
         .filter(|row| row["asset_type"].as_str() == Some(atlas_type))
         .filter_map(|row| {
-            let base = row["asset_name"].as_str()?.strip_suffix(".png")?;
+            let base = strip_image_ext(row["asset_name"].as_str()?)?;
             (stem == base || stem.starts_with(&format!("{base}_")))
                 .then_some((row, base))
         })
         .max_by_key(|(_, base)| base.len())?;
-    let atlas_id = row["asset_id"].as_u64()?;
+    let atlas_id = json_u64(&row["asset_id"])?;
     let catalog = read_json_value(&cache_dir.join("offline_catalog.json"))?;
     let atlas_meta = catalog.get(atlas_type)?.get(atlas_id.to_string())?;
     let url_key = if category.ends_with("_atlas") {
@@ -865,7 +881,7 @@ fn resolve_named_catalog_asset(cache_dir: &Path, relative_key: &str) -> Option<P
     } else {
         "url".to_owned()
     };
-    let id = atlas_meta["height_light_id"].as_u64().unwrap_or(atlas_id);
+    let id = json_u64(&atlas_meta["height_light_id"]).unwrap_or(atlas_id);
     let meta = catalog
         .get(if category.ends_with("_atlas") { atlas_type } else { primary_type })?
         .get(if category.ends_with("_atlas") { atlas_id } else { id }.to_string())?;
@@ -1083,6 +1099,40 @@ mod tests {
         )
         .unwrap();
         assert!(!is_cache_ready(&root, Some(1)));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_named_catalog_asset_supports_character_skin_atlas_webp_and_string_ids() {
+        let root = std::env::temp_dir().join(format!(
+            "wuwa-named-asset-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        fs::write(assets.join("skin.webp"), b"webp").unwrap();
+        fs::write(
+            root.join("atlas.json"),
+            r#"{"data":[{"asset_id":"201","asset_type":"character_skin_atlas","asset_name":"Camellya.webp"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("offline_catalog.json"),
+            r#"{"character_skin_atlas":{"201":{"url":"assets/skin.webp","height_light_id":"202"}},"character_skin":{"202":{"url":"assets/skin.webp"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_named_catalog_asset(&root, "character_skin_atlas/Camellya.webp"),
+            fs::canonicalize(assets.join("skin.webp")).ok()
+        );
+        assert_eq!(
+            resolve_named_catalog_asset(&root, "character/Camellya"),
+            fs::canonicalize(assets.join("skin.webp")).ok()
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

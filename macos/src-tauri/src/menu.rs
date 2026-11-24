@@ -25,6 +25,7 @@ struct Labels {
     window_size: String,
     window_passthrough: String,
     game_mode: String,
+    switch_display: String,
     window_opacity: String,
     restart: String,
     quit: String,
@@ -45,6 +46,7 @@ impl Default for Labels {
             window_size: "桌宠大小".into(),
             window_passthrough: "鼠标穿透".into(),
             game_mode: "游戏模式".into(),
+            switch_display: "切换屏幕".into(),
             window_opacity: "不透明度".into(),
             restart: "重新启动".into(),
             quit: "退出 Wuwa Tappo".into(),
@@ -179,6 +181,7 @@ fn context_items(
         normal(app, "open-setting", settings)?,
         MenuItemKind::Predefined(PredefinedMenuItem::separator(app)?),
         normal(app, "toggle-pet", visibility)?,
+        normal(app, "switch-display", &labels.switch_display)?,
         selection_menu(
             app,
             &labels.window_size,
@@ -305,6 +308,7 @@ fn event_for_id(id: &str) -> Option<(&'static str, Value)> {
         "open-console" => ("dock-open-panel", Value::from("console")),
         "open-setting" => ("dock-open-panel", Value::from("setting")),
         "toggle-pet" => ("tray-toggle-pet-visibility", Value::Null),
+        "switch-display" => ("tray-switch-display", Value::Null),
         "toggle-passthrough" => ("tray-toggle-window-passthrough", Value::Null),
         "toggle-game-mode" => ("tray-toggle-game-mode", Value::Null),
         "restart" => ("tray-restart", Value::Null),
@@ -432,6 +436,10 @@ mod tests {
     fn normal_shutdown_actions_preserve_frontend_flush_events() {
         assert_eq!(event_for_id("quit"), Some(("tray-quit", Value::Null)));
         assert_eq!(event_for_id("restart"), Some(("tray-restart", Value::Null)));
+        assert_eq!(
+            event_for_id("switch-display"),
+            Some(("tray-switch-display", Value::Null))
+        );
     }
 
     #[test]
@@ -466,7 +474,7 @@ mod tests {
     #[test]
     fn options_preserve_original_percentage_limits() {
         let options = MenuOptions::from_args(&json!({
-            "labels": { "openBag": "Backpack" },
+            "labels": { "openBag": "Backpack", "switchDisplay": "Switch Display" },
             "petDockVisible": false,
             "petScale": 51,
             "windowOpacity": 0,
@@ -475,6 +483,7 @@ mod tests {
         .unwrap();
         assert_eq!(options.labels.open_bag, "Backpack");
         assert_eq!(options.labels.open_atlas, "图鉴");
+        assert_eq!(options.labels.switch_display, "Switch Display");
         assert!(!options.pet_dock_visible);
         assert_eq!(options.pet_scale, 51);
         assert_eq!(options.window_opacity, 0);

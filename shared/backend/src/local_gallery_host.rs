@@ -91,16 +91,22 @@ fn request_origin(request: &tiny_http::Request) -> Option<String> {
         .map(|header| header.value.as_str().to_owned())
 }
 
-fn response_with_type(
+fn response_with_cache(
     request: tiny_http::Request,
     status: u16,
     bytes: Vec<u8>,
     content_type: &str,
+    cache_immutable: bool,
 ) {
     let origin = request_origin(&request);
     let mut output = Response::from_data(bytes).with_status_code(StatusCode(status));
     output.add_header(Header::from_bytes("Content-Type", content_type).unwrap());
-    output.add_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
+    let cache_control = if cache_immutable {
+        "private, max-age=3600, immutable"
+    } else {
+        "no-store"
+    };
+    output.add_header(Header::from_bytes("Cache-Control", cache_control).unwrap());
     output.add_header(
         Header::from_bytes(
             "Access-Control-Allow-Headers",
@@ -118,6 +124,15 @@ fn response_with_type(
         output.add_header(Header::from_bytes("Vary", "Origin").unwrap());
     }
     let _ = request.respond(output);
+}
+
+fn response_with_type(
+    request: tiny_http::Request,
+    status: u16,
+    bytes: Vec<u8>,
+    content_type: &str,
+) {
+    response_with_cache(request, status, bytes, content_type, false);
 }
 
 fn response(request: tiny_http::Request, status: u16, value: Value) {
@@ -170,7 +185,24 @@ fn token_ok(app: &App, request: &tiny_http::Request) -> bool {
 }
 
 fn path_of(request: &tiny_http::Request) -> String {
-    request.url().split('?').next().unwrap_or("/").to_string()
+    let raw = request.url().split('?').next().unwrap_or("/");
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| raw.to_string())
 }
 
 fn mime_type(path: &Path) -> &'static str {
@@ -247,14 +279,20 @@ fn startup_action(_app: &App, _action: &str) -> Result<Value, String> {
     Err("开机自启托管只能在 Windows 上使用".into())
 }
 
-fn send_file(request: tiny_http::Request, file: Option<PathBuf>) {
+fn send_file_with_cache(request: tiny_http::Request, file: Option<PathBuf>, cache_immutable: bool) {
     let Some(file) = file else {
         return response(request, 404, json!({"error":"Not found"}));
     };
     match fs::read(&file) {
-        Ok(bytes) => response_with_type(request, 200, bytes, mime_type(&file)),
+        Ok(bytes) => {
+            response_with_cache(request, 200, bytes, mime_type(&file), cache_immutable)
+        }
         Err(_) => response(request, 404, json!({"error":"Not found"})),
     }
+}
+
+fn send_file(request: tiny_http::Request, file: Option<PathBuf>) {
+    send_file_with_cache(request, file, false);
 }
 
 fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
@@ -269,7 +307,13 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
         }
         "/status" => {
             let mut extra = Map::new();
-            for key in ["mod_version", "client_version", "asset_count", "atlas_count"] {
+            for key in [
+                "region",
+                "mod_version",
+                "client_version",
+                "asset_count",
+                "atlas_count",
+            ] {
                 extra.insert(key.into(), config_value(&app.config, key));
             }
             response(request, 200, app.service.status_snapshot(Some(extra)));
@@ -315,7 +359,7 @@ fn handle_get(app: &Arc<App>, request: tiny_http::Request, path: &str) {
                 app.service
                     .diagnostic(&json!({"kind":"asset_not_found","path":name}));
             }
-            send_file(request, file);
+            send_file_with_cache(request, file, true);
         }
         _ if [
             "/character/",
@@ -373,7 +417,7 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
         );
     }
     let action = path.trim_start_matches('/');
-    let quiet = if action == "assistant/tick" {
+    let quiet = if matches!(action, "assistant/tick" | "assistant/observe") {
         physical_quiet()
     } else {
         false
@@ -451,7 +495,8 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
                     return;
                 }
                 _guard.disarm();
-                std::thread::sleep(Duration::from_millis(1200));
+                let _ = service.assistant("quit", &json!({}), false);
+                std::thread::sleep(Duration::from_millis(2500));
                 std::process::exit(0);
             });
             response(
@@ -475,6 +520,10 @@ fn handle_post(app: &Arc<App>, mut request: tiny_http::Request, path: &str) {
                 Ok(value) => response(request, 200, value),
                 Err(error) => response(request, 409, json!({"error":error,"enabled":false})),
             }
+        }
+        "/diagnostic/open-logs" => {
+            let _ = fs::create_dir_all(app.service.root().join("logs"));
+            response(request, 200, open_url(&app.service.root().to_string_lossy()))
         }
         _ => response(request, 404, json!({"error":"Not found"})),
     }
@@ -603,7 +652,6 @@ fn main() {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
-    let expected_asset_count = initial_config.get("asset_count").and_then(Value::as_u64);
 
     let config_arc = Arc::new(Mutex::new(initial_config));
     let sync_cfg = Arc::clone(&config_arc);
@@ -627,7 +675,7 @@ fn main() {
             region_code: region_profile.region.clone(),
             community_version,
             client_version,
-            expected_asset_count,
+            expected_asset_count: None,
             on_sync_complete: Some(on_sync_complete),
         })
         .unwrap_or_else(|error| {
@@ -635,6 +683,7 @@ fn main() {
             std::process::exit(1);
         }),
     );
+    service.ensure_initial_sync();
 
     let server = match Server::http(format!("127.0.0.1:{port}")) {
         Ok(server) => server,

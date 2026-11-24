@@ -164,6 +164,7 @@ const SYSTEM_COMMANDS: &[&str] = &[
     "is_elevated_autostart_enabled",
     "set_elevated_autostart",
     "open_community_releases",
+    "open_app_log_dir",
     "run_network_diagnostics",
 ];
 

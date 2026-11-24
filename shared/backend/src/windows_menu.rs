@@ -16,9 +16,9 @@ use std::time::Duration;
 const WM_CANCELMODE: u32 = 0x001f;
 const MENU_WINDOW_CLASS: &str = "#32768";
 const MOUSE_BUTTONS: [i32; 3] = [1, 2, 4];
-const MENU_KEYS: [&str; 11] = [
-    "bag", "atlas", "exchange", "room", "console", "setting", "drag", "game", "hide", "restart",
-    "quit",
+const MENU_KEYS: [&str; 13] = [
+    "bag", "atlas", "exchange", "room", "console", "setting", "drag", "game", "hide",
+    "switch-display", "open-logs", "restart", "quit",
 ];
 
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -93,7 +93,7 @@ fn allowed_key(key: &str) -> bool {
         return true;
     }
     if let Some(rest) = key.strip_prefix("opacity-") {
-        return matches!(rest, "25" | "50" | "75" | "100");
+        return matches!(rest, "0" | "25" | "50" | "75" | "100");
     }
     if let Some(rest) = key.strip_prefix("scale-") {
         return matches!(rest, "50" | "75" | "100" | "125" | "150" | "175" | "200");
@@ -140,6 +140,14 @@ struct MenuTree {
     next_id: usize,
     commands: Vec<(usize, String)>,
     roots: Vec<isize>,
+}
+
+impl Drop for MenuTree {
+    fn drop(&mut self) {
+        for handle in self.roots.drain(..) {
+            unsafe { DestroyMenu(handle) };
+        }
+    }
 }
 
 impl MenuTree {
@@ -320,7 +328,7 @@ fn show(items: &Value) -> Result<Value, String> {
     let mut popup = Popup {
         owner,
         previous,
-        roots: tree.roots,
+        roots: std::mem::take(&mut tree.roots),
         stop: Arc::clone(&stop),
         watcher: None,
     };
@@ -356,9 +364,14 @@ pub fn popup(items: &Value) -> Result<Value, String> {
     if BUSY.swap(true, Ordering::SeqCst) {
         return Ok(serde_json::json!({ "action": Value::Null, "busy": true }));
     }
-    let result = show(items);
-    BUSY.store(false, Ordering::SeqCst);
-    result
+    struct BusyGuard;
+    impl Drop for BusyGuard {
+        fn drop(&mut self) {
+            BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+    let _busy_guard = BusyGuard;
+    show(items)
 }
 
 #[cfg(test)]
@@ -405,5 +418,8 @@ mod tests {
         assert!(!allowed_key("opacity-30"));
         assert!(!allowed_key("scale-999"));
         assert!(!allowed_key("opacity-"));
+        assert!(allowed_key("open-logs"));
+        assert!(allowed_key("switch-display"));
+        assert!(allowed_key("opacity-0"));
     }
 }

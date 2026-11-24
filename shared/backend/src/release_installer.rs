@@ -584,6 +584,16 @@ fn apply_files(root: &Path, stage: &Path, job: &Path) -> Result<Vec<(String, boo
 }
 
 fn rollback(root: &Path, job: &Path, changed: &[(String, bool)]) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        for exe in ["WuwaTappo.Local.exe", "LocalGalleryHost.exe"] {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/IM", exe])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+    }
     for (name, existed) in changed.iter().rev() {
         let target = root.join(name);
         if *existed {
@@ -663,7 +673,11 @@ fn wait_healthy(job: &Path) -> Result<(), String> {
 pub fn apply_update(root: &Path, stage: &Path) -> Result<(), String> {
     let job = stage.parent().ok_or("升级舞台路径无效")?;
     std::thread::sleep(Duration::from_secs(2));
-    wait_for_app_exit()?;
+    if let Err(error) = wait_for_app_exit() {
+        write_progress(root, job, "failed", 0.0, &error);
+        let _ = atomic_json(&job.join("result.json"), &json!({"ok": false, "error": error}));
+        return Err(error);
+    }
     write_progress(root, job, "apply", 90.0, "正在替换程序文件…");
     let manifest: Value = serde_json::from_slice(
         &fs::read(stage.join("update_manifest.json")).map_err(|error| error.to_string())?,
