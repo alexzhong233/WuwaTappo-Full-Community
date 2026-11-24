@@ -8,6 +8,7 @@ const factory = vm.runInNewContext(`${source}\ncreateLocalAtlasController`, { UR
 
 function controller({ document, appearance, synthesisSame, synthesisAtlas, refreshBag, fetchBag, onSynthesisComplete, offline, winProps } = {}) {
   const calls = [];
+  const mergedCatalogs = [];
   const storage = new Map();
   const listeners = new Map();
   const win = {
@@ -36,7 +37,7 @@ function controller({ document, appearance, synthesisSame, synthesisAtlas, refre
     origin: 'https://mc-wuwatappo.kurogames-global.com', atlasCount: 1, catalogConsumer: false,
     normalizeAtlasList: value => value,
     resolvePetAssetIdFromAppearanceId: id => id,
-    snapshotCatalog: () => ({}), applyOfflineCatalog: () => {}, restoreCatalog: () => {},
+    snapshotCatalog: () => ({}), applyOfflineCatalog: () => {}, mergeModCatalog: payload => mergedCatalogs.push(payload), restoreCatalog: () => {},
     getAppearanceAssetById: appearance || (id => ({ asset_id: id, asset_type: 'character_skin' })),
     synthesisAtlasSame: synthesisSame || (async ids => { calls.push(['synthesis', ids]); return {}; }),
     synthesisAtlas: synthesisAtlas || (async ids => { calls.push(['synthesis-upgrade', ids]); return {}; }),
@@ -55,7 +56,7 @@ function controller({ document, appearance, synthesisSame, synthesisAtlas, refre
   const emitStorage = key => {
     for (const handler of [...(listeners.get('storage') || [])]) handler({ key });
   };
-  return { instance, calls, storage, listeners, emitStorage, win };
+  return { instance, calls, storage, listeners, emitStorage, win, mergedCatalogs };
 }
 
 function fakeDocument() {
@@ -382,7 +383,7 @@ test('non-panel views skip source badge DOM observation and quota failures throw
     },
     origin: 'https://mc-wuwatappo.kurogames-global.com', atlasCount: 1, catalogConsumer: false,
     normalizeAtlasList: value => value, resolvePetAssetIdFromAppearanceId: id => id,
-    snapshotCatalog: () => ({}), applyOfflineCatalog: () => {}, restoreCatalog: () => {},
+    snapshotCatalog: () => ({}), applyOfflineCatalog: () => {}, mergeModCatalog: () => {}, restoreCatalog: () => {},
     getAppearanceAssetById: id => ({ asset_id: id, asset_type: 'character_skin' }),
     request: async route => { calls.push(route); return route === '/status' ? { ready: true, enabled: true, mode_verified: true, network_policy: 'hybrid' } : {}; },
   });
@@ -1158,4 +1159,78 @@ test('floating equipment dock expands and restores panel window width externally
     'the official panel is never squished when the OS resize fails');
   rejectDestroy();
   rejected.instance.dispose();
+});
+
+test('Mod catalog merges via mergeModCatalog, mergeBag includes asset_code, and beginSelect/isModAsset block official fallback', async () => {
+  const offline = {
+    customAssetBase: 'http://127.0.0.1:41234/tok/',
+    customAssetPaths: {
+      'custom-assets/pack-a/hero.png': 'custom-assets/pack-a/hero.png',
+      'custom-assets/pack-a/body.png': 'custom-assets/pack-a/body.png',
+      'custom-assets/pack-a/head.png': 'custom-assets/pack-a/head.png',
+      'custom-assets/pack-a/ears.png': 'custom-assets/pack-a/ears.png',
+    },
+    catalog: {
+      character_skin: {
+        900000001: {
+          url: 'custom-assets/pack-a/hero.png',
+          game_role_id: 1001,
+          body1: { url: 'custom-assets/pack-a/body.png', offset_x: 0, offset_y: 0, my_offset_x: 0, my_offset_y: 0 },
+          head1: { url: 'custom-assets/pack-a/head.png', offset_x: 0, offset_y: 0, my_offset_x: 0, my_offset_y: 0 },
+        },
+      },
+      character_skin_atlas: {
+        900000002: { url: 'custom-assets/pack-a/hero.png', height_light_id: 900000001, game_role_id: 1001 },
+      },
+      accessory: {
+        900000003: { url: 'custom-assets/pack-a/ears.png', game_role_id: 2002 },
+      },
+      accessory_atlas: {
+        900000004: { url: 'custom-assets/pack-a/ears.png', height_light_id: 900000003, game_role_id: 2002 },
+      },
+    },
+    atlas: [
+      { asset_id: 900000002, asset_code: 'mod:pack-a:hero', asset_type: 'character_skin_atlas', asset_name: 'ModHero', rarity: 'MOD', custom_pack_id: 'pack-a' },
+      { asset_id: 900000004, asset_code: 'mod:pack-a:ears', asset_type: 'accessory_atlas', asset_name: 'ModEars', rarity: 'MOD', custom_pack_id: 'pack-a' },
+    ],
+    atlas_count: 2,
+  };
+  const { instance, mergedCatalogs } = controller({ offline });
+  await instance.ready;
+  await instance.setEnabled(true);
+
+  const lastMerged = mergedCatalogs.at(-1);
+  assert.ok(lastMerged, 'mergeModCatalog runs when local mode enables');
+  assert.equal(
+    lastMerged.character_skin[900000001].body1.url,
+    'http://127.0.0.1:41234/tok/custom-assets/pack-a/body.png',
+  );
+  assert.equal(lastMerged.character_skin_atlas[900000002].height_light_id, 900000001);
+
+  const bag = instance.mergeBag([]);
+  assert.equal(bag[0].asset_code, 'mod:pack-a:hero');
+  assert.equal(bag[1].asset_code, 'mod:pack-a:ears');
+
+  assert.equal(instance.isModAsset(900000001), true);
+  assert.equal(instance.isModAsset(900000002), true);
+  assert.equal(instance.isModAsset({ asset_id: 900000003 }), true);
+  assert.equal(instance.isModAsset(1), false);
+
+  let officialCalled = 0;
+  // Dropping a Mod item onto official target or an incompatible Mod accessory onto local target must be consumed (true).
+  assert.equal(
+    instance.beginSelect({ asset_id: 900000001, asset_type: 'character_skin', __wuwaTarget: 'official' }, null, 5, () => { officialCalled++; }),
+    true,
+  );
+  instance.select({ asset_id: 900000001, asset_type: 'character_skin' }, null, 5);
+  assert.equal(instance.shouldCreateLocalPreset(null), true, 'equipped Mod requires local preset creation');
+  assert.equal(
+    instance.beginSelect({ asset_id: 900000003, asset_type: 'accessory', __wuwaTarget: 'local' }, null, 5, () => { officialCalled++; }),
+    true,
+  );
+  assert.equal(officialCalled, 0, 'blocked drops never invoke official API callback');
+
+  await instance.setEnabled(false);
+  assert.equal(mergedCatalogs.at(-1), null, 'disabling local mode clears injected Mod catalog entries');
+  instance.dispose();
 });

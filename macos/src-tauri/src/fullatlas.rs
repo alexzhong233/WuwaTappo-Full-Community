@@ -98,6 +98,8 @@ impl FullAtlasState {
                 | "custom/remove"
                 | "update/healthy"
                 | "diagnostic"
+                | "diagnostic/synth"
+                | "diagnostic/synth/list"
         ) || action.starts_with("assistant/")
         {
             let quiet = app.state::<crate::input::InputMonitor>().status().running

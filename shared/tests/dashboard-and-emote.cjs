@@ -841,6 +841,7 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(platform) {
   settings.emote_hotkeys = true;
   await stepDue();
   assert.equal(assistant.onGlobalKey('Digit2', true), false, 'pressing Digit2 without Alt held does not fire');
+  assert.equal(assistant.onGlobalKey('1', true), false, 'pressing bare 1 without Alt held does not fire');
   assert.equal(assistant.onGlobalKey('AltLeft', true), false);
   assert.equal(assistant.onGlobalKey('Digit2', true), true, 'global AltLeft+Digit2 triggers slot 2 without window focus');
   assert.equal(sentEmotes.at(-1).id, 102);
@@ -877,6 +878,11 @@ async function testClickDrivenAutoEmoteAndAutoClickAvoidance(platform) {
   assert.equal(sentEmotes.at(-1).id, 103);
   assistant.onGlobalKey('Kp3', false);
   assistant.onGlobalKey('AltGr', false);
+
+  assistant.onGlobalKey('AltLeft', true);
+  listeners.get('blur')?.();
+  assert.equal(assistant.onGlobalKey('1', true), false, 'window blur clears heldAlt so bare 1 cannot fire');
+  assistant.onGlobalKey('1', false);
 
   await stepDue();
   const lastTick = requests.filter(r => r.route === '/assistant/tick').at(-1);
@@ -1106,11 +1112,143 @@ async function testDriverBalanceHybridAndSoftUpdate(platform) {
   listeners.get('pagehide')?.();
 }
 
+async function testBalanceInitialAndLoggedOutGuard(platform) {
+  const source = renderFrontend('desktop_assistant.js', platform);
+  let now = 5_000_000;
+  let f24Presses = 0;
+  let loggedInValue = false;
+  let balanceValue = 0;
+  const tasks = [];
+  const intervals = [];
+  const requests = [];
+  const storage = new Map();
+  const listeners = new Map();
+  const body = { querySelector: () => null };
+  const doc = { body, querySelector: () => null };
+  const win = {
+    document: doc,
+    localStorage: {
+      getItem: key => (storage.has(key) ? storage.get(key) : null),
+      setItem: (key, value) => { storage.set(key, String(value)); },
+      removeItem: key => { storage.delete(key); },
+    },
+    addEventListener(name, fn) { listeners.set(name, fn); },
+    removeEventListener(name) { listeners.delete(name); },
+    setTimeout(fn, ms) {
+      const task = { id: tasks.length + 1, at: now + ms, fn };
+      tasks.push(task);
+      return task.id;
+    },
+    clearTimeout(id) {
+      const idx = tasks.findIndex(t => t.id === id);
+      if (idx !== -1) tasks.splice(idx, 1);
+    },
+    setInterval(fn, ms) {
+      const id = intervals.length + 1;
+      intervals.push({ id, fn, ms });
+      return id;
+    },
+    clearInterval(id) {
+      const idx = intervals.findIndex(t => t.id === id);
+      if (idx !== -1) intervals.splice(idx, 1);
+    },
+  };
+  const settings = {
+    enabled: true,
+    auto_click_balance: true,
+    auto_click_below: 1000,
+    auto_click_above: 2000,
+    auto_chest: false,
+    auto_emote: false,
+    auto_emote_interval: 25,
+    auto_emote_random: true,
+    auto_emote_slots: 31,
+    threshold: 1000,
+    emote_hotkeys: false,
+  };
+  const atlas = {
+    enabled: { value: false },
+    ready: Promise.resolve(),
+    async request(route, payload) {
+      requests.push({ route, body: payload });
+      if (route === '/assistant/state') return { settings: { ...settings }, runtime: {}, update_required: false };
+      if (route === '/assistant/tick') return { allowed: true, quiet: true, settings: { ...settings } };
+      if (route === '/update/status') return { required: false };
+      return { settings: { ...settings } };
+    },
+  };
+  const FakeDate = class extends Date { static now() { return now; } };
+  const ctx = vm.createContext({ window: win, Date: FakeDate, Math, Map, Set, Number, Promise, Array, String, JSON, console });
+  vm.runInContext(source + ';globalThis.make = createDesktopAssistant;', ctx);
+  const assistant = ctx.make({ window: win, ref: value => ({ value }), atlas });
+
+  await assistant.startMain({
+    total: () => 0,
+    balance: () => balanceValue,
+    account: () => (loggedInValue ? 'acc' : ''),
+    loggedIn: () => loggedInValue,
+    blocked: () => false,
+    press() { f24Presses++; },
+    release() {},
+    chestCost: 1000,
+    emotes: () => [],
+    sendEmote() {},
+    currentMonitor: async () => null,
+    listenClicks: () => () => {},
+    listenRoom: () => {},
+    listenJoin: async () => {},
+  });
+
+  async function stepDue() {
+    tasks.sort((a, b) => a.at - b.at);
+    const task = tasks.shift();
+    assert.ok(task, 'expected scheduled task');
+    now = Math.max(now, task.at);
+    await task.fn();
+  }
+
+  // Not logged in with initial balance 0 must NOT start clicking.
+  await stepDue();
+  let tick = requests.filter(r => r.route === '/assistant/tick').at(-1);
+  assert.equal(tick.body.balance_paused, true, 'stays paused before login even when balance is 0');
+  assert.equal(f24Presses, 0);
+
+  // Logging in inside the middle band [1000, 2000] must stay paused until balance drops below 1000.
+  loggedInValue = true;
+  balanceValue = 1500;
+  await stepDue();
+  tick = requests.filter(r => r.route === '/assistant/tick').at(-1);
+  assert.equal(tick.body.balance_paused, true, 'middle band on initial login stays paused until below auto_click_below');
+  assert.equal(f24Presses, 0);
+
+  // Dropping strictly below auto_click_below starts auto-click and keeps going through middle band.
+  balanceValue = 800;
+  await stepDue();
+  tick = requests.filter(r => r.route === '/assistant/tick').at(-1);
+  assert.equal(tick.body.balance_paused, false);
+  assert.equal(f24Presses, 1);
+
+  balanceValue = 1500;
+  await stepDue();
+  tick = requests.filter(r => r.route === '/assistant/tick').at(-1);
+  assert.equal(tick.body.balance_paused, false, 'continues auto-clicking across middle band after dropping below lower bound');
+  assert.equal(f24Presses, 2);
+
+  balanceValue = 2500;
+  await stepDue();
+  tick = requests.filter(r => r.route === '/assistant/tick').at(-1);
+  assert.equal(tick.body.balance_paused, true, 'pauses again above upper bound');
+  assert.equal(f24Presses, 2);
+
+  listeners.get('pagehide')?.();
+}
+
 (async () => {
   for (const platform of ['mac', 'win']) {
     await testDashboard(platform);
     await testClickDrivenAutoEmoteAndAutoClickAvoidance(platform);
     await testDriverBalanceHybridAndSoftUpdate(platform);
+    await testBalanceInitialAndLoggedOutGuard(platform);
   }
   console.log('dashboard and emote regression passed (macOS + Windows): Mod tab rename, update action order, settings cards/decoupling, balance hysteresis, hybrid room history + soft update dismissal');
 })().catch(error => {

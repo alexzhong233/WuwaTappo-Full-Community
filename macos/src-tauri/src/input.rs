@@ -531,6 +531,49 @@ impl TapContext {
             });
         }
     }
+
+    fn reconcile_modifiers(&mut self, flags: u64) {
+        let released: Vec<u16> = self
+            .pressed
+            .iter()
+            .copied()
+            .filter(|code| modifier_is_pressed(*code, flags) == Some(false))
+            .collect();
+        for code in released {
+            if self.pressed.remove(&code) {
+                self.send(NativeInput::Key {
+                    key: key_label(code),
+                    pressed: false,
+                });
+            }
+        }
+    }
+}
+
+fn flag_pressed(flags: u64, mask: u64, pair_bits: u64, side_bit: u64) -> bool {
+    if (flags & mask) == 0 {
+        return false;
+    }
+    if (flags & pair_bits) != 0 {
+        (flags & side_bit) != 0
+    } else {
+        true
+    }
+}
+
+fn modifier_is_pressed(code: u16, flags: u64) -> Option<bool> {
+    match code {
+        56 => Some(flag_pressed(flags, 0x0002_0000, 0x0000_0006, 0x0000_0002)),
+        60 => Some(flag_pressed(flags, 0x0002_0000, 0x0000_0006, 0x0000_0004)),
+        59 => Some(flag_pressed(flags, 0x0004_0000, 0x0000_2001, 0x0000_0001)),
+        62 => Some(flag_pressed(flags, 0x0004_0000, 0x0000_2001, 0x0000_2000)),
+        58 => Some(flag_pressed(flags, 0x0008_0000, 0x0000_0060, 0x0000_0020)),
+        61 => Some(flag_pressed(flags, 0x0008_0000, 0x0000_0060, 0x0000_0040)),
+        55 => Some(flag_pressed(flags, 0x0010_0000, 0x0000_0018, 0x0000_0008)),
+        54 => Some(flag_pressed(flags, 0x0010_0000, 0x0000_0018, 0x0000_0010)),
+        63 => Some((flags & 0x0080_0000) != 0),
+        _ => None,
+    }
 }
 
 unsafe extern "C" fn observe_event(
@@ -560,6 +603,7 @@ unsafe extern "C" fn observe_event(
     match event_type {
         10 | 11 | 12 => {
             let code = unsafe { CGEventGetIntegerValueField(event, 9) } as u16;
+            let flags = unsafe { CGEventGetFlags(event) };
             if event_type == 12 && code == 57 {
                 // Caps Lock sends a flag transition, not a normal down/up pair.
                 context.send(NativeInput::Key {
@@ -572,8 +616,12 @@ unsafe extern "C" fn observe_event(
                 });
                 return event;
             }
+            if matches!(event_type, 10 | 12) {
+                context.reconcile_modifiers(flags);
+            }
             let pressed = if event_type == 12 {
-                unsafe { CGEventSourceKeyState(0, code) }
+                modifier_is_pressed(code, flags)
+                    .unwrap_or_else(|| unsafe { CGEventSourceKeyState(1, code) })
             } else {
                 event_type == 10
             };
@@ -581,7 +629,7 @@ unsafe extern "C" fn observe_event(
                 if context.pressed.insert(code) {
                     context.send(NativeInput::Shortcut {
                         key: key_label(code),
-                        flags: unsafe { CGEventGetFlags(event) },
+                        flags,
                     });
                     context.send(NativeInput::Key {
                         key: key_label(code),
@@ -1547,6 +1595,48 @@ mod tests {
     #[test]
     fn missing_input_monitoring_asks_for_the_grant() {
         assert_eq!(access_hint(false, false), "grant_input_monitoring");
+    }
+
+    #[test]
+    fn modifier_is_pressed_tracks_event_flags_and_releases_stale_alt() {
+        assert_eq!(modifier_is_pressed(18, 0x0008_0020), None);
+        assert_eq!(modifier_is_pressed(58, 0x0008_0020), Some(true));
+        assert_eq!(modifier_is_pressed(61, 0x0008_0020), Some(false));
+        assert_eq!(modifier_is_pressed(58, 0), Some(false));
+        assert_eq!(modifier_is_pressed(61, 0x0008_0000), Some(true));
+        assert_eq!(modifier_is_pressed(56, 0x0002_0002), Some(true));
+        assert_eq!(modifier_is_pressed(60, 0x0002_0002), Some(false));
+        assert_eq!(modifier_is_pressed(59, 0x0004_0001), Some(true));
+        assert_eq!(modifier_is_pressed(55, 0x0010_0008), Some(true));
+        assert_eq!(modifier_is_pressed(63, 0x0080_0000), Some(true));
+        assert_eq!(modifier_is_pressed(63, 0), Some(false));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut ctx = TapContext {
+            sender: tx,
+            state: Arc::new(MonitorState {
+                running: AtomicBool::new(false),
+                stop: AtomicBool::new(false),
+                scale: AtomicU64::new(1.0_f64.to_bits()),
+                window_listener_installed: AtomicBool::new(false),
+                run_loop: Mutex::new(0),
+                event_tap: Mutex::new(0),
+                error: Mutex::new(None),
+                member_resolver: Mutex::new(None),
+                auxiliary_hit_test: Mutex::new(None),
+            }),
+            tap: std::ptr::null_mut(),
+            pressed: BTreeSet::from([58, 18]),
+        };
+        ctx.reconcile_modifiers(0);
+        assert!(!ctx.pressed.contains(&58));
+        assert!(ctx.pressed.contains(&18));
+        let event = rx.try_recv().unwrap();
+        assert!(matches!(
+            event,
+            NativeInput::Key { key, pressed: false } if key == "AltLeft"
+        ));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

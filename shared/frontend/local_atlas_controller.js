@@ -16,6 +16,16 @@ function createLocalAtlasController(d) {
   const readMarks=()=>{try{const rows=JSON.parse(d.storage.getItem(MARKS_KEY)||'{}');return rows&&typeof rows==='object'&&!Array.isArray(rows)?rows:{};}catch{return {};}};
   const marks=d.ref(readMarks());
   const offlineData = d.ref(null), revision = d.ref(0);
+  const modAssetIds = new Set();
+  function isModAsset(value) {
+    if (value && typeof value === 'object') {
+      if (value.wuwa_local_only || value.custom_pack_id || String(value.rarity || '').toLowerCase() === 'mod') return true;
+      const id = Number(value.asset_id ?? value.id ?? 0);
+      return Number.isFinite(id) && id > 0 && modAssetIds.has(id);
+    }
+    const id = Number(value);
+    return Number.isFinite(id) && id > 0 && modAssetIds.has(id);
+  }
   const syncStatus = d.ref({status: 'idle', done: 0, total: 0});
   // 发行包不带素材缓存（近百 MB），所以「装完第一次启动」必然是 ready=false。
   // 这是正常状态，不是错误：先按联机模式把界面拉起来，后台补齐素材再放开开关。
@@ -438,19 +448,19 @@ function createLocalAtlasController(d) {
       notifyEquipmentBars();
       return true;
     }
-    if (!enabled.value) return false;
+    if (!enabled.value) return isModAsset(item);
     // 拖拽/装备栏投放：直达目标，不弹选择窗。
     if (item?.__wuwaTarget === 'local') {
       try {
         select(item, official, maxEmotes, {quiet: true, forceEquip: true, slotIndex: item.__wuwaSlotIndex});
-      } catch { return false; }
+      } catch {}
       return true;
     }
     if (item?.__wuwaTarget === 'official') {
       if (item.__wuwaReorder) return false;
-      if (!officialOwned(item.asset_id, type)) return false;
-      if (type === 'emote' && !onlineEmoteCompatibility(item, officialUser.value || official).compatible) return false;
-      if (typeof applyOfficial !== 'function') return false;
+      if (isModAsset(item) || item?.owned === false || !officialOwned(item.asset_id, type)) return true;
+      if (type === 'emote' && !onlineEmoteCompatibility(item, officialUser.value || official).compatible) return true;
+      if (typeof applyOfficial !== 'function') return true;
       applyOfficial();
       return true;
     }
@@ -831,7 +841,7 @@ function createLocalAtlasController(d) {
     } catch { return ''; }
   }
   function indexLocalData(data) {
-    localMeta.clear(); atlasIndex.clear(); petIdByAtlasId.clear(); atlasIdsByPetId.clear();
+    localMeta.clear(); atlasIndex.clear(); petIdByAtlasId.clear(); atlasIdsByPetId.clear(); modAssetIds.clear();
     const catalog = data?.catalog || {};
     const collectUrls = (value, out, seen = new Set()) => {
       if (!value || typeof value !== 'object' || seen.has(value)) return;
@@ -863,6 +873,11 @@ function createLocalAtlasController(d) {
       const meta = {...(catalog[row.asset_type]?.[row.asset_id] || catalog[type]?.[id] || {}), ...row,
         asset_id: id, asset_type: type};
       localMeta.set(id, meta);
+      if (String(row?.rarity || '').toLowerCase() === 'mod' || Boolean(row?.custom_pack_id)) {
+        modAssetIds.add(id);
+        const primaryId = Number(catalog[row.asset_type]?.[row.asset_id]?.height_light_id ?? petIdByAtlasId.get(id) ?? 0);
+        if (primaryId > 0) modAssetIds.add(primaryId);
+      }
       for (const name of [row.asset_name, row.file_name, row.name]) {
         const stem = imageStem(name);
         if (stem) atlasIndex.set(stem, row);
@@ -908,6 +923,7 @@ function createLocalAtlasController(d) {
       const meta = assetMeta(primaryId);
       modRows.push({
         asset_id: primaryId,
+        asset_code: entry.asset_code || '',
         asset_type: type,
         asset_name: entry.asset_name || entry.name || meta?.asset_name || '',
         rarity: 'mod',
@@ -1013,7 +1029,53 @@ function createLocalAtlasController(d) {
       return /_atlas$/.test(raw.slice(0, slash).toLowerCase()) ? row.atlas : row.preview;
     };
   }
-  function applyData(data) { registerModNames(data); indexLocalData(data); }
+  function rewriteModCatalogUrls(value, paths) {
+    if (Array.isArray(value)) return value.map(item => rewriteModCatalogUrls(item, paths));
+    if (!value || typeof value !== 'object') return value;
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (key === 'url' && typeof item === 'string' && paths[item]) out[key] = customAssetUrl(item, paths[item]);
+      else out[key] = rewriteModCatalogUrls(item, paths);
+    }
+    return out;
+  }
+  function modCatalogPayload(data) {
+    const catalog = data?.catalog || {};
+    const paths = data?.customAssetPaths || {};
+    const payload = {
+      character_skin: {}, accessory: {}, emote: {},
+      character_skin_atlas: {}, accessory_atlas: {}, emote_atlas: {},
+    };
+    const seen = new Set();
+    for (const entry of data?.atlas || []) {
+      if (!entry || (String(entry.rarity || '').toLowerCase() !== 'mod' && !entry.custom_pack_id)) continue;
+      const atlasKind = String(entry.asset_type || '');
+      const primaryKind = atlasKind.replace(/_atlas$/, '');
+      const atlasId = Number(entry.asset_id) || 0;
+      const atlasRow = catalog[atlasKind]?.[atlasId];
+      if (atlasId > 0 && payload[atlasKind] && atlasRow) {
+        const key = `${atlasKind}:${atlasId}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          payload[atlasKind][atlasId] = rewriteModCatalogUrls(atlasRow, paths);
+        }
+      }
+      const primaryId = Number(atlasRow?.height_light_id ?? resolveItemId(atlasId)) || 0;
+      const primaryRow = catalog[primaryKind]?.[primaryId];
+      if (primaryId > 0 && payload[primaryKind] && primaryRow) {
+        const key = `${primaryKind}:${primaryId}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          payload[primaryKind][primaryId] = rewriteModCatalogUrls(primaryRow, paths);
+        }
+      }
+    }
+    return payload;
+  }
+  function syncModCatalog() {
+    d.mergeModCatalog?.(enabled.value && offlineData.value ? modCatalogPayload(offlineData.value) : null, resolveAssetsHost());
+  }
+  function applyData(data) { registerModNames(data); indexLocalData(data); syncModCatalog(); }
   async function applyMode(on) {
     if (on) {
       enabled.value = true;
@@ -1023,6 +1085,7 @@ function createLocalAtlasController(d) {
       applyData(data);
     } else {
       enabled.value = false;
+      syncModCatalog();
       // Restore reactively; reloading would discard a running background driver.
     }
     revision.value++;
@@ -1168,10 +1231,11 @@ function createLocalAtlasController(d) {
   function deleteLocalPreset(id) {
     if (!enabled.value) throw new Error('本地外观尚未就绪');
     // 账号预设是真存在服务器上的，本地模式连的是只读允许清单，删不掉也不该删。
-    if (Number(id) > 0) throw new Error('账号预设只能在官方预设列表中删除');
+    const targetId = Number(id);
+    if (targetId > 0) throw new Error('账号预设只能在官方预设列表中删除');
     const rows = readPresets();
-    if (!rows.some(p => p.preset_id === id)) throw new Error('本地预设不存在');
-    savePresets(rows.filter(p => p.preset_id !== id));
+    if (!rows.some(p => Number(p.preset_id) === targetId)) throw new Error('本地预设不存在');
+    savePresets(rows.filter(p => Number(p.preset_id) !== targetId));
   }
   // 账号预设（官方那份）与本地预设并排展示：本地 id 为负，账号 id 为正。
   // 点账号那条＝把它的搭配复制成本地外观，账号本身不动、也不联网写回。
@@ -1179,7 +1243,7 @@ function createLocalAtlasController(d) {
   function shouldCreateLocalPreset(official) {
     const user = viewUser(official);
     const assets = [user?.character, user?.accessory, ...(user?.emote || [])].filter(Boolean);
-    return assets.some(item => !officialOwned(item.id, assetMeta(item.id)?.asset_type));
+    return assets.some(item => isModAsset(item.id) || !officialOwned(item.id, assetMeta(item.id)?.asset_type));
   }
   function mergePresets(localRows, accountRows) {
     accountPresets = (Array.isArray(accountRows) ? accountRows : []).map(row => ({...row, wuwa_source: 'official'}));
@@ -1213,7 +1277,8 @@ function createLocalAtlasController(d) {
   }
   function applyLocalPreset(id) {
     if (!enabled.value) throw new Error('本地外观尚未就绪');
-    const row = readPresets().find(p => p.preset_id === id);
+    const targetId = Number(id);
+    const row = readPresets().find(p => Number(p.preset_id) === targetId);
     if (!row) throw new Error('本地预设不存在');
     const character = presetAsset(row.character_asset_id, 'character_skin');
     const accessory = row.accessory_asset_id ? presetAsset(row.accessory_asset_id, 'accessory') : null;
@@ -2144,6 +2209,7 @@ function createLocalAtlasController(d) {
     ownedBag, accessoryTransform, setAccessoryTransform, resetAccessoryTransform,
     listAccessoryTransforms, deleteAccessoryTransform, activateLocalIfReady, startOverlay,
     officialOwned, sourceFor, markFor, setMark, beginSelect, beginPanelSelect, afterOfficialSelect, clearLocal, shouldCreateLocalPreset,
+    isModAsset, syncModCatalog,
     officialUser, panelState, syncPanelState, onlineEmoteCompatibility, mountEquipmentBar,
     synthesizeDuplicates, capture, setCapture, applyCaptureStyle,
     roomLayout, setRoomLayout, saveRoomMemberPosition, savedRoomMemberPosition, toggleRoomMemberHidden,

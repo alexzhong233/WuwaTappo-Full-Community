@@ -322,6 +322,33 @@ fn patch_room_layout_hooks(
     rec.replace(&main, drag_whole, &drag_out)
 }
 
+/// 联机房间的 `syncEmotion`（`wt("re", { e: emoteId })`）只发给官方服务端，
+/// 本机 Mod 表情 ID 不在服务端字典里，发送会返回 `code.1`（「网络繁忙」）。
+fn patch_sync_emotion(rec: &mut PatchRecorder, main: &str) -> Result<String, String> {
+    let re = Regex::new(
+        r#"(?s)function\s+([A-Za-z0-9_$]+)\(\s*([A-Za-z0-9_$]+)\s*\)\s*\{\s*([A-Za-z0-9_$]+)\.value\s*&&\s*([A-Za-z0-9_$]+)\(\s*["']re["']\s*,\s*\{\s*e:\s*([A-Za-z0-9_$]+)\s*\}\s*\)\s*\}"#,
+    )
+    .unwrap();
+    let matches: Vec<Captures<'_>> = re.captures_iter(main).collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "房间同步表情锚点数量异常：{}（期望 1）",
+            matches.len()
+        ));
+    }
+    let caps = &matches[0];
+    if &caps[2] != &caps[5] {
+        return Err("房间同步表情参数绑定不一致".into());
+    }
+    let whole = caps.get(0).unwrap().as_str();
+    let replacement = whole.replacen(
+        '{',
+        &format!("{{ if (__lg.isModAsset?.({arg})) return;", arg = &caps[2]),
+        1,
+    );
+    rec.replace(main, whole, &replacement)
+}
+
 /// Convert `inspect_js.cjs` Unicode codepoint (char) indices into UTF-8 byte offsets.
 pub fn char_to_byte_map(text: &str) -> Vec<usize> {
     let mut map = Vec::with_capacity(text.chars().count() + 1);
@@ -520,6 +547,26 @@ pub fn named<'a>(functions: &'a [FunctionMeta], name: &str) -> Result<&'a Functi
     Ok(first)
 }
 
+/// 在已解析的 AST 函数区间（优先组件内部函数，再回退顶层函数）里读取首个形参名，
+/// 避免同名函数出现在文件更靠前位置时被全局正则误匹配。
+pub fn fn_param_in_scope(
+    text: &str,
+    component_functions: &[FunctionMeta],
+    all_functions: &[FunctionMeta],
+    fn_name: &str,
+) -> Result<Option<String>, String> {
+    let meta = named(component_functions, fn_name).or_else(|_| named(all_functions, fn_name))?;
+    let header = text
+        .get(meta.start..meta.body)
+        .ok_or_else(|| format!("函数 {fn_name} 区间越界"))?;
+    let re = Regex::new(&format!(
+        r"(?:async\s+)?function\s+{}\(\s*([A-Za-z0-9_$]+)",
+        regex::escape(fn_name)
+    ))
+    .unwrap();
+    Ok(re.captures(header).map(|c| c[1].to_owned()))
+}
+
 fn require_import<'a>(imports: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, String> {
     imports
         .get(key)
@@ -626,7 +673,7 @@ pub fn patch_mod_asset_url(rec: &mut PatchRecorder, text: &str) -> Result<String
         return Err(format!("buildAssetUrl 参数列表异常：{:?}", params));
     }
     let injection = format!(
-        "{whole}\n  const modAssetPath = (typeof window !== \"undefined\" && window.__WUWA_MOD_ASSET_PATH__) ? window.__WUWA_MOD_ASSET_PATH__({}) : \"\";\n  if (modAssetPath) return withAssetUrlCacheBust(modAssetPath);",
+        "{whole}\n  const modAssetPath = (typeof window !== \"undefined\" && window.__WUWA_MOD_ASSET_PATH__) ? window.__WUWA_MOD_ASSET_PATH__({}) : \"\";\n  if (modAssetPath) return modAssetPath;",
         params[1]
     );
     rec.replace(text, &whole, &injection)
@@ -823,6 +870,7 @@ fn controller_init(platform: Platform, config: &Value, controller: &str) -> Resu
     Ok(format!(
         "{controller}\nconst localAtlasRoute = ['/', '/panel'].includes((window.location.hash || '#/').slice(1).split('?')[0]);\n\
 let localAtlasController = null;\n\
+const __wuwaModAssetIds = new Set(), __wuwaModAtlasIds = new Set();\n\
 if (localAtlasRoute) try {{\n\
  localAtlasController = createLocalAtlasController({{\n\
 ref, window, storage: localStorage, {transport}, normalizeAtlasList, resolvePetAssetIdFromAppearanceId, getAppearanceAssetById,\n\
@@ -835,6 +883,33 @@ getAccountCumulative: () => globalStore.userInfo ? isFrozenClickCount(globalStor
 getAccountPending: () => parseSafeClickCount(globalStore.localClickCount),\n\
 catalogConsumer: localAtlasRoute,\n\
 applyOfflineCatalog: (payload, host) => applyCatalog(buildCatalogMaps(payload), host, Date.now()),\n\
+mergeModCatalog: (payload) => {{\n\
+ const mod = payload ? buildCatalogMaps(payload) : {{ assets: new Map(), atlases: new Map() }};\n\
+ const assets = new Map(appearanceAssetCatalog.value);\n\
+ const atlases = new Map(appearanceAtlasCatalog.value);\n\
+ let changed = false;\n\
+ for (const id of __wuwaModAssetIds) {{ if (!mod.assets.has(id) && assets.delete(id)) changed = true; }}\n\
+ for (const id of __wuwaModAtlasIds) {{ if (!mod.atlases.has(id) && atlases.delete(id)) changed = true; }}\n\
+ __wuwaModAssetIds.clear(); __wuwaModAtlasIds.clear();\n\
+ for (const [k, v] of mod.assets) {{\n\
+  __wuwaModAssetIds.add(k);\n\
+  const cur = assets.get(k);\n\
+  if (!cur || cur.url !== v.url || cur.body1?.url !== v.body1?.url || cur.head1?.url !== v.head1?.url || cur.body2?.url !== v.body2?.url || cur.head2?.url !== v.head2?.url || cur.body3?.url !== v.body3?.url) {{\n\
+   assets.set(k, v);\n\
+   changed = true;\n\
+  }}\n\
+ }}\n\
+ for (const [k, v] of mod.atlases) {{\n\
+  __wuwaModAtlasIds.add(k);\n\
+  const cur = atlases.get(k);\n\
+  if (!cur || cur.url !== v.url || cur.height_light_id !== v.height_light_id) {{\n\
+   atlases.set(k, v);\n\
+   changed = true;\n\
+  }}\n\
+ }}\n\
+ if (!changed) return;\n\
+ applyCatalog({{ assets, atlases }}, loadedAssetsHost, loadedAssetsJsonTs);\n\
+}},\n\
 restoreCatalog: saved => applyCatalog({{assets: saved.assets, atlases: saved.atlases}}, saved.host, saved.ts),\n\
 onError: error => console.error('[local-gallery]', error)\n\
 }});\n\
@@ -848,6 +923,7 @@ localAtlasController.ready.then(async () => {{ localStartOnlineServices(); await
  return bootstrap();\n\
 }});\n\
 watch(localAtlasController.enabled, on => {{ if (!on) localStartOnlineServices(); }});\n\
+watch(appearanceAssetCatalog, () => {{ localAtlasController?.syncModCatalog?.(); }});\n\
 }} else {{ localStartOnlineServices(); bootstrap(); }}\n",
         api_base = api_base
     ))
@@ -1202,8 +1278,7 @@ pub fn integrate_build(
     ));
 
     let param_of = |fn_name: &str| -> Result<Option<String>, String> {
-        let re = Regex::new(&format!(r"function\s+{}\((\w+)", regex::escape(fn_name))).unwrap();
-        Ok(re.captures(&main_orig).map(|c| c[1].to_owned()))
+        fn_param_in_scope(&main_orig, &component_functions, &m_raw.functions, fn_name)
     };
 
     let select_name = m_raw
@@ -1262,6 +1337,19 @@ pub fn integrate_build(
    __localRefresh();
   }}
  }};
+ const __isModItem=Boolean(__lg.isModAsset?.({select_param})||__lg.isModAsset?.({select_param}?.asset_id));
+ if(__isModItem&&!{select_param}?.__wuwaReorder){{
+  if({select_param}?.__wuwaRemove){{
+   if({select_param}?.__wuwaTarget!=='official'){{__lg.beginSelect({{...{select_param},__wuwaTarget:'local'}},{store}.userInfo,{max_emotes},null,{{noDialog:true}});__localRefresh();}}
+   return;
+  }}
+  try{{
+   if(!__lg.enabled.value)await (__lg.activateLocalIfReady?.()||__lg.startOverlay?.());
+   __lg.select({select_param},{store}.userInfo,{max_emotes},{select_param}?.__wuwaTarget==='local'?{{forceEquip:true,slotIndex:{select_param}.__wuwaSlotIndex}}:{{}});
+   __localRefresh();
+  }}catch(error){{{show_toast_sym}(error.message);}}
+  return;
+ }}
  if({select_param}?.wuwa_choice){{
   const __choice={select_param}.wuwa_choice;
   if(__choice==='local'){{
@@ -1272,6 +1360,7 @@ pub fn integrate_build(
    }}catch(error){{{show_toast_sym}(error.message);}}
    return;
   }}
+  if(__isModItem||{select_param}.owned===false)return;
   await __applyOfficialItem({select_param});
   __lg.setMark({select_param}.asset_id,{select_param}.asset_type,'official',true);
   return;
@@ -1300,7 +1389,7 @@ pub fn integrate_build(
         &mut edits,
         &reorder_name,
         format!(
-            "if(__lg.enabled.value && !__skipLocalReorder && Array.isArray(__lg.selection.value?.emote)){{__lg.reorder({reorder_param},{store}.userInfo);__localRefresh();return;}}"
+            "if(!__skipLocalReorder && ((__lg.enabled.value && Array.isArray(__lg.selection.value?.emote)) || (Array.isArray({reorder_param}) && {reorder_param}.some(__id=>__lg.isModAsset?.(__id))))){{if(__lg.enabled.value)__lg.reorder({reorder_param},{store}.userInfo);__localRefresh();return;}}"
         ),
     )?;
 
@@ -1362,7 +1451,7 @@ pub fn integrate_build(
             ),
             _ => format!(
                 "const __pid=typeof {arg}==='object'&&{arg}!==null?{arg}.preset_id:{arg};\n\
-                 if(__lg.enabled.value && Number(__pid)<0){{try{{{op};__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}return;}}"
+                 if(Number(__pid)<0){{if(__lg.enabled.value){{try{{{op};__localRefresh();}}catch(error){{{show_toast_sym}(error.message);}}}}return;}}"
             ),
         };
         insert_fn(&mut edits, action_name, guard)?;
@@ -1477,6 +1566,7 @@ function __localRefresh(){{
     main = patch_emotion_menu_raf(&mut rec, &main, watch_sym)?;
     let on_unmounted_m = require_import(&mi, "onUnmounted")?;
     main = patch_room_layout_hooks(&mut rec, &main, on_unmounted_m)?;
+    main = patch_sync_emotion(&mut rec, &main)?;
     // Panel edits
     let p_raw = structure
         .files
@@ -2110,7 +2200,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     let fav_item = fav_caps[3].to_owned();
     panel.insert_str(
         fav_pos,
-        &format!("__lg.enabled.value ? __lg.favorite({fav_item}.item.asset_id,!{fav_flag}.value) : "),
+        &format!("(__lg.enabled.value || __lg.isModAsset?.({fav_item}.item)) ? __lg.favorite({fav_item}.item.asset_id,!{fav_flag}.value) : "),
     );
 
     // Phase 2: Desktop assistant + platform hooks (assistant_core + WindowsHooks)
@@ -2641,7 +2731,8 @@ mod tests {
             patch_mod_asset_url(&mut rec, "function buildAssetUrl(e, t) {\n  return 1\n}")
                 .unwrap();
         assert!(url_out.contains("__WUWA_MOD_ASSET_PATH__(t)"));
-        assert!(url_out.contains("withAssetUrlCacheBust(modAssetPath)"));
+        assert!(url_out.contains("if (modAssetPath) return modAssetPath;"));
+        assert!(!url_out.contains("withAssetUrlCacheBust"));
         assert!(patch_mod_asset_url(&mut rec, "function buildAssetUrl(e) {\n}").is_err());
 
         let name_out = patch_mod_display_name(&mut rec, MOD_NAME_FALLBACK_OLD).unwrap();
@@ -2847,6 +2938,43 @@ function drag(x) { x && hit(x) && (bounce ? settle(x, { left: tx, top: oy }) : (
 
         let broken = source.replace("xo.value.has(e)", "xo.value.has(q)");
         assert!(patch_room_layout_hooks(&mut rec, &broken, "onUnmounted").is_err());
+    }
+
+    #[test]
+    fn fn_param_in_scope_ignores_earlier_same_named_function() {
+        let text = "function yn(){return 1}\nfunction an(F,T){return F}\nasync function yn(e){\nreturn e\n}\nasync function an(e){\nreturn e\n}\n";
+        let comp = vec![
+            FunctionMeta {
+                name: "yn".into(),
+                start: 51,
+                end: 83,
+                body: 71,
+                body_end: 82,
+            },
+            FunctionMeta {
+                name: "an".into(),
+                start: 84,
+                end: 116,
+                body: 104,
+                body_end: 115,
+            },
+        ];
+        assert_eq!(
+            fn_param_in_scope(text, &comp, &[], "yn").unwrap(),
+            Some("e".into())
+        );
+        assert_eq!(
+            fn_param_in_scope(text, &comp, &[], "an").unwrap(),
+            Some("e".into())
+        );
+    }
+
+    #[test]
+    fn sync_emotion_patch_skips_mod_assets() {
+        let source = "function Mt(w) {\n  z.value && wt(\"re\", {\n    e: w\n  })\n}";
+        let mut rec = PatchRecorder::default();
+        let out = patch_sync_emotion(&mut rec, source).unwrap();
+        assert!(out.contains("if (__lg.isModAsset?.(w)) return;"), "{out}");
     }
 
     #[test]
