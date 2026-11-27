@@ -1340,10 +1340,15 @@ test('Mod preview resolves filename stems, disambiguates active Mod, avoids badg
   assert.equal(win.__WUWA_MOD_ASSET_PATH__('character/%E5%B0%8F%E5%AE%B6%E4%BC%99%EF%BC%88%E6%BC%94%E7%A4%BA%EF%BC%89.png'), 'http://127.0.0.1:41234/tok/custom-assets/pack-a/character/icon.png');
   assert.equal(win.__WUWA_MOD_ASSET_PATH__('character/小家伙（演示）_body_1.png'), 'http://127.0.0.1:41234/tok/custom-assets/pack-a/character/body1.png');
 
-  // Favorites reflect on mergeAtlas for Mod & unowned items.
-  instance.favorite(900000002, true);
-  const atlasMerged = instance.mergeAtlas([{ asset_id: 202, asset_type: 'character_skin_atlas', asset_name: 'Role2', owned: false }]);
+  // Favorites reflect on mergeAtlas and mergeBag regardless of whether primaryId or atlasId was toggled.
+  instance.favorite(900000001, true);
+  let atlasMerged = instance.mergeAtlas([{ asset_id: 202, asset_type: 'character_skin_atlas', asset_name: 'Role2', owned: false }]);
   assert.equal(atlasMerged.find(r => r.asset_id === 900000002)?.is_collect, 1);
+  assert.equal(instance.mergeBag([]).find(r => r.asset_id === 900000001)?.is_collect, 1);
+  instance.favorite(900000002, false);
+  atlasMerged = instance.mergeAtlas([{ asset_id: 202, asset_type: 'character_skin_atlas', asset_name: 'Role2', owned: false }]);
+  assert.equal(atlasMerged.find(r => r.asset_id === 900000002)?.is_collect, 0);
+  assert.equal(instance.mergeBag([]).find(r => r.asset_id === 900000001)?.is_collect, 0);
 
   // Universal accessory (role 0) stays equipped when switching character_skin.
   instance.select({ asset_id: 301, asset_type: 'accessory' }, { character: { id: 101 }, role_id: '1' }, 5);

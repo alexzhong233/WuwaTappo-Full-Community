@@ -168,6 +168,12 @@ function createLocalAtlasController(d) {
     for (const alias of atlasIdsByPetId.get(raw) || []) ids.add(alias);
     return ids;
   }
+  function favoriteState(id) {
+    for (const alias of relatedIds(id)) {
+      if (alias && Object.hasOwn(favorites.value, alias)) return Boolean(favorites.value[alias]);
+    }
+    return Object.hasOwn(favorites.value, id) ? Boolean(favorites.value[id]) : undefined;
+  }
   const bagRows = () => Array.isArray(accountBag) ? accountBag : [];
   function officialOwned(id, type) {
     const assetId = resolveItemId(id);
@@ -911,9 +917,8 @@ function createLocalAtlasController(d) {
     revision.value;
     const rows = Array.isArray(officialAtlas)
       ? officialAtlas.map(row => {
-          if (enabled.value && row && row.owned === false && Object.hasOwn(favorites.value, row.asset_id)) {
-            return {...row, is_collect: favorites.value[row.asset_id] ? 1 : 0};
-          }
+          const fav = enabled.value && row && row.owned === false ? favoriteState(row.asset_id) : undefined;
+          if (fav !== undefined) return {...row, is_collect: fav ? 1 : 0};
           return row;
         })
       : [];
@@ -923,8 +928,8 @@ function createLocalAtlasController(d) {
       const key = markKey(row.asset_id, row.asset_type);
       if (seen.has(key)) continue;
       seen.add(key);
-      const fav = Object.hasOwn(favorites.value, row.asset_id) ? (favorites.value[row.asset_id] ? 1 : 0) : undefined;
-      rows.push({...row, ...(fav !== undefined ? {is_collect: fav} : {}), wuwa_local_only:true, owned:false});
+      const fav = favoriteState(row.asset_id);
+      rows.push({...row, ...(fav !== undefined ? {is_collect: fav ? 1 : 0} : {}), wuwa_local_only:true, owned:false});
     }
     return rows;
   }
@@ -947,6 +952,7 @@ function createLocalAtlasController(d) {
       if (seen.has(key)) continue;
       seen.add(key);
       const meta = assetMeta(primaryId);
+      const fav = favoriteState(primaryId) ?? favoriteState(entry.asset_id);
       modRows.push({
         asset_id: primaryId,
         asset_code: entry.asset_code || '',
@@ -957,7 +963,7 @@ function createLocalAtlasController(d) {
         series_name: '',
         star_level: 0,
         quantity: 1,
-        is_collect: (favorites.value[primaryId] ?? entry.is_collect) ? 1 : 0,
+        is_collect: (fav !== undefined ? fav : entry.is_collect) ? 1 : 0,
         region_code: entry.region_code || '',
         wuwa_local_only: true,
         custom_pack_id: entry.custom_pack_id || '',
@@ -1161,7 +1167,7 @@ function createLocalAtlasController(d) {
   function syncModCatalog() {
     d.mergeModCatalog?.(enabled.value && offlineData.value ? modCatalogPayload(offlineData.value) : null, resolveAssetsHost());
   }
-  function applyData(data) { registerModNames(data); indexLocalData(data); syncModCatalog(); }
+  function applyData(data) { indexLocalData(data); registerModNames(data); syncModCatalog(); }
   async function applyMode(on) {
     if (on) {
       enabled.value = true;
@@ -1289,7 +1295,13 @@ function createLocalAtlasController(d) {
     return selection.value;
   }
   function afterOfficialSelect(item, official, maxEmotes, applyOfficial) { return beginSelect(item, official, maxEmotes, applyOfficial); }
-  function favorite(id, value) { favorites.value = {...favorites.value, [id]: Boolean(value)}; save(); }
+  function favorite(id, value) {
+    const next = {...favorites.value}, flag = Boolean(value);
+    for (const alias of relatedIds(id)) if (alias) next[alias] = flag;
+    if (id !== undefined && id !== null && id !== '') next[id] = flag;
+    favorites.value = next;
+    save();
+  }
   function presetAsset(id, type) {
     const meta = assetMeta(id);
     if (!Number.isSafeInteger(id) || id <= 0 || !meta || meta.asset_type !== type) throw new Error('预设中的素材不可用，请重新选择');

@@ -352,6 +352,30 @@ fn patch_sync_emotion(rec: &mut PatchRecorder, main: &str) -> Result<String, Str
     rec.replace(main, whole, &replacement)
 }
 
+fn patch_main_hit_region(rec: &mut PatchRecorder, main: &str) -> Result<String, String> {
+    let out = rec.replace(
+        main,
+        "document.querySelectorAll(\".pet-anchored-toast\")",
+        "document.querySelectorAll(\".pet-anchored-toast,[data-wuwa-interactive]\")",
+    )?;
+    let ret_re = Regex::new(
+        r"return\s*\{\s*syncMainHitRegion\s*:\s*([A-Za-z0-9_$]+)\s*,\s*retryNativeInputSync\s*:",
+    )
+    .unwrap();
+    let caps = ret_re
+        .captures(&out)
+        .ok_or("缺少 syncMainHitRegion 导出锚点")?;
+    let whole = caps[0].to_owned();
+    let sync_fn = &caps[1];
+    rec.replace(
+        &out,
+        &whole,
+        &format!(
+            "if (typeof window !== \"undefined\") window.__WUWA_SYNC_HIT_REGION__ = {sync_fn};\n  {whole}"
+        ),
+    )
+}
+
 fn patch_monitor_switch_display(rec: &mut PatchRecorder, monitor: &str) -> Result<String, String> {
     let re = Regex::new(
         r#"async function\s+([A-Za-z0-9_$]+)\(\)\s*\{\s*if\s*\(\s*([A-Za-z0-9_$]+)\s*\)\s*return\s+([A-Za-z0-9_$]+)\s*;\s*([A-Za-z0-9_$]+)\s*=\s*([A-Za-z0-9_$]+)\(\)\s*;\s*try\s*\{\s*return await\s+([A-Za-z0-9_$]+)\s*;?\s*\}\s*finally\s*\{\s*([A-Za-z0-9_$]+)\s*=\s*null\s*;?\s*\}\s*\}"#,
@@ -378,14 +402,28 @@ fn patch_monitor_switch_display(rec: &mut PatchRecorder, monitor: &str) -> Resul
         })
         .ok_or("缺少 switchDisplayMonitor 切屏入口锚点")?;
     let whole = caps[0].to_owned();
-    let fn_name = &caps[1];
-    rec.replace(
+    let fn_name = caps[1].to_owned();
+    let mut out = rec.replace(
         monitor,
         &whole,
         &format!(
-            "{whole}\nif (typeof window !== \"undefined\") window.__WUWA_SWITCH_DISPLAY__ = {fn_name};"
+            "{whole}\nif (typeof window !== \"undefined\") window.__WUWA_SWITCH_DISPLAY__ = async () => {{ window.__WUWA_SWITCH_DISPLAY_REASON__ = \"\"; return await {fn_name}(); }};"
         ),
-    )
+    )?;
+    let fail_re = Regex::new(r#"([A-Za-z0-9_$]+)\("desktop:display_switch_failed"\)\s*,\s*!1"#).unwrap();
+    let fail_caps = fail_re
+        .captures(&out)
+        .ok_or("缺少 switchDisplayMonitor 失败打点锚点")?;
+    let fail_whole = fail_caps[0].to_owned();
+    let fail_emit = &fail_caps[1];
+    out = rec.replace(
+        &out,
+        &fail_whole,
+        &format!(
+            "(typeof window !== \"undefined\" && (window.__WUWA_SWITCH_DISPLAY_REASON__ = \"failed\"), {fail_emit}(\"desktop:display_switch_failed\"), !1)"
+        ),
+    )?;
+    Ok(out)
 }
 
 /// Convert `inspect_js.cjs` Unicode codepoint (char) indices into UTF-8 byte offsets.
@@ -1605,6 +1643,7 @@ function __localRefresh(){{
     main = patch_emotion_menu_raf(&mut rec, &main, watch_sym)?;
     let on_unmounted_m = require_import(&mi, "onUnmounted")?;
     main = patch_room_layout_hooks(&mut rec, &main, on_unmounted_m)?;
+    main = patch_main_hit_region(&mut rec, &main)?;
     main = patch_sync_emotion(&mut rec, &main)?;
     // Panel edits
     let p_raw = structure
@@ -2550,7 +2589,7 @@ const __consoleTabs={computed_p}(()=>{unref_p}({nav_items}).flatMap(item=>item.k
     let code = format!(
         "{code_prefix}\n\
 let __unlistenSwitchDisplay=null;\n\
-{on_mounted_m}(async()=>{{__unlistenSwitchDisplay=await {listen_m}('tray-switch-display',async()=>{{if(__lg.assistant?.updateRequired?.value)return;try{{const ok=await window.__WUWA_SWITCH_DISPLAY__?.();if(ok===false){show_toast_sym}('未检测到其他可切换的显示器');}}catch(error){{{show_toast_sym}(error?.message||'切换屏幕失败');}}}});}});\n\
+{on_mounted_m}(async()=>{{__unlistenSwitchDisplay=await {listen_m}('tray-switch-display',async()=>{{if(__lg.assistant?.updateRequired?.value)return;try{{const ok=await window.__WUWA_SWITCH_DISPLAY__?.();if(ok===false){show_toast_sym}(window.__WUWA_SWITCH_DISPLAY_REASON__==='failed'?'切换屏幕失败':'未检测到其他可切换的显示器');}}catch(error){{{show_toast_sym}(error?.message||'切换屏幕失败');}}}});}});\n\
 {on_unmounted_m}(()=>{{__unlistenSwitchDisplay?.();}});\n\
 {on_mounted_m}(()=>{{window.setTimeout(()=>__lg.assistant.startMain({{\n\
  total:()=>{store}.cumulativeClickCount,balance:()=>{store}.totalClickCount,\n\
@@ -3042,8 +3081,12 @@ function drag(x) { x && hit(x) && (bounce ? settle(x, { left: tx, top: oy }) : (
     fn monitor_switch_display_patch_exposes_global_hook() {
         let source = r#"
 async function Na() {
-  await u("set_main_window_monitor_bounds", { payload: {} });
-  return true;
+  try {
+    await u("set_main_window_monitor_bounds", { payload: {} });
+    return true;
+  } catch (e) {
+    return pe("desktop:display_switch_failed"), !1;
+  }
 }
 async function On() {
   if (C) return C;
@@ -3057,9 +3100,44 @@ async function On() {
 "#;
         let mut rec = PatchRecorder::default();
         let out = patch_monitor_switch_display(&mut rec, source).unwrap();
-        assert!(out.contains("window.__WUWA_SWITCH_DISPLAY__ = On;"), "{out}");
+        assert!(
+            out.contains("window.__WUWA_SWITCH_DISPLAY__ = async () => { window.__WUWA_SWITCH_DISPLAY_REASON__ = \"\"; return await On(); };"),
+            "{out}"
+        );
+        assert!(
+            out.contains("window.__WUWA_SWITCH_DISPLAY_REASON__ = \"failed\""),
+            "{out}"
+        );
 
         let unrelated = source.replace("set_main_window_monitor_bounds", "other");
         assert!(patch_monitor_switch_display(&mut rec, &unrelated).is_err());
+    }
+
+    #[test]
+    fn main_hit_region_patch_includes_interactive_overlays_and_exposes_sync() {
+        let source = r#"
+function Mn(F = qo) {
+  const T = [];
+  for (const te of document.querySelectorAll(".pet-anchored-toast")) $e(T, te, F);
+  return T;
+}
+function sync() {
+  return {
+    syncMainHitRegion: He,
+    retryNativeInputSync: Ce,
+  };
+}
+"#;
+        let mut rec = PatchRecorder::default();
+        let out = patch_main_hit_region(&mut rec, source).unwrap();
+        assert!(
+            out.contains("document.querySelectorAll(\".pet-anchored-toast,[data-wuwa-interactive]\")"),
+            "{out}"
+        );
+        assert!(out.contains("window.__WUWA_SYNC_HIT_REGION__ = He;"), "{out}");
+        assert!(
+            patch_main_hit_region(&mut rec, &source.replace(".pet-anchored-toast", ".other"))
+                .is_err()
+        );
     }
 }

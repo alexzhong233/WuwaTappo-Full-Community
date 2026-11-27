@@ -68,12 +68,19 @@ function assistantUi(window) {
   }
   function el(tag,text,parent,cls){const n=doc.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;parent?.append(n);return n;}
   function button(text,parent,action,cls){const n=el('button',text,parent,cls);n.type='button';n.onclick=action;return n;}
-  return {el,button};
+  function syncHitRegion(){
+    if(typeof window.__WUWA_SYNC_HIT_REGION__!=='function')return false;
+    const run=()=>{try{window.__WUWA_SYNC_HIT_REGION__({updateNativeInput:false});}catch{}};
+    if(typeof window.requestAnimationFrame==='function')window.requestAnimationFrame(run);else run();
+    return true;
+  }
+  return {el,button,syncHitRegion};
 }
 
 function createAssistantUpdateGate({window,result,retry,install,quit}){
-  const {el,button}=assistantUi(window),root=el('section',undefined,window.document.body,'wt-gate');
+  const {el,button,syncHitRegion}=assistantUi(window),root=el('section',undefined,window.document.body,'wt-gate');
   root.setAttribute('role','alertdialog');root.setAttribute('aria-modal','true');root.setAttribute('data-wuwa-interactive','1');root.tabIndex=-1;
+  if(syncHitRegion()){try{window.__TAURI_INTERNALS__?.invoke?.('set_main_swallow_mouse',{enabled:true})?.catch?.(()=>{});}catch{}}
   const card=el('article',undefined,root),title=el('h2','需要更新',card),message=el('p','',card);
   el('p','新版本来自本项目 GitHub 发布。更新会保留账号、图鉴缓存与设置，支持自动下载、校验、备份并重启升级。',card,'wt-muted');
   const actions=el('div',undefined,card,'wt-controls'),status=el('p','',card,'wt-notice');
@@ -89,12 +96,13 @@ function createAssistantUpdateGate({window,result,retry,install,quit}){
 }
 
 function createAssistantDashboard(d){
-  const {window}=d,{el,button}=assistantUi(window),doc=window.document;
+  const {window}=d,{el,button,syncHitRegion}=assistantUi(window),doc=window.document;
   let closed=false,timer=null,officialTimer=null,installTimer=null,refreshing=false,tab='overview',value=null,renderView=()=>{},pending=0,saveQueue=Promise.resolve();
   function withTimeout(promise,label,ms=10000){let timeout;return Promise.race([promise,new Promise((_,reject)=>{timeout=window.setTimeout(()=>reject(new Error(label+'超时，请检查网络后重试')),ms);})]).finally(()=>window.clearTimeout(timeout));}
   const root=el('section',undefined,d.mount||doc.body,'wt-console');root.tabIndex=-1;root.setAttribute('role','dialog');root.setAttribute('aria-label','桌宠控制台');
   // 挂进官方面板的「控制台」页时改成流式布局：外框、圆角和阴影都由面板提供。
   if(d.mount)root.setAttribute('data-embedded','true');
+  else{root.setAttribute('data-wuwa-interactive','1');syncHitRegion();}
   // 面板外观（透明度/背景图）提升到整个控制台作用域：进任何页签前就先独立应用一次，
   // 进入「外观与 Mod」时再把滑杆与按钮接上，之后由这些控件实时同步。
   let captureButtons=null,opacityInput=null,clearBgBtn=null;
@@ -133,7 +141,7 @@ function createAssistantDashboard(d){
   const navButtons={};
   for(const [key,label]of tabs)navButtons[key]=button(label,nav,()=>showTab(key));
   const fmt=n=>Number(n||0).toLocaleString('zh-CN');
-  function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);window.clearInterval(installTimer);root.remove();d.onClose?.();}
+  function close(){if(closed)return;closed=true;window.clearInterval(timer);window.clearInterval(officialTimer);window.clearInterval(installTimer);root.remove();if(!d.mount)syncHitRegion();d.onClose?.();}
   function checkOfficialNotice(){withTimeout(d.atlas.request('/official/update-check',{}),'官方版本检查').then(r=>{if(r.updateAvailable)notice.textContent='检测到官方 '+r.latestVersion+'，请打开「系统与更新」查看，或到官方桌宠页下载原版。';}).catch(()=>{});}
   async function change(changes){
     pending++;

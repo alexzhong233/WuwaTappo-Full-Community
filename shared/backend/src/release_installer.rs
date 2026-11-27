@@ -583,13 +583,25 @@ fn apply_files(root: &Path, stage: &Path, job: &Path) -> Result<Vec<(String, boo
     Ok(changed)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn rollback_taskkill_args(exe: &str, self_pid: u32) -> [String; 5] {
+    [
+        "/F".into(),
+        "/IM".into(),
+        exe.into(),
+        "/FI".into(),
+        format!("PID ne {self_pid}"),
+    ]
+}
+
 fn rollback(root: &Path, job: &Path, changed: &[(String, bool)]) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        let self_pid = std::process::id();
         for exe in ["WuwaTappo.Local.exe", "LocalGalleryHost.exe"] {
             let _ = Command::new("taskkill")
-                .args(["/F", "/IM", exe])
+                .args(rollback_taskkill_args(exe, self_pid))
                 .creation_flags(CREATE_NO_WINDOW)
                 .output();
         }
@@ -1132,6 +1144,20 @@ mod tests {
         assert_eq!(fs::read(root.join("kept.txt")).unwrap(), b"old");
         assert!(!root.join("created.txt").exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollback_taskkill_args_excludes_current_helper_pid() {
+        assert_eq!(
+            rollback_taskkill_args("LocalGalleryHost.exe", 4242),
+            [
+                "/F".to_string(),
+                "/IM".to_string(),
+                "LocalGalleryHost.exe".to_string(),
+                "/FI".to_string(),
+                "PID ne 4242".to_string(),
+            ]
+        );
     }
 
     #[test]

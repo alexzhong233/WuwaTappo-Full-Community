@@ -249,8 +249,17 @@ async function testDashboard(platform) {
     },
   };
 
+  const swallowCalls = [];
+  let hitSyncs = 0;
+  win.__WUWA_SYNC_HIT_REGION__ = opts => { hitSyncs += 1; assert.equal(opts?.updateNativeInput, false); };
+  win.__TAURI_INTERNALS__ = {
+    invoke: async (cmd, payload) => {
+      if (cmd === 'set_main_swallow_mouse') swallowCalls.push(payload);
+      return null;
+    },
+  };
   const ctx = vm.createContext({ window: win, Date, Number, Promise, console, Object, Math, Array, String });
-  vm.runInContext(source + ';globalThis.createDashboard = createAssistantDashboard;', ctx);
+  vm.runInContext(source + ';globalThis.createDashboard = createAssistantDashboard;globalThis.createGate = createAssistantUpdateGate;', ctx);
 
   const dash = ctx.createDashboard({
     window: win,
@@ -661,7 +670,24 @@ async function testDashboard(platform) {
   assert.equal(savedRows().length, 1, 'deleted accessory transform is removed from the list');
   assert.equal(savedSection.textContent.includes('official_hat.png'), false, 'deleted entry disappears from the saved list');
 
+  const floatingConsole = doc.body.querySelector('.wt-console');
+  assert.equal(floatingConsole?.getAttribute('data-wuwa-interactive'), '1', 'floating console sets data-wuwa-interactive');
+  assert.ok(hitSyncs >= 1, 'floating console triggers hit-region sync on mount');
+  const hitSyncsBeforeClose = hitSyncs;
   dash.close();
+  assert.ok(hitSyncs > hitSyncsBeforeClose, 'closing floating console refreshes hit regions');
+
+  ctx.createGate({
+    window: win,
+    result: { version: '1.4.1', message: 'update' },
+    retry: async () => ({ message: '' }),
+    install: async () => ({ message: '' }),
+    quit: async () => {},
+  });
+  const gateNode = doc.body.querySelector('.wt-gate');
+  assert.equal(gateNode?.getAttribute('data-wuwa-interactive'), '1', '.wt-gate sets data-wuwa-interactive');
+  assert.equal(swallowCalls.length, 1, '.wt-gate enables mouse swallow when in main window');
+  assert.equal(swallowCalls[0]?.enabled, true, '.wt-gate sets enabled: true on set_main_swallow_mouse');
 }
 
 async function testClickDrivenAutoEmoteAndAutoClickAvoidance(platform) {
@@ -908,6 +934,7 @@ async function testDriverBalanceHybridAndSoftUpdate(platform) {
       type: '',
       className: '',
       style: {},
+      attributes: new Map(),
       children: [],
       parentNode: null,
       _text: '',
@@ -930,8 +957,8 @@ async function testDriverBalanceHybridAndSoftUpdate(platform) {
         this.parentNode.children = this.parentNode.children.filter(c => c !== this);
         this.parentNode = null;
       },
-      setAttribute() {},
-      getAttribute() { return null; },
+      setAttribute(k, v) { this.attributes.set(k, String(v)); },
+      getAttribute(k) { return this.attributes.get(k) ?? null; },
       findAll(predicate, out = []) {
         if (predicate(this)) out.push(this);
         for (const child of this.children) child.findAll(predicate, out);
@@ -953,8 +980,10 @@ async function testDriverBalanceHybridAndSoftUpdate(platform) {
     querySelector: selector => body.querySelector(selector),
   };
 
+  let softHitSyncs = 0;
   const win = {
     document: doc,
+    __WUWA_SYNC_HIT_REGION__: opts => { softHitSyncs += 1; assert.equal(opts?.updateNativeInput, false); },
     localStorage: {
       getItem: key => (storage.has(key) ? storage.get(key) : null),
       setItem: (key, value) => { storage.set(key, String(value)); },
@@ -1097,13 +1126,17 @@ async function testDriverBalanceHybridAndSoftUpdate(platform) {
   assert.equal(assistant.updateRequired.value, false, 'the soft banner never forces the required-update gate');
   const banner = () => body.querySelector('.wt-soft-update');
   assert.ok(banner(), '.wt-soft-update banner is shown');
+  assert.equal(banner().getAttribute('data-wuwa-interactive'), '1', '.wt-soft-update marks interactive attribute');
   assert.ok(banner().textContent.includes('9.9.9'), banner().textContent);
+  const syncsWhenBannerShown = softHitSyncs;
+  assert.ok(syncsWhenBannerShown >= 1, 'showing .wt-soft-update syncs main hit regions');
 
   const dismiss = banner().findAll(n => n.tagName === 'BUTTON' && n._text === '忽略此版本')[0];
   assert.ok(dismiss, '忽略此版本 button exists');
   dismiss.onclick();
   assert.equal(storage.get('wuwatappo-dismissed-update-v1'), '9.9.9', 'dismissed version is stored in localStorage');
   assert.equal(banner(), null, 'banner is removed after dismissing');
+  assert.ok(softHitSyncs > syncsWhenBannerShown, 'dismissing .wt-soft-update refreshes main hit regions');
 
   await updateInterval.fn();
   assert.equal(banner(), null, 'the same dismissed version is not shown again');

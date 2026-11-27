@@ -7,7 +7,7 @@ function resolveBalanceAutoClick(settings,balance) {
 }
 
 function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>name}) {
-  const VERSION='1.4.1-beta.2', updateRequired=ref(false);
+  const VERSION='1.4.1', updateRequired=ref(false);
   const DISMISSED_UPDATE_KEY='wuwatappo-dismissed-update-v1',COMMUNITY_CHECK_INTERVAL_MS=8*3600*1000;
   const state=ref({settings:__WUWA_ASSISTANT_DEFAULTS__});
   const request=(action,body={})=>atlas.request('/assistant/'+action,body);
@@ -226,8 +226,10 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
     }
     timer=window.setTimeout(loop,1000);
     const readDismissedUpdate=()=>{try{return window.localStorage?.getItem(DISMISSED_UPDATE_KEY)||'';}catch{return '';}};
+    const syncHitRegion=()=>{try{window.__WUWA_SYNC_HIT_REGION__?.({updateNativeInput:false});}catch{}};
     function removeSoftUpdate(){
       try{window.document?.querySelector?.('.wt-soft-update')?.remove();}catch{}
+      syncHitRegion();
     }
     function showSoftUpdateNotice(result){
       const doc=window.document;
@@ -252,6 +254,7 @@ function createDesktopAssistant({ref, window, atlas, displayName=(type,name)=>na
       makeButton('忽略此版本',()=>{try{window.localStorage?.setItem(DISMISSED_UPDATE_KEY,latest);}catch{}removeSoftUpdate();});
       makeButton('稍后',()=>{removeSoftUpdate();});
       notice.append(text,actions);doc.body.append(notice);
+      if(typeof window.requestAnimationFrame==='function')window.requestAnimationFrame(syncHitRegion);else syncHitRegion();
     }
     async function checkCommunityUpdate(){
       if(disposed||updateRequired.value)return;

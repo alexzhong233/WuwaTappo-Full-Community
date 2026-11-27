@@ -249,6 +249,14 @@ done
 
 if [ ! -f "$JOB_DIR/healthy" ]; then
   /usr/bin/pkill -f -- "$TARGET_APP/Contents/MacOS/" 2>/dev/null || true
+  k=0
+  while [ $k -lt 10 ]; do
+    /usr/bin/pgrep -f -- "$TARGET_APP/Contents/MacOS/" >/dev/null 2>&1 || break
+    /bin/sleep 0.2
+    k=$((k + 1))
+  done
+  /usr/bin/pkill -9 -f -- "$TARGET_APP/Contents/MacOS/" 2>/dev/null || true
+  /bin/sleep 0.2
   /bin/rm -rf "$TARGET_APP"
   /bin/mv "$BACKUP_APP" "$TARGET_APP" 2>/dev/null || true
   "$OPEN_BIN" "$TARGET_APP" 2>/dev/null || true
@@ -635,6 +643,15 @@ mod tests {
         let fail_progress: Value =
             serde_json::from_slice(&fs::read(fail_job.join("progress.json")).unwrap()).unwrap();
         assert_eq!(fail_progress["phase"], "failed");
+
+        let timeout_block = APPLY_UPDATE_SCRIPT
+            .split("if [ ! -f \"$JOB_DIR/healthy\" ]; then")
+            .nth(1)
+            .expect("timeout rollback block missing");
+        let pgrep_pos = timeout_block.find("/usr/bin/pgrep -f").unwrap();
+        let kill9_pos = timeout_block.find("/usr/bin/pkill -9 -f").unwrap();
+        let rm_pos = timeout_block.find("/bin/rm -rf").unwrap();
+        assert!(pgrep_pos < kill9_pos && kill9_pos < rm_pos);
 
         let _ = fs::remove_dir_all(&root);
     }
